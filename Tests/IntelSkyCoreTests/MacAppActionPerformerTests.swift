@@ -162,6 +162,98 @@ import Testing
   #expect(mouse.clicks.isEmpty)
 }
 
+@Test func pressKeyRequiresSnapshotThenActivatesAndPostsChord() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(testActionSnapshot(), for: app)
+  let activator = RecordingActivator()
+  let keyboard = RecordingKeyboardInputPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: activator,
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: keyboard
+  )
+
+  _ = try performer.performAction(
+    request: actionRequest(name: "pressKey", payload: ["_0": "Ctrl+Shift+period"])
+  )
+
+  #expect(activator.activatedApps == [app])
+  #expect(keyboard.chords == [ParsedKeyChord(keyCode: 47, modifiers: [.control, .shift])])
+  #expect(keyboard.typedTexts.isEmpty)
+}
+
+@Test func typeTextRequiresSnapshotThenActivatesAndPostsUnicode() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(testActionSnapshot(), for: app)
+  let activator = RecordingActivator()
+  let keyboard = RecordingKeyboardInputPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: activator,
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: keyboard
+  )
+
+  _ = try performer.performAction(
+    request: actionRequest(name: "type", payload: ["_0": "Hello，世界 👋"])
+  )
+
+  #expect(activator.activatedApps == [app])
+  #expect(keyboard.typedTexts == ["Hello，世界 👋"])
+  #expect(keyboard.chords.isEmpty)
+}
+
+@Test func keyboardInputWithoutSnapshotIsRejectedBeforeActivation() throws {
+  let app = actionTestApp()
+  let activator = RecordingActivator()
+  let keyboard = RecordingKeyboardInputPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: ElementSnapshotCache(),
+    activator: activator,
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: keyboard
+  )
+
+  #expect(throws: ElementSnapshotCacheError.self) {
+    try performer.performAction(
+      request: actionRequest(name: "pressKey", payload: ["_0": "Return"])
+    )
+  }
+  #expect(activator.activatedApps.isEmpty)
+  #expect(keyboard.chords.isEmpty)
+}
+
+@Test func oversizedTypeTextIsRejectedBeforeActivation() throws {
+  let app = actionTestApp()
+  let activator = RecordingActivator()
+  let keyboard = RecordingKeyboardInputPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: ElementSnapshotCache(),
+    activator: activator,
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: keyboard
+  )
+
+  #expect(throws: MacAppActionError.self) {
+    try performer.performAction(
+      request: actionRequest(name: "type", payload: ["_0": String(repeating: "a", count: 10_001)])
+    )
+  }
+  #expect(activator.activatedApps.isEmpty)
+  #expect(keyboard.typedTexts.isEmpty)
+}
+
 private struct StubActionResolver: MacAppResolving {
   let app: ResolvedMacApp
 
@@ -199,6 +291,19 @@ private final class RecordingMouseClickPoster: MouseClickPosting, @unchecked Sen
   }
 }
 
+private final class RecordingKeyboardInputPoster: KeyboardInputPosting, @unchecked Sendable {
+  private(set) var chords: [ParsedKeyChord] = []
+  private(set) var typedTexts: [String] = []
+
+  func press(_ chord: ParsedKeyChord) throws {
+    chords.append(chord)
+  }
+
+  func typeText(_ text: String) throws {
+    typedTexts.append(text)
+  }
+}
+
 private func actionTestApp() -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: 42,
@@ -219,6 +324,10 @@ private func clickRequest(at: [String: Any], clickCount: Any, mouseButton: Any) 
       ]
     ],
   ]
+}
+
+private func actionRequest(name: String, payload: [String: Any]) -> [String: Any] {
+  ["app": "example.app", "action": [name: payload]]
 }
 
 private func testActionSnapshot() -> CapturedAccessibilitySnapshot {

@@ -101,6 +101,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let activator: any AppActivating
   private let frameReader: any AccessibilityFrameReading
   private let mouseClickPoster: any MouseClickPosting
+  private let keyboardInputPoster: any KeyboardInputPosting
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -111,7 +112,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
       snapshotCache: snapshotCache,
       activator: WorkspaceAppActivator(),
       frameReader: AccessibilityElementGeometry(),
-      mouseClickPoster: CGMouseClickPoster()
+      mouseClickPoster: CGMouseClickPoster(),
+      keyboardInputPoster: CGKeyboardInputPoster()
     )
   }
 
@@ -120,13 +122,15 @@ public struct MacAppActionPerformer: AppActionPerforming {
     snapshotCache: ElementSnapshotCache,
     activator: any AppActivating,
     frameReader: any AccessibilityFrameReading,
-    mouseClickPoster: any MouseClickPosting
+    mouseClickPoster: any MouseClickPosting,
+    keyboardInputPoster: any KeyboardInputPosting = CGKeyboardInputPoster()
   ) {
     self.resolver = resolver
     self.snapshotCache = snapshotCache
     self.activator = activator
     self.frameReader = frameReader
     self.mouseClickPoster = mouseClickPoster
+    self.keyboardInputPoster = keyboardInputPoster
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
@@ -136,12 +140,31 @@ public struct MacAppActionPerformer: AppActionPerforming {
     else {
       throw MacAppActionError.invalidAction("expected exactly one action")
     }
-    guard actionName == "click" else {
+    switch actionName {
+    case "click":
+      guard let click = action[actionName] as? [String: Any] else {
+        throw MacAppActionError.invalidAction("click payload must be an object")
+      }
+      try performClick(click, app: app)
+    case "pressKey":
+      let key = try parseSingleStringPayload(action[actionName], actionName: actionName)
+      let chord = try MacKeyChordParser().parse(key)
+      try prepareForInput(app)
+      try keyboardInputPoster.press(chord)
+    case "type":
+      let text = try parseSingleStringPayload(action[actionName], actionName: actionName)
+      guard text.utf16.count <= 10_000 else {
+        throw MacAppActionError.invalidAction("type text exceeds 10,000 UTF-16 code units")
+      }
+      try prepareForInput(app)
+      try keyboardInputPoster.typeText(text)
+    default:
       throw MacAppActionError.unsupportedAction(actionName)
     }
-    guard let click = action[actionName] as? [String: Any] else {
-      throw MacAppActionError.invalidAction("click payload must be an object")
-    }
+    return [:]
+  }
+
+  private func performClick(_ click: [String: Any], app: ResolvedMacApp) throws {
     guard Set(click.keys) == ["at", "clickCount", "mouseButton"] else {
       throw MacAppActionError.invalidAction(
         "click payload must contain at, clickCount, and mouseButton"
@@ -172,7 +195,20 @@ public struct MacAppActionPerformer: AppActionPerforming {
       point = coordinate
     }
     try mouseClickPoster.click(at: point, button: button, count: count)
-    return [:]
+  }
+
+  private func prepareForInput(_ app: ResolvedMacApp) throws {
+    try snapshotCache.validateSnapshot(for: app)
+    try activator.activate(app)
+  }
+
+  private func parseSingleStringPayload(_ value: Any?, actionName: String) throws -> String {
+    guard let payload = value as? [String: Any], payload.count == 1,
+      let string = payload["_0"] as? String
+    else {
+      throw MacAppActionError.invalidAction("\(actionName) payload must contain one string")
+    }
+    return string
   }
 
   private func parseTarget(_ value: Any?) throws -> ComputerUseTarget {
