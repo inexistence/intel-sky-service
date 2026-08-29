@@ -195,6 +195,14 @@ did-end-stream. The host bootstraps the service with an Apple Event whose class/
 `PiPB`, carrying a Mach reply port used to rendezvous two private XPC endpoints.
 `CONFIRMED_INTEL_STATIC_BINARY`.
 
+Targeted host disassembly confirms the endpoint wire format. The host calls `xpc_pipe_receive` on
+the Apple Event's reply Mach port, requires an XPC dictionary value named `endpoint` whose type is
+`xpc_endpoint_t`, wraps it in `NSXPCListenerEndpoint` through private `_setEndpoint:`, sends an XPC
+routine reply, and creates a bidirectional `NSXPCConnection`. The connection exports the eight host
+methods, imports the producer protocol, and begins with `connectWithReply:`. The ARM service imports
+the matching `xpc_pipe_create_from_port` and `xpc_pipe_routine` symbols, confirming the opposite
+side of this rendezvous. `CONFIRMED_STATIC_BINARY`.
+
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
 `setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore
