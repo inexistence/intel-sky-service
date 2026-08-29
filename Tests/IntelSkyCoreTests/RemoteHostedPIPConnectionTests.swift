@@ -16,7 +16,8 @@ import XPC
     with: RemoteHostedPIPContentProducerXPCProtocol.self
   )
   client.exportedInterface = NSXPCInterface(with: RemoteHostedPIPContentHostXPCProtocol.self)
-  client.exportedObject = RecordingPIPHost()
+  let host = RecordingPIPHost()
+  client.exportedObject = host
   client.activate()
   defer { client.invalidate() }
 
@@ -47,6 +48,16 @@ import XPC
   #expect(maxSizeUpdated.wait(timeout: .now() + 2) == .success)
   #expect(result.error == nil)
   #expect(producer.maxDisplaySize == 640)
+
+  try controller.publishPresentation(
+    id: "presentation",
+    threadID: "thread",
+    turnID: "turn",
+    contextID: 42,
+    size: CGSize(width: 640, height: 480)
+  )
+  try controller.setSourceProcessIdentifier(321, presentationID: "presentation")
+  #expect(host.events == ["publish:presentation:42:640x480", "source:presentation:321"])
 }
 
 @Test func pipProducerRejectsInvalidSizeAndUnavailablePresentation() {
@@ -75,6 +86,10 @@ private final class PIPReplyResult: @unchecked Sendable {
 }
 
 private final class RecordingPIPHost: NSObject, RemoteHostedPIPContentHostXPCProtocol {
+  private let lock = NSLock()
+  private var storedEvents: [String] = []
+  var events: [String] { lock.withLock { storedEvents } }
+
   func publishPresentation(
     id presentationID: String,
     threadID: String,
@@ -83,13 +98,23 @@ private final class RecordingPIPHost: NSObject, RemoteHostedPIPContentHostXPCPro
     width: Double,
     height: Double,
     reply: @escaping RemoteHostedPIPReply
-  ) { reply(nil) }
+  ) {
+    lock.withLock {
+      storedEvents.append("publish:\(presentationID):\(contextID):\(Int(width))x\(Int(height))")
+    }
+    reply(nil)
+  }
 
   func setSourceProcessIdentifier(
     _ processIdentifier: Int32,
     presentationID: String,
     reply: @escaping RemoteHostedPIPReply
-  ) { reply(nil) }
+  ) {
+    lock.withLock {
+      storedEvents.append("source:\(presentationID):\(processIdentifier)")
+    }
+    reply(nil)
+  }
 
   func prepareOperation(
     presentationID: String,

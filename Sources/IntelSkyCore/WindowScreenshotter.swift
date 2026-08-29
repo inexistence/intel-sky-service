@@ -41,7 +41,7 @@ public struct WindowScreenshotter: Sendable {
     }
 
     let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("intel-sky-service", isDirectory: true)
+      .appendingPathComponent("com.openai.sky.CUAService", isDirectory: true)
       .appendingPathComponent("skyshots", isDirectory: true)
     try SecureDirectoryPreparer.prepare(directory)
     purgeExpiredScreenshots(in: directory)

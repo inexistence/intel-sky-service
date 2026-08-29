@@ -51,7 +51,9 @@ struct RemoteHostedPIPBootstrapRequest: Equatable, Sendable {
   }
 }
 
-public final class RemoteHostedPIPBootstrapController: NSObject, @unchecked Sendable {
+public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResultObserving,
+  @unchecked Sendable
+{
   private static let errorNumberKeyword: AEKeyword = 0x6572_726E  // errn
   private static let errorStringKeyword: AEKeyword = 0x6572_7273  // errs
 
@@ -59,24 +61,38 @@ public final class RemoteHostedPIPBootstrapController: NSObject, @unchecked Send
   private let connectionController: RemoteHostedPIPConnectionController
   private let endpointSender: any RemoteHostedPIPEndpointSending
   private let hostAuthorizer: any ProcessAuthorizing
+  private let presentationCoordinator: RemoteHostedPIPPresentationCoordinator
   private var started = false
 
   public override convenience init() {
+    let connectionController = RemoteHostedPIPConnectionController()
+    let presentationCoordinator = RemoteHostedPIPPresentationCoordinator(
+      host: connectionController
+    )
+    presentationCoordinator.installProducerCallbacks(on: connectionController)
+    ComputerUseVisualCoordinator.shared.setRemoteCursorHandler { [weak presentationCoordinator]
+      point, isActive in
+      presentationCoordinator?.updateCursor(point: point, isActive: isActive)
+    }
     self.init(
-      connectionController: RemoteHostedPIPConnectionController(),
+      connectionController: connectionController,
       endpointSender: RemoteHostedPIPEndpointTransport(),
-      hostAuthorizer: OpenAIChatGPTHostAuthorizer()
+      hostAuthorizer: OpenAIChatGPTHostAuthorizer(),
+      presentationCoordinator: presentationCoordinator
     )
   }
 
   init(
     connectionController: RemoteHostedPIPConnectionController,
     endpointSender: any RemoteHostedPIPEndpointSending,
-    hostAuthorizer: any ProcessAuthorizing
+    hostAuthorizer: any ProcessAuthorizing,
+    presentationCoordinator: RemoteHostedPIPPresentationCoordinator? = nil
   ) {
     self.connectionController = connectionController
     self.endpointSender = endpointSender
     self.hostAuthorizer = hostAuthorizer
+    self.presentationCoordinator =
+      presentationCoordinator ?? RemoteHostedPIPPresentationCoordinator(host: connectionController)
     super.init()
   }
 
@@ -136,5 +152,19 @@ public final class RemoteHostedPIPBootstrapController: NSObject, @unchecked Send
   func process(_ request: RemoteHostedPIPBootstrapRequest) throws {
     try hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
     try endpointSender.send(endpoint: connectionController.endpoint, to: request.replyPort)
+  }
+
+  public func observe(
+    requestType: String,
+    request: [String: Any],
+    codexTurnMetadata: Any?,
+    result: Any
+  ) {
+    presentationCoordinator.observe(
+      requestType: requestType,
+      request: request,
+      codexTurnMetadata: codexTurnMetadata,
+      result: result
+    )
   }
 }

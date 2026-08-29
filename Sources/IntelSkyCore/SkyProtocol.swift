@@ -75,18 +75,24 @@ public struct SkyRequestRouter: Sendable {
   private let appCatalog: any AppCatalog
   private let appStateProvider: (any AppStateProviding)?
   private let appActionPerformer: (any AppActionPerforming)?
+  private let appCaptureProvider: (any AppCaptureProviding)?
   private let executionGate: SkyRequestExecutionGate
   private let turnLifecycle: any ComputerUseTurnLifecycleHandling
+  private let requestObserver: (any SkyRequestResultObserving)?
 
   public init(
     appCatalog: any AppCatalog,
     appStateProvider: (any AppStateProviding)? = nil,
-    appActionPerformer: (any AppActionPerforming)? = nil
+    appActionPerformer: (any AppActionPerforming)? = nil,
+    appCaptureProvider: (any AppCaptureProviding)? = nil,
+    requestObserver: (any SkyRequestResultObserving)? = nil
   ) {
     self.init(
       appCatalog: appCatalog,
       appStateProvider: appStateProvider,
       appActionPerformer: appActionPerformer,
+      appCaptureProvider: appCaptureProvider,
+      requestObserver: requestObserver,
       turnLifecycle: ComputerUseTurnCoordinator()
     )
   }
@@ -95,11 +101,15 @@ public struct SkyRequestRouter: Sendable {
     appCatalog: any AppCatalog,
     appStateProvider: (any AppStateProviding)?,
     appActionPerformer: (any AppActionPerforming)?,
+    appCaptureProvider: (any AppCaptureProviding)? = nil,
+    requestObserver: (any SkyRequestResultObserving)? = nil,
     turnLifecycle: any ComputerUseTurnLifecycleHandling
   ) {
     self.appCatalog = appCatalog
     self.appStateProvider = appStateProvider
     self.appActionPerformer = appActionPerformer
+    self.appCaptureProvider = appCaptureProvider
+    self.requestObserver = requestObserver
     self.executionGate = SkyRequestExecutionGate()
     self.turnLifecycle = turnLifecycle
   }
@@ -194,9 +204,25 @@ public struct SkyRequestRouter: Sendable {
             throw SkyRPCError.unsupportedRequestType(requestType)
           }
           result = try appActionPerformer.performAction(request: request)
+        case "ComputerUseIPCAppStartCaptureRequest":
+          guard let appCaptureProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appCaptureProvider.startCapture(request: request)
+        case "ComputerUseIPCAppNextCaptureUpdateRequest":
+          guard let appCaptureProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appCaptureProvider.nextCaptureUpdate(request: request)
         default:
           throw SkyRPCError.unsupportedRequestType(requestType)
         }
+        requestObserver?.observe(
+          requestType: requestType,
+          request: request,
+          codexTurnMetadata: params["codexTurnMetadata"],
+          result: result
+        )
         try deadline.check()
         return result
       default:
@@ -264,6 +290,8 @@ public struct SkyRequestRouter: Sendable {
       return SkyServerErrorCode.unhandledEvent.rawValue
     case MacAppActionError.activationFailed:
       return SkyServerErrorCode.runningApplicationNotFound.rawValue
+    case is AppCaptureSessionError:
+      return SkyServerErrorCode.couldNotGetRequestData.rawValue
     case MacAppActionError.missingElementFrame,
       MacAppActionError.targetOutsideDisplays,
       MacAppActionError.eventCreationFailed:

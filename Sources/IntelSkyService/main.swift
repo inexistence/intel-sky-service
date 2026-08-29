@@ -48,20 +48,29 @@ if configuration.experimentalPIPEnabled {
 let resolver = MacAppResolver()
 let snapshotCache = ElementSnapshotCache()
 let interactionTracker = AppInteractionTracker()
+let appStateProvider = MacAppStateProvider(
+  resolver: resolver,
+  snapshotCache: snapshotCache,
+  interactionTracker: interactionTracker
+)
+let appCaptureProvider = AppCaptureSessionManager(appStateProvider: appStateProvider)
+let nativeBridgeController = ComputerUseNativeBridgeController(
+  appStateProvider: appStateProvider,
+  appCaptureProvider: appCaptureProvider
+)
+nativeBridgeController.start()
 let server = SkyUnixServer(
   socketPath: socketPath,
   router: SkyRequestRouter(
     appCatalog: WorkspaceAppCatalog(),
-    appStateProvider: MacAppStateProvider(
-      resolver: resolver,
-      snapshotCache: snapshotCache,
-      interactionTracker: interactionTracker
-    ),
+    appStateProvider: appStateProvider,
     appActionPerformer: MacAppActionPerformer(
       resolver: resolver,
       snapshotCache: snapshotCache,
       interactionTracker: interactionTracker
-    )
+    ),
+    appCaptureProvider: appCaptureProvider,
+    requestObserver: pipBootstrapController
   )
 )
 

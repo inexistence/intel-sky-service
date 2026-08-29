@@ -187,6 +187,20 @@ ID, and request ID, then forwards asynchronous `computer-use-capture-updated` ev
 renderer. Its remote-hosted-PIP task manager associates presentations with task/thread visibility
 and completes them at turn boundaries. `CONFIRMED_INTEL_CLIENT_SOURCE`.
 
+The exact Intel Appshot transport is now confirmed. ChatGPT sends synchronous Apple Events with
+class/ID `SkCu`/`SndR`, parameters `RspT` (request type), `ReqD` (UTF-8 JSON data), and `ClVn`
+(`CodexComputerUseNativeBridge-1`) directly to the managed service PID. The current start request
+uses `app`, `requestId`, `permissionRequestId`, `animationTarget`, and numeric `version: 2`.
+Responses return JSON in the direct-object `tdta` descriptor; errors use `errn`/`errs`. The update
+union is `metadata`, `axText`, `screenshot`, `completed`, or `failed`. ChatGPT accepts screenshot
+files only beneath the real path of `$TMPDIR/com.openai.sky.CUAService`, limits them to 25 MiB, and
+allows PNG/JPEG. `CONFIRMED_INTEL_CLIENT_SOURCE`.
+
+Intel implements this bridge with OpenAI-host signature validation, exact event constants, version
+and schema checks, and a capture queue that emits metadata, AX text, screenshot, and completion
+updates. It never launches the ARM service. `HIGH_CONFIDENCE`; a real Appshot run against an already
+approved target remains pending.
+
 The current Intel app also ships a signed, pure-x86_64 `Resources/native/sky.node` containing the
 host implementation. Its Objective-C metadata exposes eight host XPC methods: publish presentation,
 set source PID, prepare/complete operation, will-end, invalidate, note interaction, and set cursor
@@ -219,11 +233,14 @@ protocol metadata has five methods rather than four, and its strings include the
 target the installed Intel `sky.node` contract and treat ARM behavior as an oracle, rather than
 copying the ARM protocol surface verbatim. `CONFIRMED_STATIC_BINARY`.
 
-Consequently, the public node_repl tool surface can be protocol-complete while the native Codex
-container experience remains absent. A locally drawn overlay can reproduce visible feedback, but
-embedding the live target inside Codex requires the hidden capture request family plus the private
-host XPC contract. That integration is version-coupled and remains `KNOWN_DIFFERENCE`; unsupported
-request stubs must not be advertised as a working native PIP implementation.
+Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
+producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
+`focus-presentation`, cursor forwarding, and turn-scoped end/invalidation. The presentation surface
+is refreshed from each successful `get_app_state` screenshot. This should provide the native Codex
+container and host-rendered cursor without moving the user's physical pointer, but it is not yet the
+official continuously updating ScreenCaptureKit window/cursor stream. Dynamic managed-host
+verification remains pending, so the feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1` and is a
+`KNOWN_DIFFERENCE` until that run succeeds.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

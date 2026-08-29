@@ -12,6 +12,10 @@ protocol ComputerUseVisualizing: Sendable {
 public final class ComputerUseVisualCoordinator: ComputerUseVisualizing, @unchecked Sendable {
   public static let shared = ComputerUseVisualCoordinator()
 
+  private let lock = NSLock()
+  private var remoteCursorHandler: (@Sendable (CGPoint, Bool) -> Void)?
+  private var remoteCursorGeneration: UInt64 = 0
+
   public init() {}
 
   @MainActor
@@ -20,14 +24,20 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing, @unchec
   }
 
   func moveCursor(to point: CGPoint) {
+    notifyRemoteCursor(at: point)
     performOnMain { VirtualCursorOverlay.shared.move(to: point) }
   }
 
   func showClick(at point: CGPoint) {
+    notifyRemoteCursor(at: point)
     performOnMain { VirtualCursorOverlay.shared.click(at: point) }
   }
 
   func showDrag(from start: CGPoint, to end: CGPoint) {
+    notifyRemoteCursor(at: start)
+    DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.08) { [weak self] in
+      self?.notifyRemoteCursor(at: end)
+    }
     performOnMain { VirtualCursorOverlay.shared.drag(from: start, to: end) }
   }
 
@@ -36,6 +46,28 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing, @unchec
       MainActor.assumeIsolated {
         operation()
       }
+    }
+  }
+
+  func setRemoteCursorHandler(
+    _ handler: @escaping @Sendable (CGPoint, Bool) -> Void
+  ) {
+    lock.withLock { remoteCursorHandler = handler }
+  }
+
+  private func notifyRemoteCursor(at point: CGPoint) {
+    let (generation, handler) = lock.withLock { () -> (UInt64, (@Sendable (CGPoint, Bool) -> Void)?) in
+      remoteCursorGeneration &+= 1
+      return (remoteCursorGeneration, remoteCursorHandler)
+    }
+    handler?(point, true)
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 4.5) { [weak self] in
+      guard let self else { return }
+      let handler = lock.withLock { () -> (@Sendable (CGPoint, Bool) -> Void)? in
+        guard remoteCursorGeneration == generation else { return nil }
+        return remoteCursorHandler
+      }
+      handler?(point, false)
     }
   }
 }
