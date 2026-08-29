@@ -7,6 +7,7 @@ public enum MacAppActionError: Error, CustomStringConvertible {
   case unsupportedAction(String)
   case activationFailed(String)
   case missingElementFrame(String)
+  case targetOutsideDisplays(CGPoint)
   case eventCreationFailed
 
   public var description: String {
@@ -16,7 +17,9 @@ public enum MacAppActionError: Error, CustomStringConvertible {
     case .activationFailed(let app): return "Could not activate app: \(app)"
     case .missingElementFrame(let elementID):
       return "Element \(elementID) has no usable Accessibility frame"
-    case .eventCreationFailed: return "CoreGraphics could not create a mouse event"
+    case .targetOutsideDisplays(let point):
+      return "Target coordinate (\(point.x), \(point.y)) is outside active displays"
+    case .eventCreationFailed: return "CoreGraphics could not create an input event"
     }
   }
 }
@@ -102,6 +105,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let frameReader: any AccessibilityFrameReading
   private let mouseClickPoster: any MouseClickPosting
   private let keyboardInputPoster: any KeyboardInputPosting
+  private let scrollEventPoster: any ScrollEventPosting
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -113,7 +117,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
       activator: WorkspaceAppActivator(),
       frameReader: AccessibilityElementGeometry(),
       mouseClickPoster: CGMouseClickPoster(),
-      keyboardInputPoster: CGKeyboardInputPoster()
+      keyboardInputPoster: CGKeyboardInputPoster(),
+      scrollEventPoster: CGScrollEventPoster()
     )
   }
 
@@ -123,7 +128,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
     activator: any AppActivating,
     frameReader: any AccessibilityFrameReading,
     mouseClickPoster: any MouseClickPosting,
-    keyboardInputPoster: any KeyboardInputPosting = CGKeyboardInputPoster()
+    keyboardInputPoster: any KeyboardInputPosting = CGKeyboardInputPoster(),
+    scrollEventPoster: any ScrollEventPosting = CGScrollEventPoster()
   ) {
     self.resolver = resolver
     self.snapshotCache = snapshotCache
@@ -131,6 +137,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     self.frameReader = frameReader
     self.mouseClickPoster = mouseClickPoster
     self.keyboardInputPoster = keyboardInputPoster
+    self.scrollEventPoster = scrollEventPoster
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
@@ -158,6 +165,11 @@ public struct MacAppActionPerformer: AppActionPerforming {
       }
       try prepareForInput(app)
       try keyboardInputPoster.typeText(text)
+    case "scroll":
+      guard let scroll = action[actionName] as? [String: Any] else {
+        throw MacAppActionError.invalidAction("scroll payload must be an object")
+      }
+      try performScroll(scroll, app: app)
     default:
       throw MacAppActionError.unsupportedAction(actionName)
     }
@@ -171,7 +183,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
       )
     }
 
-    let target = try parseTarget(click["at"])
+    let target = try parseTarget(click["at"], actionName: "click")
     let count = try parseClickCount(click["clickCount"])
     let button = try parseMouseButton(click["mouseButton"])
     let element: (id: String, value: AXUIElement)?
@@ -197,6 +209,54 @@ public struct MacAppActionPerformer: AppActionPerforming {
     try mouseClickPoster.click(at: point, button: button, count: count)
   }
 
+  private func performScroll(_ scroll: [String: Any], app: ResolvedMacApp) throws {
+    guard Set(scroll.keys) == ["at", "direction", "pages"] else {
+      throw MacAppActionError.invalidAction(
+        "scroll payload must contain at, direction, and pages"
+      )
+    }
+    let target = try parseTarget(scroll["at"], actionName: "scroll")
+    guard let rawDirection = scroll["direction"] as? String,
+      let direction = ComputerUseScrollDirection(rawValue: rawDirection)
+    else {
+      throw MacAppActionError.invalidAction("scroll direction must be up, down, left, or right")
+    }
+    guard let number = scroll["pages"] as? NSNumber,
+      CFGetTypeID(number) != CFBooleanGetTypeID(),
+      number.doubleValue.isFinite,
+      number.doubleValue > 0,
+      number.doubleValue <= 10
+    else {
+      throw MacAppActionError.invalidAction("scroll pages must be greater than 0 and at most 10")
+    }
+
+    let element: AXUIElement?
+    switch target {
+    case .elementID(let elementID):
+      element = try snapshotCache.element(id: elementID, for: app)
+    case .coordinate:
+      try snapshotCache.validateSnapshot(for: app)
+      element = nil
+    }
+    try activator.activate(app)
+
+    let point: CGPoint
+    switch target {
+    case .elementID(let elementID):
+      guard let element, let frame = frameReader.frame(of: element) else {
+        throw MacAppActionError.missingElementFrame(elementID)
+      }
+      point = CGPoint(x: frame.midX, y: frame.midY)
+    case .coordinate(let coordinate):
+      point = coordinate
+    }
+    try scrollEventPoster.scroll(
+      at: point,
+      direction: direction,
+      pages: number.doubleValue
+    )
+  }
+
   private func prepareForInput(_ app: ResolvedMacApp) throws {
     try snapshotCache.validateSnapshot(for: app)
     try activator.activate(app)
@@ -211,9 +271,9 @@ public struct MacAppActionPerformer: AppActionPerforming {
     return string
   }
 
-  private func parseTarget(_ value: Any?) throws -> ComputerUseTarget {
+  private func parseTarget(_ value: Any?, actionName: String) throws -> ComputerUseTarget {
     guard let target = value as? [String: Any], target.count == 1 else {
-      throw MacAppActionError.invalidAction("click.at must contain one target")
+      throw MacAppActionError.invalidAction("\(actionName).at must contain one target")
     }
     if let element = target["elementID"] as? [String: Any], element.count == 1,
       let id = element["_0"] as? String,
@@ -232,7 +292,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
       }
       return .coordinate(point)
     }
-    throw MacAppActionError.invalidAction("click target is malformed")
+    throw MacAppActionError.invalidAction("\(actionName) target is malformed")
   }
 
   private func parseClickCount(_ value: Any?) throws -> Int {

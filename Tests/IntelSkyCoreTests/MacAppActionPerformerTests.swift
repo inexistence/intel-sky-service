@@ -254,6 +254,146 @@ import Testing
   #expect(keyboard.typedTexts.isEmpty)
 }
 
+@Test func elementScrollUsesLatestSnapshotFrameCenter() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(
+    CapturedAccessibilitySnapshot(
+      text: "test",
+      elementsByID: ["8": AXUIElementCreateApplication(app.processIdentifier)]
+    ),
+    for: app
+  )
+  let activator = RecordingActivator()
+  let scroll = RecordingScrollEventPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: activator,
+    frameReader: StubFrameReader(frame: CGRect(x: 20, y: 40, width: 100, height: 200)),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: RecordingKeyboardInputPoster(),
+    scrollEventPoster: scroll
+  )
+
+  _ = try performer.performAction(
+    request: scrollRequest(
+      at: ["elementID": ["_0": "8"]],
+      direction: "down",
+      pages: 1.5
+    )
+  )
+
+  #expect(activator.activatedApps == [app])
+  #expect(
+    scroll.scrolls == [
+      RecordedScroll(point: CGPoint(x: 70, y: 140), direction: .down, pages: 1.5)
+    ])
+}
+
+@Test func coordinateScrollRequiresCurrentSnapshot() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(testActionSnapshot(), for: app)
+  let scroll = RecordingScrollEventPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: RecordingActivator(),
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: RecordingKeyboardInputPoster(),
+    scrollEventPoster: scroll
+  )
+
+  _ = try performer.performAction(
+    request: scrollRequest(
+      at: ["coordinate": ["_0": [125.5, 240.25]]],
+      direction: "left",
+      pages: 2
+    )
+  )
+
+  #expect(
+    scroll.scrolls == [
+      RecordedScroll(point: CGPoint(x: 125.5, y: 240.25), direction: .left, pages: 2)
+    ])
+}
+
+@Test func invalidScrollIsRejectedBeforeActivation() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(testActionSnapshot(), for: app)
+  let activator = RecordingActivator()
+  let scroll = RecordingScrollEventPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: activator,
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: RecordingKeyboardInputPoster(),
+    scrollEventPoster: scroll
+  )
+
+  #expect(throws: MacAppActionError.self) {
+    try performer.performAction(
+      request: scrollRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        direction: "diagonal",
+        pages: 1
+      )
+    )
+  }
+  #expect(throws: MacAppActionError.self) {
+    try performer.performAction(
+      request: scrollRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        direction: "down",
+        pages: 11
+      )
+    )
+  }
+  #expect(throws: MacAppActionError.self) {
+    try performer.performAction(
+      request: scrollRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        direction: "down",
+        pages: true
+      )
+    )
+  }
+  #expect(activator.activatedApps.isEmpty)
+  #expect(scroll.scrolls.isEmpty)
+}
+
+@Test func coordinateScrollWithoutSnapshotIsRejectedBeforeActivation() throws {
+  let app = actionTestApp()
+  let activator = RecordingActivator()
+  let scroll = RecordingScrollEventPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: ElementSnapshotCache(),
+    activator: activator,
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: RecordingKeyboardInputPoster(),
+    scrollEventPoster: scroll
+  )
+
+  #expect(throws: ElementSnapshotCacheError.self) {
+    try performer.performAction(
+      request: scrollRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        direction: "down",
+        pages: 1
+      )
+    )
+  }
+  #expect(activator.activatedApps.isEmpty)
+  #expect(scroll.scrolls.isEmpty)
+}
+
 private struct StubActionResolver: MacAppResolving {
   let app: ResolvedMacApp
 
@@ -304,6 +444,24 @@ private final class RecordingKeyboardInputPoster: KeyboardInputPosting, @uncheck
   }
 }
 
+private struct RecordedScroll: Equatable {
+  let point: CGPoint
+  let direction: ComputerUseScrollDirection
+  let pages: Double
+}
+
+private final class RecordingScrollEventPoster: ScrollEventPosting, @unchecked Sendable {
+  private(set) var scrolls: [RecordedScroll] = []
+
+  func scroll(
+    at point: CGPoint,
+    direction: ComputerUseScrollDirection,
+    pages: Double
+  ) throws {
+    scrolls.append(RecordedScroll(point: point, direction: direction, pages: pages))
+  }
+}
+
 private func actionTestApp() -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: 42,
@@ -328,6 +486,13 @@ private func clickRequest(at: [String: Any], clickCount: Any, mouseButton: Any) 
 
 private func actionRequest(name: String, payload: [String: Any]) -> [String: Any] {
   ["app": "example.app", "action": [name: payload]]
+}
+
+private func scrollRequest(at: [String: Any], direction: Any, pages: Any) -> [String: Any] {
+  actionRequest(
+    name: "scroll",
+    payload: ["at": at, "direction": direction, "pages": pages]
+  )
 }
 
 private func testActionSnapshot() -> CapturedAccessibilitySnapshot {

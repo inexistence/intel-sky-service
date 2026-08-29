@@ -17,8 +17,9 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or absolute coordinate
 - snapshot-bound `pressKey` chords and bounded Unicode `typeText` input
+- snapshot-bound vertical and horizontal scrolling by element ID or coordinate
 
-Scrolling, persistence, installers, and launch agents are not implemented yet. Screenshot and Accessibility permissions are checked but never requested automatically.
+Persistence, installers, and launch agents are not implemented yet. Screenshot and Accessibility permissions are checked but never requested automatically.
 
 ## Build and test
 
@@ -49,7 +50,7 @@ During protocol development, the unmodified bundled `@oai/sky` client from ChatG
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 
-Click and keyboard actions require a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element clicks resolve only IDs from that latest snapshot. Coordinate clicks are also snapshot-bound, and no event is posted unless the target application becomes active. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request.
+Click, keyboard, and scroll actions require a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. Coordinate actions are also snapshot-bound, and no event is posted unless the target application becomes active. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll requests accept up to 10 pages and move the pointer to the target before posting bounded pixel-wheel events.
 
 ## Security boundary
 
