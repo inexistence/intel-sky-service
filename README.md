@@ -28,7 +28,13 @@ swift test
 swift build -c release
 ```
 
-The service requires an explicit socket path so development cannot silently replace the official endpoint:
+With no arguments, the service listens at the path used by the official client:
+
+```text
+~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock
+```
+
+Use an explicit socket path for isolated development:
 
 ```sh
 .build/debug/intel-sky-service --socket /tmp/intel-sky-service/computeruse.sock
@@ -42,11 +48,31 @@ In another terminal, the smoke client verifies framing and `ping`:
 
 The smoke client is unsigned, so the service returns `ping` and then rejects its `listApps` request during peer validation. That is expected.
 
+## App bundle and launch agent
+
+Build an x86_64 background App bundle:
+
+```sh
+Scripts/build-app.sh
+```
+
+The script prefers `Apple Development: 510229374@qq.com (YP98F3PUMT)` and falls back to ad-hoc signing only when that identity is unavailable. A certificate without its matching private key is not a valid signing identity. Set `CODESIGN_IDENTITY` to select another installed identity.
+
+After reviewing the generated App at `dist/Intel Sky Service.app`, install it for the current GUI user:
+
+```sh
+Scripts/install-launch-agent.sh
+```
+
+The installer copies the App to `~/Applications` and creates the per-user LaunchAgent `dev.huangjianbin.intel-sky-service`. The service uses its own bundle identity; it does not impersonate OpenAI's `com.openai.sky.CUAService` or request OpenAI's application-group entitlement.
+
 During protocol development, the unmodified bundled `@oai/sky` client from ChatGPT `26.825.41651` successfully completed the IPC-5 handshake, returned the local app list, and captured Finder state on x86_64. The production peer policy additionally requires the real `node_repl → codex → com.openai.codex` process chain; launching ChatGPT's signed Node binary from a shell is intentionally rejected.
 
 ## Permissions
 
 `getAppState` requires Accessibility permission. A screenshot is included only when Screen Recording permission is already available. The service deliberately avoids calling the APIs that trigger permission prompts; grant access manually to the final signed app or executable used to run the service.
+
+For the LaunchAgent installation, add `~/Applications/Intel Sky Service.app` in System Settings → Privacy & Security → Accessibility and Screen & System Audio Recording. Restart the agent after changing permissions, then open a new Codex task so Computer Use is discovered against the running socket. Rebuilding an ad-hoc-signed App changes its code identity and may require granting permissions again; a stable Apple Development signature avoids that churn.
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 

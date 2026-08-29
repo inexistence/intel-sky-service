@@ -2,16 +2,18 @@ import Foundation
 import IntelSkyCore
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-guard arguments.count == 2, arguments[0] == "--socket" else {
-  fputs("usage: intel-sky-service --socket /absolute/path/computeruse.sock\n", stderr)
+if arguments == ["--help"] || arguments == ["-h"] {
+  print("usage: intel-sky-service [--socket /absolute/path/computeruse.sock]")
+  exit(0)
+}
+let configuration: SkyServiceConfiguration
+do {
+  configuration = try SkyServiceConfiguration(arguments: arguments)
+} catch {
+  fputs("\(error)\n", stderr)
   exit(64)
 }
-
-let socketPath = NSString(string: arguments[1]).expandingTildeInPath
-guard socketPath.hasPrefix("/") else {
-  fputs("socket path must be absolute\n", stderr)
-  exit(64)
-}
+let socketPath = configuration.socketPath
 
 let resolver = MacAppResolver()
 let snapshotCache = ElementSnapshotCache()
