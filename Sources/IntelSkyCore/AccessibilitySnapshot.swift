@@ -24,7 +24,7 @@ public struct AccessibilitySnapshotter: Sendable {
     self.maximumElements = max(1, maximumElements)
   }
 
-  public func snapshot(app: ResolvedMacApp) throws -> String {
+  func capture(app: ResolvedMacApp) throws -> CapturedAccessibilitySnapshot {
     guard AXIsProcessTrusted() else {
       throw AccessibilitySnapshotError.permissionRequired
     }
@@ -45,7 +45,10 @@ public struct AccessibilitySnapshotter: Sendable {
     if state.wasTruncated {
       lines.append("… snapshot truncated at \(maximumElements) elements")
     }
-    return lines.joined(separator: "\n")
+    return CapturedAccessibilitySnapshot(
+      text: lines.joined(separator: "\n"),
+      elementsByID: state.elementsByID
+    )
   }
 
   private func append(
@@ -60,6 +63,7 @@ public struct AccessibilitySnapshotter: Sendable {
     }
     let index = state.count
     state.count += 1
+    state.elementsByID[String(index)] = element
 
     var fields = [
       "[\(index)]", stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown",
@@ -178,4 +182,10 @@ public struct AccessibilitySnapshotter: Sendable {
 private struct TraversalState {
   var count = 0
   var wasTruncated = false
+  var elementsByID: [String: AXUIElement] = [:]
+}
+
+struct CapturedAccessibilitySnapshot {
+  let text: String
+  let elementsByID: [String: AXUIElement]
 }

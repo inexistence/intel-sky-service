@@ -4,21 +4,25 @@ public struct MacAppStateProvider: AppStateProviding {
   private let resolver: MacAppResolver
   private let accessibility: AccessibilitySnapshotter
   private let screenshots: WindowScreenshotter
+  private let snapshotCache: ElementSnapshotCache
 
   public init(
     resolver: MacAppResolver = .init(),
     accessibility: AccessibilitySnapshotter = .init(),
-    screenshots: WindowScreenshotter = .init()
+    screenshots: WindowScreenshotter = .init(),
+    snapshotCache: ElementSnapshotCache = .init()
   ) {
     self.resolver = resolver
     self.accessibility = accessibility
     self.screenshots = screenshots
+    self.snapshotCache = snapshotCache
   }
 
   public func getAppState(request: [String: Any]) throws -> [String: Any] {
     let app = try resolver.resolve(request["app"])
-    let text = try accessibility.snapshot(app: app)
-    var skyshot: [String: Any] = ["text": text]
+    let snapshot = try accessibility.capture(app: app)
+    snapshotCache.store(snapshot, for: app)
+    var skyshot: [String: Any] = ["text": snapshot.text]
 
     if let windowID = try? resolver.frontWindowID(for: app),
       let screenshotURL = try? screenshots.capture(windowID: windowID)

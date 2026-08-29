@@ -13,6 +13,7 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - peer validation after `ping`: same macOS user and the signed OpenAI chain `node_repl → codex → com.openai.codex`
 - read-only `ComputerUseIPCListAppsRequest` backed by `NSWorkspace`
 - read-only `ComputerUseIPCAppGetSkyshotRequest` with a bounded Accessibility tree and focused-window PNG
+- latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL and 16-app limit
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
 
 Desktop actions, persistence, installers, and launch agents remain out of scope. Screenshot and Accessibility permissions are checked but never requested automatically.
