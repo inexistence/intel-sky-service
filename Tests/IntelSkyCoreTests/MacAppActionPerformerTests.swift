@@ -4,6 +4,28 @@ import Testing
 
 @testable import IntelSkyCore
 
+@Test func userInterventionRejectsNextActionBeforeTargetMutation() {
+  let mouse = RecordingMouseClickPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: actionTestApp()),
+    snapshotCache: ElementSnapshotCache(),
+    activator: RecordingActivator(),
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: mouse,
+    interventionArbitrator: RejectingInterventionArbitrator()
+  )
+
+  #expect(throws: SkySafetyError.self) {
+    try performer.performAction(
+      request: clickRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        clickCount: 1,
+        mouseButton: 0
+      ))
+  }
+  #expect(mouse.clicks.isEmpty)
+}
+
 @Test func elementClickUsesLatestSnapshotFrameCenter() throws {
   let app = actionTestApp()
   let cache = ElementSnapshotCache()
@@ -663,6 +685,14 @@ private struct StubActionResolver: MacAppResolving {
 
   func frontWindow(for app: ResolvedMacApp) throws -> ResolvedMacWindow {
     throw MacAppResolutionError.noWindow(app.displayName)
+  }
+}
+
+private struct RejectingInterventionArbitrator: ComputerUseInterventionArbitrating {
+  func stateRefreshCheckpoint(for app: ResolvedMacApp) -> UInt64? { nil }
+  func recordFreshState(for app: ResolvedMacApp, checkpoint: UInt64?) {}
+  func requireFreshState(for app: ResolvedMacApp) throws {
+    throw SkySafetyError.userIntervened
   }
 }
 

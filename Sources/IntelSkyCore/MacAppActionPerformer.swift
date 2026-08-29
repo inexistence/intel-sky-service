@@ -163,6 +163,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let screenLockChecker: any ScreenLockChecking
   private let secureInputChecker: any SecureInputChecking
   private let userInterventionMonitor: any UserInterventionMonitoring
+  private let interventionArbitrator: any ComputerUseInterventionArbitrating
   private let visualizer: any ComputerUseVisualizing
 
   public init(
@@ -187,6 +188,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
       screenLockChecker: CGSessionScreenLockChecker(),
       secureInputChecker: CarbonSecureInputChecker(),
       userInterventionMonitor: PhysicalInputMonitor.shared,
+      interventionArbitrator: ComputerUseInterventionCoordinator.shared,
       visualizer: ComputerUseVisualCoordinator.shared
     )
   }
@@ -209,6 +211,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
     screenLockChecker: any ScreenLockChecking = NoopScreenLockChecker(),
     secureInputChecker: any SecureInputChecking = NoopSecureInputChecker(),
     userInterventionMonitor: any UserInterventionMonitoring = NoopUserInterventionMonitor(),
+    interventionArbitrator: any ComputerUseInterventionArbitrating =
+      NoopComputerUseInterventionArbitrator(),
     visualizer: any ComputerUseVisualizing = NoopComputerUseVisualizer()
   ) {
     self.resolver = resolver
@@ -227,15 +231,20 @@ public struct MacAppActionPerformer: AppActionPerforming {
     self.screenLockChecker = screenLockChecker
     self.secureInputChecker = secureInputChecker
     self.userInterventionMonitor = userInterventionMonitor
+    self.interventionArbitrator = interventionArbitrator
     self.visualizer = visualizer
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
-    let interventionScope = UserInterventionContext.begin(monitor: userInterventionMonitor)
-    defer { interventionScope.end() }
     try screenLockChecker.requireUnlocked()
     try RequestDeadlineContext.check()
     let app = try resolver.resolve(request["app"])
+    try interventionArbitrator.requireFreshState(for: app)
+    let interventionScope = UserInterventionContext.begin(
+      monitor: userInterventionMonitor,
+      processIdentifier: app.processIdentifier
+    )
+    defer { interventionScope.end() }
     guard let action = request["action"] as? [String: Any], action.count == 1,
       let actionName = action.keys.first
     else {

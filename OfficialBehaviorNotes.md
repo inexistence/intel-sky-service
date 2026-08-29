@@ -305,18 +305,26 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   secure-input checks, blocked URL state, user-stop/intervention errors, idle timeout, and hardened
   socket ownership checks. `CONFIRMED_STATIC_BINARY`.
 - Intel validates its peer chain and socket ownership, but currently reports every resolvable app as
-  allowed and still lacks exact official policy/error mapping and turn-scoped focus restoration.
-  `KNOWN_DIFFERENCE`.
+  allowed and still lacks exact official policy/error mapping. `KNOWN_DIFFERENCE`.
 - Intel now fails `get_app_state` and actions with `screenLocked` (`-10020`) when the GUI session is
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
-  enabled. The secure-input error mapping remains `LOW_CONFIDENCE`; physical interruption and
-  per-turn cancellation remain `KNOWN_DIFFERENCE`.
-- Intel preflights Input Monitoring without requesting it. When already granted, a listen-only
-  event tap ignores events emitted by the service itself and cancels in-flight keyboard, mouse,
-  drag, scroll, AX, and paste work with `userIntervened` (`-10016`) after physical input. When not
-  granted, monitoring remains disabled without a permission prompt and `service-status.json`
-  reports the degraded capability. Cross-request/whole-turn interruption remains
+  enabled. The secure-input error mapping remains `LOW_CONFIDENCE`.
+- ARM metadata for `ComputerUseAppInstanceManager` includes `userInteractionMonitor`,
+  `userInterruptedControlledApp`, `interventionReasonByTargetIdentifier`, per-target debounce tasks,
+  and a `requiresRequery` state. This shows that interruption is associated with a controlled target
+  and can invalidate the model's prior state across requests rather than merely cancelling one event
+  loop. `CONFIRMED_STATIC_BINARY`; exact debounce duration and clearing transitions remain
   `NEEDS_ARM_ORACLE`.
+- Intel preflights Input Monitoring without requesting it. When already granted, a listen-only
+  event tap ignores events emitted by the service itself, attributes known events by target PID,
+  and conservatively treats unresolved targets as affecting every controlled app. It cancels
+  in-flight keyboard, mouse, drag, scroll, AX, and paste work with `userIntervened` (`-10016`). A
+  successful `get_app_state` records a per-app/PID checkpoint at capture start; physical input after
+  that point, including during capture, latches subsequent actions to `userIntervened` until another
+  clean state query. Other known target processes are unaffected. When Input Monitoring is not
+  granted, monitoring remains disabled without a permission prompt and `service-status.json`
+  reports the degraded capability. `HIGH_CONFIDENCE`; exact official target resolution, debounce,
+  and whether some intervention reasons persist for the entire turn remain `NEEDS_ARM_ORACLE`.
 
 ## Oracle backlog
 

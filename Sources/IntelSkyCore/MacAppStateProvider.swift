@@ -8,6 +8,7 @@ public struct MacAppStateProvider: AppStateProviding {
   private let interactionTracker: AppInteractionTracker
   private let treeDiffer: AccessibilityTreeDiffer
   private let screenLockChecker: any ScreenLockChecking
+  private let interventionArbitrator: any ComputerUseInterventionArbitrating
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -18,6 +19,28 @@ public struct MacAppStateProvider: AppStateProviding {
     treeDiffer: AccessibilityTreeDiffer = .init(),
     screenLockChecker: any ScreenLockChecking = CGSessionScreenLockChecker()
   ) {
+    self.init(
+      resolver: resolver,
+      accessibility: accessibility,
+      screenshots: screenshots,
+      snapshotCache: snapshotCache,
+      interactionTracker: interactionTracker,
+      treeDiffer: treeDiffer,
+      screenLockChecker: screenLockChecker,
+      interventionArbitrator: ComputerUseInterventionCoordinator.shared
+    )
+  }
+
+  init(
+    resolver: any MacAppResolving,
+    accessibility: AccessibilitySnapshotter = .init(),
+    screenshots: WindowScreenshotter = .init(),
+    snapshotCache: ElementSnapshotCache = .init(),
+    interactionTracker: AppInteractionTracker = .init(),
+    treeDiffer: AccessibilityTreeDiffer = .init(),
+    screenLockChecker: any ScreenLockChecking = CGSessionScreenLockChecker(),
+    interventionArbitrator: any ComputerUseInterventionArbitrating
+  ) {
     self.resolver = resolver
     self.accessibility = accessibility
     self.screenshots = screenshots
@@ -25,11 +48,13 @@ public struct MacAppStateProvider: AppStateProviding {
     self.interactionTracker = interactionTracker
     self.treeDiffer = treeDiffer
     self.screenLockChecker = screenLockChecker
+    self.interventionArbitrator = interventionArbitrator
   }
 
   public func getAppState(request: [String: Any]) throws -> [String: Any] {
     try screenLockChecker.requireUnlocked()
     let app = try resolver.resolveOrLaunch(request["app"])
+    let interventionCheckpoint = interventionArbitrator.stateRefreshCheckpoint(for: app)
     try RunLoopWaiter.wait(for: interactionTracker.remainingBaseSettleTime(for: app))
     let initialSnapshot = try captureWhenWindowIsReady(app: app)
     let snapshot = try captureUntilLoadingSettles(initialSnapshot, app: app)
@@ -52,6 +77,7 @@ public struct MacAppStateProvider: AppStateProviding {
       )
     }
     snapshotCache.store(snapshot, for: app, coordinateSpace: coordinateSpace)
+    interventionArbitrator.recordFreshState(for: app, checkpoint: interventionCheckpoint)
 
     return [
       "app": [
