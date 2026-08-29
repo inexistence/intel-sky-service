@@ -233,14 +233,20 @@ protocol metadata has five methods rather than four, and its strings include the
 target the installed Intel `sky.node` contract and treat ARM behavior as an oracle, rather than
 copying the ARM protocol surface verbatim. `CONFIRMED_STATIC_BINARY`.
 
+ARM imports ScreenCaptureKit and AVFoundation, and its `RemoteHostedPIPWindowRenderer` metadata
+contains `SCStream`, `SCContentFilter`, `SCShareableContent`, `AVSampleBufferDisplayLayer`, separate
+window/cursor display layers, and separate capture-stream fields. `CONFIRMED_STATIC_BINARY`.
+
 Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
 producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
-`focus-presentation`, cursor forwarding, and turn-scoped end/invalidation. The presentation surface
-is refreshed from each successful `get_app_state` screenshot. This should provide the native Codex
-container and host-rendered cursor without moving the user's physical pointer, but it is not yet the
-official continuously updating ScreenCaptureKit window/cursor stream. Dynamic managed-host
-verification remains pending, so the feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1` and is a
-`KNOWN_DIFFERENCE` until that run succeeds.
+`focus-presentation`, cursor forwarding, and turn-scoped end/invalidation. Each presentation starts
+a desktop-independent ScreenCaptureKit stream for the target's front normal window and feeds BGRA
+frames at up to 30 fps into an `AVSampleBufferDisplayLayer`; the latest `get_app_state` image remains
+visible until the first frame and returns if capture stops. Capture excludes the physical cursor
+because cursor state is sent separately to the native host. Unit tests replace capture with a fake,
+so routine tests cannot request Screen Recording or per-target Computer Use approval.
+`HIGH_CONFIDENCE`. Dynamic managed-host verification and exact stream resizing/window-replacement
+behavior remain pending, so the feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

@@ -10,9 +10,14 @@ import UniformTypeIdentifiers
   let imageURL = try makePIPTestImage()
   defer { try? FileManager.default.removeItem(at: imageURL) }
   let host = RecordingPIPHostCaller()
-  let coordinator = RemoteHostedPIPPresentationCoordinator(host: host)
+  let capture = RecordingPIPWindowCapture()
+  var coordinator: RemoteHostedPIPPresentationCoordinator? =
+    RemoteHostedPIPPresentationCoordinator(
+      host: host,
+      captureFactory: { _, _, _ in capture }
+    )
 
-  coordinator.observe(
+  coordinator?.observe(
     requestType: "ComputerUseIPCAppGetSkyshotRequest",
     request: ["app": "com.apple.finder"],
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
@@ -27,14 +32,31 @@ import UniformTypeIdentifiers
 
   let presentationID = try #require(host.presentationID)
   #expect(host.events.prefix(2) == ["publish:\(presentationID):thread:turn:2x2", "source:123"])
+  #expect(capture.started)
 
-  coordinator.observe(
+  coordinator?.observe(
     requestType: "ComputerUseIPCCodexTurnEndedRequest",
     request: ["threadID": "thread", "turnID": "turn"],
     codexTurnMetadata: nil,
     result: [:]
   )
   #expect(host.events.contains("will-end:\(presentationID)"))
+
+  coordinator = nil
+  #expect(capture.stopped)
+}
+
+private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
+  @unchecked Sendable
+{
+  private let lock = NSLock()
+  private var didStart = false
+  private var didStop = false
+  var started: Bool { lock.withLock { didStart } }
+  var stopped: Bool { lock.withLock { didStop } }
+
+  func start() { lock.withLock { didStart = true } }
+  func stop() { lock.withLock { didStop = true } }
 }
 
 private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @unchecked Sendable {
@@ -53,7 +75,8 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
   ) throws {
     lock.withLock {
       storedPresentationID = id
-      storedEvents.append("publish:\(id):\(threadID):\(turnID):\(Int(size.width))x\(Int(size.height))")
+      storedEvents.append(
+        "publish:\(id):\(threadID):\(turnID):\(Int(size.width))x\(Int(size.height))")
     }
   }
 

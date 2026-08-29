@@ -23,22 +23,39 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     let id: String
     let processIdentifier: pid_t
     let surface: RemoteHostedPIPSurface
+    let capture: any RemoteHostedPIPWindowCapturing
     var ending: Bool
   }
 
   private let lock = NSLock()
   private let host: any RemoteHostedPIPHostCalling
   private let surfaceFactory: @Sendable (URL) throws -> RemoteHostedPIPSurface
+  private let captureFactory:
+    @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) -> any RemoteHostedPIPWindowCapturing
   private var presentations: [Key: Presentation] = [:]
 
   init(
     host: any RemoteHostedPIPHostCalling,
     surfaceFactory: @escaping @Sendable (URL) throws -> RemoteHostedPIPSurface = {
       try RemoteHostedPIPSurface(imageURL: $0)
-    }
+    },
+    captureFactory: @escaping @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) ->
+      any RemoteHostedPIPWindowCapturing = {
+        RemoteHostedPIPWindowCapture(processIdentifier: $0, outputSize: $1, surface: $2)
+      }
   ) {
     self.host = host
     self.surfaceFactory = surfaceFactory
+    self.captureFactory = captureFactory
+  }
+
+  deinit {
+    let captures = lock.withLock {
+      let captures = presentations.values.map(\.capture)
+      presentations.removeAll()
+      return captures
+    }
+    for capture in captures { capture.stop() }
   }
 
   func installProducerCallbacks(on connection: RemoteHostedPIPConnectionController) {
@@ -117,14 +134,17 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         try? host.invalidatePresentation(id: presentationID)
         throw error
       }
+      let capture = captureFactory(processIdentifier, surface.size, surface)
       lock.withLock {
         presentations[key] = Presentation(
           id: presentationID,
           processIdentifier: processIdentifier,
           surface: surface,
+          capture: capture,
           ending: false
         )
       }
+      capture.start()
     } catch {
       // Presentation is an optional UX layer; public Computer Use must continue if it is absent.
     }
@@ -140,9 +160,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         )
       )
     }
-    guard let presentation = lock.withLock({
-      presentations.values.first { $0.id == presentationID && !$0.ending }
-    }), let app = NSRunningApplication(processIdentifier: presentation.processIdentifier)
+    guard
+      let presentation = lock.withLock({
+        presentations.values.first { $0.id == presentationID && !$0.ending }
+      }), let app = NSRunningApplication(processIdentifier: presentation.processIdentifier)
     else {
       throw RemoteHostedPIPHostCallError.unavailable
     }
@@ -183,14 +204,14 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   }
 
   private func invalidate(presentationID: String) {
-    let removed = lock.withLock { () -> Bool in
+    let removed = lock.withLock { () -> Presentation? in
       guard let key = presentations.first(where: { $0.value.id == presentationID })?.key else {
-        return false
+        return nil
       }
-      presentations.removeValue(forKey: key)
-      return true
+      return presentations.removeValue(forKey: key)
     }
-    if removed { try? host.invalidatePresentation(id: presentationID) }
+    removed?.capture.stop()
+    if removed != nil { try? host.invalidatePresentation(id: presentationID) }
   }
 
   private static func nonempty(_ value: Any?) -> String? {

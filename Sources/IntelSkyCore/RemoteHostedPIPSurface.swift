@@ -1,3 +1,5 @@
+import AVFoundation
+import CoreMedia
 import ImageIO
 import ObjectiveC.runtime
 import QuartzCore
@@ -22,6 +24,8 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private let lock = NSLock()
   private let context: NSObject
   private let rootLayer: CALayer
+  private let fallbackLayer: CALayer
+  private let displayLayer: AVSampleBufferDisplayLayer
   let contextID: UInt32
   private(set) var size: CGSize
 
@@ -47,8 +51,19 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     let layer = CALayer()
     layer.anchorPoint = .zero
     layer.frame = CGRect(origin: .zero, size: size)
-    layer.contentsGravity = .resizeAspect
     layer.backgroundColor = CGColor(gray: 0.08, alpha: 1)
+
+    let fallbackLayer = CALayer()
+    fallbackLayer.anchorPoint = .zero
+    fallbackLayer.frame = layer.bounds
+    fallbackLayer.contentsGravity = .resizeAspect
+    layer.addSublayer(fallbackLayer)
+
+    let displayLayer = AVSampleBufferDisplayLayer()
+    displayLayer.anchorPoint = .zero
+    displayLayer.frame = layer.bounds
+    displayLayer.videoGravity = .resizeAspect
+    layer.addSublayer(displayLayer)
 
     let spi = unsafeBitCast(context, to: (any RemoteHostedPIPCAContextSPI).self)
     spi.setLayer(layer)
@@ -59,6 +74,8 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
 
     self.context = context
     rootLayer = layer
+    self.fallbackLayer = fallbackLayer
+    self.displayLayer = displayLayer
     self.contextID = contextID
     self.size = size
   }
@@ -81,10 +98,38 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       if size != newSize {
         size = newSize
         rootLayer.frame = CGRect(origin: .zero, size: newSize)
+        fallbackLayer.frame = rootLayer.bounds
+        displayLayer.frame = rootLayer.bounds
       }
-      rootLayer.contents = image
+      fallbackLayer.contents = image
+      fallbackLayer.isHidden = false
       CATransaction.commit()
       CATransaction.flush()
+    }
+  }
+
+  func enqueue(_ sampleBuffer: CMSampleBuffer) {
+    guard CMSampleBufferDataIsReady(sampleBuffer), CMSampleBufferGetImageBuffer(sampleBuffer) != nil
+    else { return }
+    lock.withLock {
+      if displayLayer.status == .failed {
+        displayLayer.flushAndRemoveImage()
+      }
+      displayLayer.enqueue(sampleBuffer)
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      fallbackLayer.isHidden = true
+      CATransaction.commit()
+    }
+  }
+
+  func resetToFallbackImage() {
+    lock.withLock {
+      displayLayer.flushAndRemoveImage()
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      fallbackLayer.isHidden = false
+      CATransaction.commit()
     }
   }
 
