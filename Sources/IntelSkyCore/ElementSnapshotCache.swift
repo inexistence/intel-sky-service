@@ -71,6 +71,20 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
 
+    let entry = try validEntry(for: app, at: date)
+    guard let element = entry.elementsByID[id] else {
+      throw ElementSnapshotCacheError.unknownElement(id, app: app.bundleIdentifier)
+    }
+    return element
+  }
+
+  func validateSnapshot(for app: ResolvedMacApp, at date: Date = Date()) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    _ = try validEntry(for: app, at: date)
+  }
+
+  private func validEntry(for app: ResolvedMacApp, at date: Date) throws -> Entry {
     let key = Key(
       bundleIdentifier: app.bundleIdentifier,
       processIdentifier: app.processIdentifier
@@ -82,9 +96,6 @@ public final class ElementSnapshotCache: @unchecked Sendable {
       entries.removeValue(forKey: key)
       throw ElementSnapshotCacheError.expiredSnapshot(app.bundleIdentifier)
     }
-    guard let element = entry.elementsByID[id] else {
-      throw ElementSnapshotCacheError.unknownElement(id, app: app.bundleIdentifier)
-    }
-    return element
+    return entry
   }
 }

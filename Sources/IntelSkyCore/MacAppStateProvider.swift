@@ -1,13 +1,13 @@
 import Foundation
 
 public struct MacAppStateProvider: AppStateProviding {
-  private let resolver: MacAppResolver
+  private let resolver: any MacAppResolving
   private let accessibility: AccessibilitySnapshotter
   private let screenshots: WindowScreenshotter
   private let snapshotCache: ElementSnapshotCache
 
   public init(
-    resolver: MacAppResolver = .init(),
+    resolver: any MacAppResolving = MacAppResolver(),
     accessibility: AccessibilitySnapshotter = .init(),
     screenshots: WindowScreenshotter = .init(),
     snapshotCache: ElementSnapshotCache = .init()

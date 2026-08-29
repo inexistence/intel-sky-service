@@ -13,11 +13,20 @@ guard socketPath.hasPrefix("/") else {
   exit(64)
 }
 
+let resolver = MacAppResolver()
+let snapshotCache = ElementSnapshotCache()
 let server = SkyUnixServer(
   socketPath: socketPath,
   router: SkyRequestRouter(
     appCatalog: WorkspaceAppCatalog(),
-    appStateProvider: MacAppStateProvider()
+    appStateProvider: MacAppStateProvider(
+      resolver: resolver,
+      snapshotCache: snapshotCache
+    ),
+    appActionPerformer: MacAppActionPerformer(
+      resolver: resolver,
+      snapshotCache: snapshotCache
+    )
   )
 )
 

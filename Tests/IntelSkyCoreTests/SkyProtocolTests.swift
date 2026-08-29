@@ -33,6 +33,12 @@ private struct StubAppStateProvider: AppStateProviding {
   }
 }
 
+private struct StubActionPerformer: AppActionPerforming {
+  func performAction(request: [String: Any]) throws -> [String: Any] {
+    [:]
+  }
+}
+
 private func decode(_ data: Data) throws -> [String: Any] {
   try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
@@ -155,4 +161,35 @@ private func decode(_ data: Data) throws -> [String: Any] {
   let result = try #require(response["result"] as? [String: Any])
 
   #expect(result["decision"] as? String == "allowed")
+}
+
+@Test func performActionUsesObservedRequestType() throws {
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "requestType": "ComputerUseIPCAppPerformActionRequest",
+      "request": [
+        "app": "com.apple.finder",
+        "action": [
+          "click": [
+            "at": ["coordinate": ["_0": [100, 200]]],
+            "clickCount": 1,
+            "mouseButton": 0,
+          ]
+        ],
+      ],
+    ],
+  ])
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appActionPerformer: StubActionPerformer()
+  )
+
+  let response = try decode(router.handle(request))
+  let result = try #require(response["result"] as? [String: Any])
+
+  #expect(result.isEmpty)
 }

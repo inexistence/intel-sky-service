@@ -15,8 +15,9 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - read-only `ComputerUseIPCAppGetSkyshotRequest` with a bounded Accessibility tree and focused-window PNG
 - latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL and 16-app limit
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
+- snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or absolute coordinate
 
-Desktop actions, persistence, installers, and launch agents remain out of scope. Screenshot and Accessibility permissions are checked but never requested automatically.
+Keyboard input, scrolling, persistence, installers, and launch agents are not implemented yet. Screenshot and Accessibility permissions are checked but never requested automatically.
 
 ## Build and test
 
@@ -46,6 +47,8 @@ During protocol development, the unmodified bundled `@oai/sky` client from ChatG
 `getAppState` requires Accessibility permission. A screenshot is included only when Screen Recording permission is already available. The service deliberately avoids calling the APIs that trigger permission prompts; grant access manually to the final signed app or executable used to run the service.
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
+
+Click actions require a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element clicks resolve only IDs from that latest snapshot. Coordinate clicks are also snapshot-bound, and no event is posted unless the target application becomes active.
 
 ## Security boundary
 

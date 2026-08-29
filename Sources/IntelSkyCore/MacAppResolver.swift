@@ -39,7 +39,12 @@ public enum MacAppResolutionError: Error, CustomStringConvertible {
   }
 }
 
-public struct MacAppResolver: Sendable {
+public protocol MacAppResolving: Sendable {
+  func resolve(_ value: Any?) throws -> ResolvedMacApp
+  func frontWindowID(for app: ResolvedMacApp) throws -> CGWindowID
+}
+
+public struct MacAppResolver: MacAppResolving {
   public init() {}
 
   public func resolve(_ value: Any?) throws -> ResolvedMacApp {

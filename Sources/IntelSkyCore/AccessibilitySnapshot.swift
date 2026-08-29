@@ -18,6 +18,7 @@ public enum AccessibilitySnapshotError: Error, CustomStringConvertible {
 public struct AccessibilitySnapshotter: Sendable {
   public let maximumDepth: Int
   public let maximumElements: Int
+  private let geometry = AccessibilityElementGeometry()
 
   public init(maximumDepth: Int = 12, maximumElements: Int = 1_500) {
     self.maximumDepth = max(0, maximumDepth)
@@ -155,27 +156,8 @@ public struct AccessibilitySnapshotter: Sendable {
   }
 
   private func frameDescription(_ element: AXUIElement) -> String? {
-    guard let positionValue = copyAttribute(element, kAXPositionAttribute as CFString),
-      let sizeValue = copyAttribute(element, kAXSizeAttribute as CFString),
-      CFGetTypeID(positionValue) == AXValueGetTypeID(),
-      CFGetTypeID(sizeValue) == AXValueGetTypeID()
-    else {
-      return nil
-    }
-    let positionAX = unsafeDowncast(positionValue, to: AXValue.self)
-    let sizeAX = unsafeDowncast(sizeValue, to: AXValue.self)
-    var position = CGPoint.zero
-    var size = CGSize.zero
-    guard AXValueGetValue(positionAX, .cgPoint, &position),
-      AXValueGetValue(sizeAX, .cgSize, &size),
-      position.x.isFinite,
-      position.y.isFinite,
-      size.width.isFinite,
-      size.height.isFinite
-    else {
-      return nil
-    }
-    return "(\(Int(position.x)),\(Int(position.y)),\(Int(size.width)),\(Int(size.height)))"
+    guard let frame = geometry.frame(of: element) else { return nil }
+    return "(\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height)))"
   }
 }
 

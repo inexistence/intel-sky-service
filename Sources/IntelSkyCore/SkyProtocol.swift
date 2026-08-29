@@ -33,13 +33,23 @@ public protocol AppStateProviding: Sendable {
   func getAppPolicy(request: [String: Any]) throws -> [String: Any]
 }
 
+public protocol AppActionPerforming: Sendable {
+  func performAction(request: [String: Any]) throws -> [String: Any]
+}
+
 public struct SkyRequestRouter: Sendable {
   private let appCatalog: any AppCatalog
   private let appStateProvider: (any AppStateProviding)?
+  private let appActionPerformer: (any AppActionPerforming)?
 
-  public init(appCatalog: any AppCatalog, appStateProvider: (any AppStateProviding)? = nil) {
+  public init(
+    appCatalog: any AppCatalog,
+    appStateProvider: (any AppStateProviding)? = nil,
+    appActionPerformer: (any AppActionPerforming)? = nil
+  ) {
     self.appCatalog = appCatalog
     self.appStateProvider = appStateProvider
+    self.appActionPerformer = appActionPerformer
   }
 
   public func handle(_ payload: Data) -> Data {
@@ -116,6 +126,11 @@ public struct SkyRequestRouter: Sendable {
           throw SkyRPCError.unsupportedRequestType(requestType)
         }
         return try appStateProvider.getAppPolicy(request: request)
+      case "ComputerUseIPCAppPerformActionRequest":
+        guard let appActionPerformer else {
+          throw SkyRPCError.unsupportedRequestType(requestType)
+        }
+        return try appActionPerformer.performAction(request: request)
       default:
         throw SkyRPCError.unsupportedRequestType(requestType)
       }
