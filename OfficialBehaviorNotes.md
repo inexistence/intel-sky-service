@@ -31,7 +31,7 @@ replace when stronger evidence appears.
 | `list_apps` | `ComputerUseIPCListAppsRequest` | `CONFIRMED_CLIENT_SOURCE` | implemented | exact ARM filtering/dedup oracle |
 | `get_app_state` | `ComputerUseIPCAppGetSkyshotRequest` | `CONFIRMED_CLIENT_SOURCE` | partial | loading settle and exact AX rendering |
 | `click` | `click` | `CONFIRMED_CLIENT_SOURCE` | partial | AX/CG fallback and menu semantics |
-| `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` | partial | calibrate timing/path and virtual cursor |
+| `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` | partial | calibrate timing/path and official cursor animation |
 | `paste` | `paste` | `CONFIRMED_CLIENT_SOURCE` | partial | ARM format/error oracle and clipboard edge cases |
 | `perform_secondary_action` | `performSecondaryAction` | `CONFIRMED_CLIENT_SOURCE` | partial | exact action validation and errors |
 | `press_key` | `pressKey` | `CONFIRMED_CLIENT_SOURCE` | partial | full keysym/layout/secure-input behavior |
@@ -118,8 +118,18 @@ This proves that focus arbitration, physical-input monitoring, software cursor f
 interruption are deliberate runtime subsystems rather than presentation-only details.
 `CONFIRMED_STATIC_BINARY`.
 
-Intel currently activates the target and posts HID events without restoring focus, monitoring
-physical input, or rendering a software cursor. `KNOWN_DIFFERENCE`.
+Intel now renders an independently drawn, non-activating software cursor for click, drag, and
+scroll operations. It is an input-transparent status-level panel that joins all Spaces, does not
+move the physical pointer, animates between positions, shows pressed feedback, and hides after an
+idle interval. A real Calculator click changed the target value while AppKit recorded the same
+overlay window being ordered in and out five seconds later. The earlier cross-process
+`CGWindowList` probe was a false negative because that diagnostic process lacked Screen Recording
+access. `CONFIRMED_INTEL_RUNTIME`.
+
+The official cursor's exact artwork, path/spring constants, PIP/container integration, visibility
+state machine, menu handling, and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel still lacks
+the official-equivalent focus-arbitration and focus-restore state machine, so that portion remains
+`KNOWN_DIFFERENCE`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,
@@ -150,8 +160,8 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   secure-input checks, blocked URL state, user-stop/intervention errors, idle timeout, and hardened
   socket ownership checks. `CONFIRMED_STATIC_BINARY`.
 - Intel validates its peer chain and socket ownership, but currently reports every resolvable app as
-  allowed and lacks lock-screen, secure-input, physical-intervention, cancellation, and exact error
-  mapping. `KNOWN_DIFFERENCE`.
+  allowed and still lacks exact official policy/error mapping and turn-scoped focus restoration.
+  `KNOWN_DIFFERENCE`.
 - Intel now fails `get_app_state` and actions with `screenLocked` (`-10020`) when the GUI session is
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
   enabled. The secure-input error mapping remains `LOW_CONFIDENCE`; physical interruption and

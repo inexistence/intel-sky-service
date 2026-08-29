@@ -24,7 +24,7 @@ public enum UnixSocketError: Error, CustomStringConvertible {
   }
 }
 
-public final class SkyUnixServer {
+public final class SkyUnixServer: @unchecked Sendable {
   private let socketPath: String
   private let router: SkyRequestRouter
   private let authorizer: any PeerAuthorizing

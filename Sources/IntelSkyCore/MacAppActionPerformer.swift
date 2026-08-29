@@ -144,6 +144,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let screenLockChecker: any ScreenLockChecking
   private let secureInputChecker: any SecureInputChecking
   private let userInterventionMonitor: any UserInterventionMonitoring
+  private let visualizer: any ComputerUseVisualizing
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -166,7 +167,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
       interactionTracker: interactionTracker,
       screenLockChecker: CGSessionScreenLockChecker(),
       secureInputChecker: CarbonSecureInputChecker(),
-      userInterventionMonitor: PhysicalInputMonitor.shared
+      userInterventionMonitor: PhysicalInputMonitor.shared,
+      visualizer: ComputerUseVisualCoordinator.shared
     )
   }
 
@@ -187,7 +189,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
     interactionTracker: AppInteractionTracker = AppInteractionTracker(),
     screenLockChecker: any ScreenLockChecking = NoopScreenLockChecker(),
     secureInputChecker: any SecureInputChecking = NoopSecureInputChecker(),
-    userInterventionMonitor: any UserInterventionMonitoring = NoopUserInterventionMonitor()
+    userInterventionMonitor: any UserInterventionMonitoring = NoopUserInterventionMonitor(),
+    visualizer: any ComputerUseVisualizing = NoopComputerUseVisualizer()
   ) {
     self.resolver = resolver
     self.snapshotCache = snapshotCache
@@ -205,6 +208,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     self.screenLockChecker = screenLockChecker
     self.secureInputChecker = secureInputChecker
     self.userInterventionMonitor = userInterventionMonitor
+    self.visualizer = visualizer
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
@@ -306,6 +310,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     let screenStart = try snapshotCache.screenPoint(for: start, in: app)
     let screenEnd = try snapshotCache.screenPoint(for: end, in: app)
     try activator.activate(app)
+    visualizer.showDrag(from: screenStart, to: screenEnd)
     try mouseDragPoster.drag(from: screenStart, to: screenEnd)
   }
 
@@ -371,6 +376,16 @@ public struct MacAppActionPerformer: AppActionPerforming {
     }
 
     try activator.activate(app)
+    let visualizationPoint: CGPoint?
+    switch target {
+    case .elementID:
+      visualizationPoint = element.flatMap { frameReader.frame(of: $0.value) }.map {
+        CGPoint(x: $0.midX, y: $0.midY)
+      }
+    case .coordinate(let coordinate):
+      visualizationPoint = try snapshotCache.screenPoint(for: coordinate, in: app)
+    }
+    if let visualizationPoint { visualizer.showClick(at: visualizationPoint) }
     if let element, button == .left, count == 1,
       try accessibilityPrimaryClicker.click(element: element.value)
     {
@@ -429,6 +444,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     case .coordinate(let coordinate):
       point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
+    visualizer.moveCursor(to: point)
     let requestedPages = number.doubleValue
     let wholePages = min(240, Int(min(Double(Int.max), requestedPages.rounded(.down))))
     let axPages: Int

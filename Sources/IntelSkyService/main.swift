@@ -33,6 +33,7 @@ let socketPath = configuration.socketPath
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 application.finishLaunching()
+ComputerUseVisualCoordinator.warmUp()
 ServicePermissionRequester().requestMissingPermissions()
 
 let resolver = MacAppResolver()
@@ -56,28 +57,31 @@ let server = SkyUnixServer(
 )
 
 fputs("intel-sky-service starting at \(socketPath)\n", stderr)
-do {
-  try server.run {
-    let permissions = ServicePermissionDiagnostics().currentStatus()
-    do {
-      try ServiceRuntimeStatusWriter.write(
-        ServiceRuntimeStatus(
-          permissions: permissions,
-          processIdentifier: ProcessInfo.processInfo.processIdentifier,
-          physicalInputMonitoring: PhysicalInputMonitor.shared.isAvailable,
-          updatedAt: Date()
-        ),
-        nextToSocketAt: socketPath
+DispatchQueue.global(qos: .userInitiated).async {
+  do {
+    try server.run {
+      let permissions = ServicePermissionDiagnostics().currentStatus()
+      do {
+        try ServiceRuntimeStatusWriter.write(
+          ServiceRuntimeStatus(
+            permissions: permissions,
+            processIdentifier: ProcessInfo.processInfo.processIdentifier,
+            physicalInputMonitoring: PhysicalInputMonitor.shared.isAvailable,
+            updatedAt: Date()
+          ),
+          nextToSocketAt: socketPath
+        )
+      } catch {
+        fputs("warning: could not write runtime status: \(error)\n", stderr)
+      }
+      fputs(
+        "permissions: accessibility=\(permissions.accessibility) screenRecording=\(permissions.screenRecording)\n",
+        stderr
       )
-    } catch {
-      fputs("warning: could not write runtime status: \(error)\n", stderr)
     }
-    fputs(
-      "permissions: accessibility=\(permissions.accessibility) screenRecording=\(permissions.screenRecording)\n",
-      stderr
-    )
+  } catch {
+    fputs("fatal: \(error)\n", stderr)
+    exit(1)
   }
-} catch {
-  fputs("fatal: \(error)\n", stderr)
-  exit(1)
 }
+application.run()

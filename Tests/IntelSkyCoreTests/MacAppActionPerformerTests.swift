@@ -47,13 +47,15 @@ import Testing
   )
   let mouse = RecordingMouseClickPoster()
   let axClick = RecordingAccessibilityPrimaryClicker(didClick: true)
+  let visualizer = RecordingComputerUseVisualizer()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
     snapshotCache: cache,
     activator: RecordingActivator(),
-    frameReader: StubFrameReader(frame: nil),
+    frameReader: StubFrameReader(frame: CGRect(x: 20, y: 40, width: 100, height: 200)),
     mouseClickPoster: mouse,
-    accessibilityPrimaryClicker: axClick
+    accessibilityPrimaryClicker: axClick,
+    visualizer: visualizer
   )
 
   _ = try performer.performAction(
@@ -69,6 +71,7 @@ import Testing
 
   #expect(axClick.elements.count == 1)
   #expect(mouse.clicks.isEmpty)
+  #expect(visualizer.clicks == [CGPoint(x: 70, y: 140)])
 }
 
 @Test func coordinateClickRequiresCurrentSnapshot() throws {
@@ -809,6 +812,18 @@ private final class RecordingAccessibilityPrimaryClicker: AccessibilityPrimaryCl
     elements.append(element)
     return didClick
   }
+}
+
+private final class RecordingComputerUseVisualizer: ComputerUseVisualizing,
+  @unchecked Sendable
+{
+  private(set) var moves: [CGPoint] = []
+  private(set) var clicks: [CGPoint] = []
+  private(set) var drags: [(CGPoint, CGPoint)] = []
+
+  func moveCursor(to point: CGPoint) { moves.append(point) }
+  func showClick(at point: CGPoint) { clicks.append(point) }
+  func showDrag(from start: CGPoint, to end: CGPoint) { drags.append((start, end)) }
 }
 
 private struct RecordedPaste: Equatable {

@@ -21,7 +21,7 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - all eleven public APIs: `list_apps`, `get_app_state`, `click`, `drag`, `paste`, `perform_secondary_action`, `press_key`, `scroll`, `select_text`, `set_value`, and `type_text`
 - signed x86_64 App bundle and per-user LaunchAgent installer
 
-The public surface is implemented, but exact ARM semantics, focus/interruption behavior, virtual-cursor presentation, loading-aware settling, and long-run resilience are still active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
+The public surface is implemented, including physical-input interruption, lock/secure-input checks, loading-aware settling, and an input-transparent software cursor. Exact ARM focus/PIP/turn semantics and long-run resilience are still active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
 ## Build and test
 
