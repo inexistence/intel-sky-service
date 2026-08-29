@@ -45,6 +45,12 @@ private struct LockedActionPerformer: AppActionPerforming {
   }
 }
 
+private struct PolicyRejectedActionPerformer: AppActionPerforming {
+  func performAction(request: [String: Any]) throws -> [String: Any] {
+    throw MacAppPolicyError.forbidden("com.apple.Terminal")
+  }
+}
+
 private func decode(_ data: Data) throws -> [String: Any] {
   try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
@@ -137,6 +143,27 @@ private func decode(_ data: Data) throws -> [String: Any] {
   let response = try decode(router.handle(request))
   let error = try #require(response["error"] as? [String: Any])
   #expect(error["code"] as? Int == SkyServerErrorCode.screenLocked.rawValue)
+}
+
+@Test func forbiddenTargetUsesOfficialAppNotAllowedErrorCode() throws {
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 20,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "requestType": "ComputerUseIPCAppPerformActionRequest",
+      "request": ["app": "com.apple.Terminal", "action": ["pressKey": ["_0": "Escape"]]],
+    ],
+  ])
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appActionPerformer: PolicyRejectedActionPerformer()
+  )
+
+  let response = try decode(router.handle(request))
+  let error = try #require(response["error"] as? [String: Any])
+  #expect(error["code"] as? Int == SkyServerErrorCode.appNotAllowed.rawValue)
 }
 
 @Test func malformedJSONReturnsStandardParseError() throws {

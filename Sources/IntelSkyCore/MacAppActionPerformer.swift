@@ -165,6 +165,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let userInterventionMonitor: any UserInterventionMonitoring
   private let interventionArbitrator: any ComputerUseInterventionArbitrating
   private let visualizer: any ComputerUseVisualizing
+  private let policyEvaluator: any MacAppPolicyEvaluating
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -189,7 +190,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
       secureInputChecker: CarbonSecureInputChecker(),
       userInterventionMonitor: PhysicalInputMonitor.shared,
       interventionArbitrator: ComputerUseInterventionCoordinator.shared,
-      visualizer: ComputerUseVisualCoordinator.shared
+      visualizer: ComputerUseVisualCoordinator.shared,
+      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator()
     )
   }
 
@@ -213,7 +215,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
     userInterventionMonitor: any UserInterventionMonitoring = NoopUserInterventionMonitor(),
     interventionArbitrator: any ComputerUseInterventionArbitrating =
       NoopComputerUseInterventionArbitrator(),
-    visualizer: any ComputerUseVisualizing = NoopComputerUseVisualizer()
+    visualizer: any ComputerUseVisualizing = NoopComputerUseVisualizer(),
+    policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator()
   ) {
     self.resolver = resolver
     self.snapshotCache = snapshotCache
@@ -233,12 +236,14 @@ public struct MacAppActionPerformer: AppActionPerforming {
     self.userInterventionMonitor = userInterventionMonitor
     self.interventionArbitrator = interventionArbitrator
     self.visualizer = visualizer
+    self.policyEvaluator = policyEvaluator
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
     try screenLockChecker.requireUnlocked()
     try RequestDeadlineContext.check()
     let app = try resolver.resolve(request["app"])
+    try policyEvaluator.requireAllowed(ResolvedMacApplication(app))
     try interventionArbitrator.requireFreshState(for: app)
     let interventionScope = UserInterventionContext.begin(
       monitor: userInterventionMonitor,

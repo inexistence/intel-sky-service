@@ -261,6 +261,8 @@ public struct SkyRequestRouter: Sendable {
       return SkyServerErrorCode.accessibilityError.rawValue
     case SkySafetyError.userIntervened:
       return SkyServerErrorCode.userIntervened.rawValue
+    case is MacAppPolicyError:
+      return SkyServerErrorCode.appNotAllowed.rawValue
     case AccessibilitySnapshotError.permissionRequired,
       WindowScreenshotError.permissionRequired:
       return SkyServerErrorCode.permissionsNotGranted.rawValue

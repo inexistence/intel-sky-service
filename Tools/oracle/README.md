@@ -39,6 +39,10 @@ Mutation cases additionally require `allowMutating: true`. Their coordinates and
 must come from a fresh state capture on the same target and should use a disposable fixture
 document or deterministic test App.
 
+`get_app_state.forbidden_target` records the policy-wrapper behavior for a known forbidden target.
+It still requires `allowTargetAuthorization: true`: if a future runtime classifies the fixture
+differently, the harness must not surprise an unattended user with an approval prompt.
+
 Save the returned JSON on each machine and compare it:
 
 ```sh
@@ -54,4 +58,3 @@ Run the harness's non-GUI regression tests with:
 ```sh
 node --test Tools/oracle/oracle.test.mjs
 ```
-

@@ -310,8 +310,22 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
 - ARM includes `CUALockScreenGuardian.app`, lock-state monitoring, physical-input callbacks,
   secure-input checks, blocked URL state, user-stop/intervention errors, idle timeout, and hardened
   socket ownership checks. `CONFIRMED_STATIC_BINARY`.
-- Intel validates its peer chain and socket ownership, but currently reports every resolvable app as
-  allowed and still lacks exact official policy/error mapping. `KNOWN_DIFFERENCE`.
+- The ARM service contains `CodexAppServerComputerUsePolicyProvider`, a cached organization policy
+  with `allow_persistent_approval`, `allowed_bundle_ids`, and `denied_bundle_ids`, and a separate
+  service-local forbidden-target classifier guarded by the internal
+  `ComputerUseAllowForbiddenTargets` feature. The classifier's static data includes credential
+  managers, terminal emulators, OpenAI controller Apps, web browsers, and system authentication UI;
+  browser detection also checks for an `http` entry in `CFBundleURLTypes` / `CFBundleURLSchemes`
+  and the `AppleApplication` or `BrowserCrApplication` principal class. Finder is the sole statically
+  observed low-risk target. Other targets are high risk and carry the exact warning subtitle about
+  prompt injection, data theft, and loss. `CONFIRMED_STATIC_BINARY`.
+- Intel now returns the complete documented policy target schema, reproduces those local forbidden
+  categories and browser bundle-metadata checks, marks Finder low risk, emits the official warning
+  for high-risk Apps, and maps direct attempts to bypass the policy preflight to `appNotAllowed`
+  (`-10006`). State capture checks policy before automatic launch, and action execution checks it
+  before any target mutation. `HIGH_CONFIDENCE` with regression coverage. Dynamic organization
+  `allowed_bundle_ids` / `denied_bundle_ids` ingestion is still absent and remains a
+  `KNOWN_DIFFERENCE`; exact classifier membership remains `NEEDS_ARM_ORACLE`.
 - Intel now fails `get_app_state` and actions with `screenLocked` (`-10020`) when the GUI session is
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
   enabled. The secure-input error mapping remains `LOW_CONFIDENCE`.

@@ -16,6 +16,12 @@ export const oracleCases = Object.freeze([
     risk: "target_authorization",
   },
   {
+    id: "get_app_state.forbidden_target",
+    operation: "get_app_state",
+    input: { app: "${FORBIDDEN_APP}", disableDiff: true },
+    risk: "target_authorization",
+  },
+  {
     id: "click.element",
     operation: "click",
     input: { app: "${APP}", element_index: "${ELEMENT_INDEX}" },
@@ -87,4 +93,3 @@ export const oracleCases = Object.freeze([
     risk: "mutating",
   },
 ]);
-

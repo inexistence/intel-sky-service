@@ -4,6 +4,28 @@ import Testing
 
 @testable import IntelSkyCore
 
+@Test func forbiddenPolicyRejectsActionBeforeTargetMutation() {
+  let mouse = RecordingMouseClickPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: actionTestApp()),
+    snapshotCache: ElementSnapshotCache(),
+    activator: RecordingActivator(),
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: mouse,
+    policyEvaluator: AlwaysForbiddenPolicyEvaluator()
+  )
+
+  #expect(throws: MacAppPolicyError.self) {
+    try performer.performAction(
+      request: clickRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        clickCount: 1,
+        mouseButton: 0
+      ))
+  }
+  #expect(mouse.clicks.isEmpty)
+}
+
 @Test func userInterventionRejectsNextActionBeforeTargetMutation() {
   let mouse = RecordingMouseClickPoster()
   let performer = MacAppActionPerformer(
@@ -24,6 +46,17 @@ import Testing
       ))
   }
   #expect(mouse.clicks.isEmpty)
+}
+
+private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
+  func policy(for app: ResolvedMacApplication) -> MacAppPolicy {
+    MacAppPolicy(
+      allowPersistentApproval: false,
+      decision: .forbidden,
+      risk: .high,
+      warningSubtitle: nil
+    )
+  }
 }
 
 @Test func elementClickUsesLatestSnapshotFrameCenter() throws {

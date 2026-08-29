@@ -9,6 +9,7 @@ public struct MacAppStateProvider: AppStateProviding {
   private let treeDiffer: AccessibilityTreeDiffer
   private let screenLockChecker: any ScreenLockChecking
   private let interventionArbitrator: any ComputerUseInterventionArbitrating
+  private let policyEvaluator: any MacAppPolicyEvaluating
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -27,7 +28,8 @@ public struct MacAppStateProvider: AppStateProviding {
       interactionTracker: interactionTracker,
       treeDiffer: treeDiffer,
       screenLockChecker: screenLockChecker,
-      interventionArbitrator: ComputerUseInterventionCoordinator.shared
+      interventionArbitrator: ComputerUseInterventionCoordinator.shared,
+      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator()
     )
   }
 
@@ -39,7 +41,8 @@ public struct MacAppStateProvider: AppStateProviding {
     interactionTracker: AppInteractionTracker = .init(),
     treeDiffer: AccessibilityTreeDiffer = .init(),
     screenLockChecker: any ScreenLockChecking = CGSessionScreenLockChecker(),
-    interventionArbitrator: any ComputerUseInterventionArbitrating
+    interventionArbitrator: any ComputerUseInterventionArbitrating,
+    policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator()
   ) {
     self.resolver = resolver
     self.accessibility = accessibility
@@ -49,10 +52,13 @@ public struct MacAppStateProvider: AppStateProviding {
     self.treeDiffer = treeDiffer
     self.screenLockChecker = screenLockChecker
     self.interventionArbitrator = interventionArbitrator
+    self.policyEvaluator = policyEvaluator
   }
 
   public func getAppState(request: [String: Any]) throws -> [String: Any] {
     try screenLockChecker.requireUnlocked()
+    let policyTarget = try resolver.resolveApplication(request["app"])
+    try policyEvaluator.requireAllowed(policyTarget)
     let app = try resolver.resolveOrLaunch(request["app"])
     let interventionCheckpoint = interventionArbitrator.stateRefreshCheckpoint(for: app)
     try RunLoopWaiter.wait(for: interactionTracker.remainingBaseSettleTime(for: app))
@@ -134,15 +140,20 @@ public struct MacAppStateProvider: AppStateProviding {
     guard !app.appPath.isEmpty else {
       throw MacAppResolutionError.missingAppPath(app.displayName)
     }
+    let policy = policyEvaluator.policy(for: app)
+    var target: [String: Any] = [
+      "appPath": app.appPath,
+      "bundleIdentifier": app.bundleIdentifier,
+      "displayName": app.displayName,
+      "risk": policy.risk.rawValue,
+    ]
+    if let warningSubtitle = policy.warningSubtitle {
+      target["warningSubtitle"] = warningSubtitle
+    }
     return [
-      "allowPersistentApproval": true,
-      "decision": "allowed",
-      "target": [
-        "appPath": app.appPath,
-        "bundleIdentifier": app.bundleIdentifier,
-        "displayName": app.displayName,
-        "risk": app.bundleIdentifier == "com.apple.finder" ? "low" : "high",
-      ],
+      "allowPersistentApproval": policy.allowPersistentApproval,
+      "decision": policy.decision.rawValue,
+      "target": target,
     ]
   }
 }
