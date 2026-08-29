@@ -23,6 +23,10 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 
 The eleven public `@oai/sky` APIs are implemented, including target-scoped physical-input interruption with requery latching, lock/secure-input checks, loading-aware settling, PID/window-targeted synthetic input that does not foreground the target, an input-transparent software cursor, turn tracking, and conservative focus restoration. The hidden Appshot Apple Event bridge and an experimental native Codex PIP path are also implemented: the service can rendezvous with Intel `sky.node`, publish a real CAContext, continuously feed the target window through ScreenCaptureKit and `AVSampleBufferDisplayLayer`, follow target-window replacement and resize through fenced host operations, recover from bounded capture failures, retain state snapshots as a fallback, forward cursor state, and end capture with its turn. Exact ARM focus/capture lifetimes and long-run resilience remain active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
+`Tools/oracle` contains an authorization-safe ARM/Intel differential runner. Its default case does
+not target an App; state capture and mutation cases require separate explicit opt-ins so unattended
+runs do not leave unnoticed Computer Use approval prompts.
+
 ## Build and test
 
 ```sh

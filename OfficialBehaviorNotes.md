@@ -40,6 +40,12 @@ replace when stronger evidence appears.
 | `set_value` | `setValue` | `CONFIRMED_CLIENT_SOURCE` | partial | fallback and exact errors |
 | `type_text` | `type` | `CONFIRMED_CLIENT_SOURCE` | partial | strategy selection and newline semantics |
 
+The differential oracle harness under `Tools/oracle` now has a declarative case matrix covering all
+eleven APIs, captures calls through the unmodified high-level `sky` client, and compares normalized
+ARM/Intel traces. Target authorization and mutation are separately opt-in so unattended runs cannot
+silently open Computer Use approval UI or modify an App. Harness behavior has non-GUI regression
+coverage; official ARM traces for the case matrix remain `NEEDS_ARM_ORACLE`.
+
 ## Confirmed wire behavior
 
 - The socket defaults to
