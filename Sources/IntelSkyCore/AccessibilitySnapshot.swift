@@ -19,10 +19,12 @@ public struct AccessibilitySnapshotter: Sendable {
   public let maximumDepth: Int
   public let maximumElements: Int
   private let geometry = AccessibilityElementGeometry()
+  private let elementIDs: AccessibilityElementIDRegistry
 
   public init(maximumDepth: Int = 12, maximumElements: Int = 1_500) {
     self.maximumDepth = max(0, maximumDepth)
     self.maximumElements = max(1, maximumElements)
+    self.elementIDs = AccessibilityElementIDRegistry()
   }
 
   func capture(app: ResolvedMacApp) throws -> CapturedAccessibilitySnapshot {
@@ -41,7 +43,9 @@ public struct AccessibilitySnapshotter: Sendable {
     var lines = [
       "Application \(quoted(app.displayName)) bundle=\(quoted(app.bundleIdentifier)) pid=\(app.processIdentifier)"
     ]
-    var state = TraversalState()
+    elementIDs.beginCapture(processIdentifier: app.processIdentifier)
+    defer { elementIDs.endCapture(processIdentifier: app.processIdentifier) }
+    var state = TraversalState(processIdentifier: app.processIdentifier)
     append(window, depth: 0, state: &state, lines: &lines)
     if state.wasTruncated {
       lines.append("… snapshot truncated at \(maximumElements) elements")
@@ -62,7 +66,7 @@ public struct AccessibilitySnapshotter: Sendable {
       state.wasTruncated = true
       return
     }
-    let index = state.count
+    let index = elementIDs.id(for: element, processIdentifier: state.processIdentifier)
     state.count += 1
     state.elementsByID[String(index)] = element
 
@@ -84,6 +88,10 @@ public struct AccessibilitySnapshotter: Sendable {
     }
     if let frame = frameDescription(element) {
       fields.append("frame=\(frame)")
+    }
+    let actions = actionDescriptions(element)
+    if !actions.isEmpty {
+      fields.append("actions=\(quoted(actions.joined(separator: ", ")))")
     }
     lines.append(String(repeating: "  ", count: depth) + fields.joined(separator: " "))
 
@@ -159,12 +167,91 @@ public struct AccessibilitySnapshotter: Sendable {
     guard let frame = geometry.frame(of: element) else { return nil }
     return "(\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height)))"
   }
+
+  private func actionDescriptions(_ element: AXUIElement) -> [String] {
+    var rawNames: CFArray?
+    guard AXUIElementCopyActionNames(element, &rawNames) == .success,
+      let names = rawNames as? [String]
+    else {
+      return []
+    }
+    return names.map { name in
+      var rawDescription: CFString?
+      guard
+        AXUIElementCopyActionDescription(element, name as CFString, &rawDescription) == .success,
+        let rawDescription
+      else {
+        return name
+      }
+      return rawDescription as String
+    }
+  }
 }
 
 private struct TraversalState {
+  let processIdentifier: pid_t
   var count = 0
   var wasTruncated = false
   var elementsByID: [String: AXUIElement] = [:]
+}
+
+final class AccessibilityElementIDRegistry: @unchecked Sendable {
+  private struct Entry {
+    let id: Int
+    let element: AXUIElement
+    var lastSeenGeneration: UInt64
+  }
+
+  private struct ProcessState {
+    var generation: UInt64 = 0
+    var nextID = 0
+    var entriesByHash: [CFHashCode: [Entry]] = [:]
+  }
+
+  private let lock = NSLock()
+  private var states: [pid_t: ProcessState] = [:]
+
+  func beginCapture(processIdentifier: pid_t) {
+    lock.lock()
+    defer { lock.unlock() }
+    var state = states[processIdentifier] ?? ProcessState()
+    state.generation &+= 1
+    states[processIdentifier] = state
+  }
+
+  func id(for element: AXUIElement, processIdentifier: pid_t) -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+    var state = states[processIdentifier] ?? ProcessState(generation: 1)
+    let hash = CFHash(element)
+    var bucket = state.entriesByHash[hash] ?? []
+    if let index = bucket.firstIndex(where: { CFEqual($0.element, element) }) {
+      let id = bucket[index].id
+      bucket[index].lastSeenGeneration = state.generation
+      state.entriesByHash[hash] = bucket
+      states[processIdentifier] = state
+      return id
+    }
+    let id = state.nextID
+    state.nextID += 1
+    bucket.append(Entry(id: id, element: element, lastSeenGeneration: state.generation))
+    state.entriesByHash[hash] = bucket
+    states[processIdentifier] = state
+    return id
+  }
+
+  func endCapture(processIdentifier: pid_t) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard var state = states[processIdentifier] else { return }
+    let oldestGeneration = state.generation > 2 ? state.generation - 2 : 0
+    state.entriesByHash = state.entriesByHash.compactMapValues { bucket in
+      let retained = bucket.filter { $0.lastSeenGeneration >= oldestGeneration }
+      return retained.isEmpty ? nil : retained
+    }
+    states = states.filter { $0.key == processIdentifier || !$0.value.entriesByHash.isEmpty }
+    states[processIdentifier] = state
+  }
 }
 
 struct CapturedAccessibilitySnapshot {

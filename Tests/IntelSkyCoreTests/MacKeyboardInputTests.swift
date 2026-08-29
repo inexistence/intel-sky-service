@@ -22,6 +22,28 @@ import Testing
   #expect(try MacKeyChordParser().parse("Numpad_0").keyCode == 82)
 }
 
+@Test func distinguishesRightHandedModifiers() throws {
+  let parser = MacKeyChordParser()
+  let chord = try parser.parse("Control_R+Alt_R+Shift_R+Super_R+a")
+
+  #expect(
+    chord.modifiers
+      == [.controlRight, .optionRight, .shiftRight, .commandRight]
+  )
+  #expect(chord.keyCode == 0)
+}
+
+@Test func parsesOfficialExtendedXKeysymNames() throws {
+  let parser = MacKeyChordParser()
+
+  #expect(try parser.parse("KP_Page_Up").keyCode == 92)
+  #expect(try parser.parse("KP_Delete").keyCode == 65)
+  #expect(try parser.parse("KP_Equal").keyCode == 81)
+  #expect(try parser.parse("Prior").keyCode == 116)
+  #expect(try parser.parse("Next").keyCode == 121)
+  #expect(try parser.parse("Help").keyCode == 114)
+}
+
 @Test func distinguishesX11BackspaceAndDelete() throws {
   #expect(try MacKeyChordParser().parse("BackSpace").keyCode == 51)
   #expect(try MacKeyChordParser().parse("Delete").keyCode == 117)

@@ -4,25 +4,33 @@ import Foundation
 
 enum KeyboardModifier: CaseIterable, Equatable, Hashable, Sendable {
   case command
+  case commandRight
   case shift
+  case shiftRight
   case option
+  case optionRight
   case control
+  case controlRight
 
   var keyCode: CGKeyCode {
     switch self {
     case .command: return 55
+    case .commandRight: return 54
     case .shift: return 56
+    case .shiftRight: return 60
     case .option: return 58
+    case .optionRight: return 61
     case .control: return 59
+    case .controlRight: return 62
     }
   }
 
   var eventFlag: CGEventFlags {
     switch self {
-    case .command: return .maskCommand
-    case .shift: return .maskShift
-    case .option: return .maskAlternate
-    case .control: return .maskControl
+    case .command, .commandRight: return .maskCommand
+    case .shift, .shiftRight: return .maskShift
+    case .option, .optionRight: return .maskAlternate
+    case .control, .controlRight: return .maskControl
     }
   }
 }
@@ -41,27 +49,30 @@ struct MacKeyChordParser: Sendable {
   private static let modifierAliases: [String: KeyboardModifier] = [
     "alt": .option,
     "alt_l": .option,
-    "alt_r": .option,
+    "alt_r": .optionRight,
     "cmd": .command,
     "command": .command,
     "control": .control,
     "control_l": .control,
-    "control_r": .control,
+    "control_r": .controlRight,
     "ctrl": .control,
     "meta": .command,
+    "meta_l": .command,
+    "meta_r": .commandRight,
     "option": .option,
     "shift": .shift,
     "shift_l": .shift,
-    "shift_r": .shift,
+    "shift_r": .shiftRight,
     "super": .command,
     "super_l": .command,
-    "super_r": .command,
+    "super_r": .commandRight,
   ]
 
   private static let namedKeys: [String: KeyMapping] = [
     "backspace": .init(keyCode: 51, requiresShift: false),
     "caps_lock": .init(keyCode: 57, requiresShift: false),
     "capslock": .init(keyCode: 57, requiresShift: false),
+    "clear": .init(keyCode: 71, requiresShift: false),
     "delete": .init(keyCode: 117, requiresShift: false),
     "down": .init(keyCode: 125, requiresShift: false),
     "end": .init(keyCode: 119, requiresShift: false),
@@ -90,6 +101,8 @@ struct MacKeyChordParser: Sendable {
     "forward_delete": .init(keyCode: 117, requiresShift: false),
     "forwarddelete": .init(keyCode: 117, requiresShift: false),
     "home": .init(keyCode: 115, requiresShift: false),
+    "help": .init(keyCode: 114, requiresShift: false),
+    "insert": .init(keyCode: 114, requiresShift: false),
     "kp_0": .init(keyCode: 82, requiresShift: false),
     "kp_1": .init(keyCode: 83, requiresShift: false),
     "kp_2": .init(keyCode: 84, requiresShift: false),
@@ -101,16 +114,46 @@ struct MacKeyChordParser: Sendable {
     "kp_8": .init(keyCode: 91, requiresShift: false),
     "kp_9": .init(keyCode: 92, requiresShift: false),
     "kp_add": .init(keyCode: 69, requiresShift: false),
+    "kp_begin": .init(keyCode: 87, requiresShift: false),
     "kp_decimal": .init(keyCode: 65, requiresShift: false),
+    "kp_delete": .init(keyCode: 65, requiresShift: false),
     "kp_divide": .init(keyCode: 75, requiresShift: false),
+    "kp_down": .init(keyCode: 84, requiresShift: false),
+    "kp_end": .init(keyCode: 83, requiresShift: false),
     "kp_enter": .init(keyCode: 76, requiresShift: false),
+    "kp_equal": .init(keyCode: 81, requiresShift: false),
+    "kp_f1": .init(keyCode: 122, requiresShift: false),
+    "kp_f2": .init(keyCode: 120, requiresShift: false),
+    "kp_f3": .init(keyCode: 99, requiresShift: false),
+    "kp_f4": .init(keyCode: 118, requiresShift: false),
+    "kp_home": .init(keyCode: 89, requiresShift: false),
+    "kp_insert": .init(keyCode: 82, requiresShift: false),
+    "kp_left": .init(keyCode: 86, requiresShift: false),
     "kp_multiply": .init(keyCode: 67, requiresShift: false),
+    "kp_next": .init(keyCode: 85, requiresShift: false),
+    "kp_page_down": .init(keyCode: 85, requiresShift: false),
+    "kp_page_up": .init(keyCode: 92, requiresShift: false),
+    "kp_prior": .init(keyCode: 92, requiresShift: false),
+    "kp_right": .init(keyCode: 88, requiresShift: false),
+    "kp_separator": .init(keyCode: 95, requiresShift: false),
+    "kp_space": .init(keyCode: 49, requiresShift: false),
     "kp_subtract": .init(keyCode: 78, requiresShift: false),
+    "kp_tab": .init(keyCode: 48, requiresShift: false),
+    "kp_up": .init(keyCode: 91, requiresShift: false),
+    "linefeed": .init(keyCode: 36, requiresShift: false),
     "left": .init(keyCode: 123, requiresShift: false),
     "pagedown": .init(keyCode: 121, requiresShift: false),
     "page_down": .init(keyCode: 121, requiresShift: false),
     "pageup": .init(keyCode: 116, requiresShift: false),
     "page_up": .init(keyCode: 116, requiresShift: false),
+    "prior": .init(keyCode: 116, requiresShift: false),
+    "next": .init(keyCode: 121, requiresShift: false),
+    "num_lock": .init(keyCode: 71, requiresShift: false),
+    "pause": .init(keyCode: 113, requiresShift: false),
+    "break": .init(keyCode: 113, requiresShift: false),
+    "print": .init(keyCode: 105, requiresShift: false),
+    "scroll_lock": .init(keyCode: 107, requiresShift: false),
+    "sys_req": .init(keyCode: 105, requiresShift: false),
     "return": .init(keyCode: 36, requiresShift: false),
     "enter": .init(keyCode: 36, requiresShift: false),
     "right": .init(keyCode: 124, requiresShift: false),
@@ -219,14 +262,16 @@ struct CGKeyboardInputPoster: KeyboardInputPosting {
       flags.remove(modifier.eventFlag)
       events.append(try makeKeyEvent(keyCode: modifier.keyCode, isDown: false, flags: flags))
     }
-    for event in events {
-      event.post(tap: .cghidEventTap)
-    }
+    try RequestDeadlineContext.check()
+    try UserInterventionContext.check()
+    for event in events { event.post(tap: .cghidEventTap) }
   }
 
   func typeText(_ text: String) throws {
     try requireAccessibilityPermission()
     for chunk in Self.utf16Chunks(for: text) {
+      try RequestDeadlineContext.check()
+      try UserInterventionContext.check()
       guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
         let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
       else {

@@ -37,17 +37,20 @@ ServicePermissionRequester().requestMissingPermissions()
 
 let resolver = MacAppResolver()
 let snapshotCache = ElementSnapshotCache()
+let interactionTracker = AppInteractionTracker()
 let server = SkyUnixServer(
   socketPath: socketPath,
   router: SkyRequestRouter(
     appCatalog: WorkspaceAppCatalog(),
     appStateProvider: MacAppStateProvider(
       resolver: resolver,
-      snapshotCache: snapshotCache
+      snapshotCache: snapshotCache,
+      interactionTracker: interactionTracker
     ),
     appActionPerformer: MacAppActionPerformer(
       resolver: resolver,
-      snapshotCache: snapshotCache
+      snapshotCache: snapshotCache,
+      interactionTracker: interactionTracker
     )
   )
 )
@@ -61,6 +64,7 @@ do {
         ServiceRuntimeStatus(
           permissions: permissions,
           processIdentifier: ProcessInfo.processInfo.processIdentifier,
+          physicalInputMonitoring: PhysicalInputMonitor.shared.isAvailable,
           updatedAt: Date()
         ),
         nextToSocketAt: socketPath

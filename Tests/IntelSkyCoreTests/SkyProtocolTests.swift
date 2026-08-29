@@ -39,6 +39,12 @@ private struct StubActionPerformer: AppActionPerforming {
   }
 }
 
+private struct LockedActionPerformer: AppActionPerforming {
+  func performAction(request: [String: Any]) throws -> [String: Any] {
+    throw SkySafetyError.screenLocked
+  }
+}
+
 private func decode(_ data: Data) throws -> [String: Any] {
   try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
@@ -88,8 +94,49 @@ private func decode(_ data: Data) throws -> [String: Any] {
   let response = try decode(SkyRequestRouter(appCatalog: StubCatalog()).handle(request))
   let error = try #require(response["error"] as? [String: Any])
 
-  #expect(error["code"] as? Int == -32001)
+  #expect(error["code"] as? Int == SkyServerErrorCode.incompatibleClientVersion.rawValue)
   #expect(!SkyRequestRouter.isCompatiblePing(request))
+}
+
+@Test func expiredRequestDeadlineUsesOfficialServiceErrorFamily() throws {
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "deadlineUnixMilliseconds": 1,
+      "requestType": "ComputerUseIPCListAppsRequest",
+      "request": [:],
+    ],
+  ])
+
+  let response = try decode(SkyRequestRouter(appCatalog: StubCatalog()).handle(request))
+  let error = try #require(response["error"] as? [String: Any])
+
+  #expect(error["code"] as? Int == SkyServerErrorCode.unknownError.rawValue)
+  #expect(error["message"] as? String == "Request deadline exceeded")
+}
+
+@Test func screenLockedUsesOfficialServiceErrorCode() throws {
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 19,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "requestType": "ComputerUseIPCAppPerformActionRequest",
+      "request": ["app": "com.apple.finder", "action": ["pressKey": ["_0": "Escape"]]],
+    ],
+  ])
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appActionPerformer: LockedActionPerformer()
+  )
+
+  let response = try decode(router.handle(request))
+  let error = try #require(response["error"] as? [String: Any])
+  #expect(error["code"] as? Int == SkyServerErrorCode.screenLocked.rawValue)
 }
 
 @Test func malformedJSONReturnsStandardParseError() throws {

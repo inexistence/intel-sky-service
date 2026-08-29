@@ -100,6 +100,8 @@ struct CGMouseClickPoster: MouseClickPosting {
     }
 
     for clickIndex in 1...count {
+      try RequestDeadlineContext.check()
+      try UserInterventionContext.check()
       guard
         let down = CGEvent(
           mouseEventSource: nil,
@@ -133,10 +135,20 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let mouseClickPoster: any MouseClickPosting
   private let keyboardInputPoster: any KeyboardInputPosting
   private let scrollEventPoster: any ScrollEventPosting
+  private let accessibilityPageScroller: any AccessibilityPageScrolling
+  private let mouseDragPoster: any MouseDragPosting
+  private let accessibilityActions: any AccessibilityActionPerforming
+  private let accessibilityPrimaryClicker: any AccessibilityPrimaryClicking
+  private let pasteOperation: any PastePerforming
+  private let interactionTracker: AppInteractionTracker
+  private let screenLockChecker: any ScreenLockChecking
+  private let secureInputChecker: any SecureInputChecking
+  private let userInterventionMonitor: any UserInterventionMonitoring
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
-    snapshotCache: ElementSnapshotCache
+    snapshotCache: ElementSnapshotCache,
+    interactionTracker: AppInteractionTracker = AppInteractionTracker()
   ) {
     self.init(
       resolver: resolver,
@@ -145,7 +157,16 @@ public struct MacAppActionPerformer: AppActionPerforming {
       frameReader: AccessibilityElementGeometry(),
       mouseClickPoster: CGMouseClickPoster(),
       keyboardInputPoster: CGKeyboardInputPoster(),
-      scrollEventPoster: CGScrollEventPoster()
+      scrollEventPoster: CGScrollEventPoster(),
+      accessibilityPageScroller: MacAccessibilityPageScroller(),
+      mouseDragPoster: CGMouseDragPoster(),
+      accessibilityActions: MacAccessibilityActionPerformer(),
+      accessibilityPrimaryClicker: MacAccessibilityPrimaryClicker(),
+      pasteOperation: MacPasteOperation(),
+      interactionTracker: interactionTracker,
+      screenLockChecker: CGSessionScreenLockChecker(),
+      secureInputChecker: CarbonSecureInputChecker(),
+      userInterventionMonitor: PhysicalInputMonitor.shared
     )
   }
 
@@ -156,7 +177,17 @@ public struct MacAppActionPerformer: AppActionPerforming {
     frameReader: any AccessibilityFrameReading,
     mouseClickPoster: any MouseClickPosting,
     keyboardInputPoster: any KeyboardInputPosting = CGKeyboardInputPoster(),
-    scrollEventPoster: any ScrollEventPosting = CGScrollEventPoster()
+    scrollEventPoster: any ScrollEventPosting = CGScrollEventPoster(),
+    accessibilityPageScroller: any AccessibilityPageScrolling = MacAccessibilityPageScroller(),
+    mouseDragPoster: any MouseDragPosting = CGMouseDragPoster(),
+    accessibilityActions: any AccessibilityActionPerforming = MacAccessibilityActionPerformer(),
+    accessibilityPrimaryClicker: any AccessibilityPrimaryClicking =
+      MacAccessibilityPrimaryClicker(),
+    pasteOperation: any PastePerforming = MacPasteOperation(),
+    interactionTracker: AppInteractionTracker = AppInteractionTracker(),
+    screenLockChecker: any ScreenLockChecking = NoopScreenLockChecker(),
+    secureInputChecker: any SecureInputChecking = NoopSecureInputChecker(),
+    userInterventionMonitor: any UserInterventionMonitoring = NoopUserInterventionMonitor()
   ) {
     self.resolver = resolver
     self.snapshotCache = snapshotCache
@@ -165,9 +196,22 @@ public struct MacAppActionPerformer: AppActionPerforming {
     self.mouseClickPoster = mouseClickPoster
     self.keyboardInputPoster = keyboardInputPoster
     self.scrollEventPoster = scrollEventPoster
+    self.accessibilityPageScroller = accessibilityPageScroller
+    self.mouseDragPoster = mouseDragPoster
+    self.accessibilityActions = accessibilityActions
+    self.accessibilityPrimaryClicker = accessibilityPrimaryClicker
+    self.pasteOperation = pasteOperation
+    self.interactionTracker = interactionTracker
+    self.screenLockChecker = screenLockChecker
+    self.secureInputChecker = secureInputChecker
+    self.userInterventionMonitor = userInterventionMonitor
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
+    let interventionScope = UserInterventionContext.begin(monitor: userInterventionMonitor)
+    defer { interventionScope.end() }
+    try screenLockChecker.requireUnlocked()
+    try RequestDeadlineContext.check()
     let app = try resolver.resolve(request["app"])
     guard let action = request["action"] as? [String: Any], action.count == 1,
       let actionName = action.keys.first
@@ -187,9 +231,13 @@ public struct MacAppActionPerformer: AppActionPerforming {
       try keyboardInputPoster.press(chord)
     case "type":
       let text = try parseSingleStringPayload(action[actionName], actionName: actionName)
+      guard !text.isEmpty else {
+        throw MacAppActionError.invalidAction("no text to type")
+      }
       guard text.utf16.count <= 10_000 else {
         throw MacAppActionError.invalidAction("type text exceeds 10,000 UTF-16 code units")
       }
+      try secureInputChecker.requireTextInjectionAllowed()
       try prepareForInput(app)
       try keyboardInputPoster.typeText(text)
     case "scroll":
@@ -197,10 +245,110 @@ public struct MacAppActionPerformer: AppActionPerforming {
         throw MacAppActionError.invalidAction("scroll payload must be an object")
       }
       try performScroll(scroll, app: app)
+    case "drag":
+      guard let drag = action[actionName] as? [String: Any] else {
+        throw MacAppActionError.invalidAction("drag payload must be an object")
+      }
+      try performDrag(drag, app: app)
+    case "setValue":
+      guard let payload = action[actionName] as? [String: Any],
+        Set(payload.keys) == ["elementID", "value"],
+        let elementID = payload["elementID"] as? String,
+        let value = payload["value"] as? String
+      else {
+        throw MacAppActionError.invalidAction("setValue requires elementID and value")
+      }
+      let element = try snapshotCache.element(id: elementID, for: app)
+      try activator.activate(app)
+      try accessibilityActions.setValue(value, on: element)
+    case "performSecondaryAction":
+      guard let payload = action[actionName] as? [String: Any],
+        Set(payload.keys) == ["action", "elementID"],
+        let elementID = payload["elementID"] as? String,
+        let secondaryAction = payload["action"] as? String,
+        !secondaryAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else {
+        throw MacAppActionError.invalidAction(
+          "performSecondaryAction requires action and elementID"
+        )
+      }
+      let element = try snapshotCache.element(id: elementID, for: app)
+      try activator.activate(app)
+      try accessibilityActions.performSecondaryAction(secondaryAction, on: element)
+    case "selectText":
+      try performSelectText(action[actionName], app: app)
+    case "paste":
+      guard let payload = action[actionName] as? [String: Any],
+        Set(payload.keys) == ["format", "text"],
+        let text = payload["text"] as? String,
+        let rawFormat = payload["format"] as? String,
+        let format = PasteContentFormat(rawValue: rawFormat)
+      else {
+        throw MacAppActionError.invalidAction("paste requires text and format text, md, or html")
+      }
+      try secureInputChecker.requireTextInjectionAllowed()
+      try prepareForInput(app)
+      try pasteOperation.paste(text: text, format: format, keyboard: keyboardInputPoster)
     default:
       throw MacAppActionError.unsupportedAction(actionName)
     }
+    try interventionScope.check()
+    interactionTracker.recordAction(for: app)
     return [:]
+  }
+
+  private func performDrag(_ drag: [String: Any], app: ResolvedMacApp) throws {
+    guard Set(drag.keys) == ["from", "to"] else {
+      throw MacAppActionError.invalidAction("drag payload must contain from and to")
+    }
+    let start = try parseCoordinateTuple(drag["from"], name: "drag.from")
+    let end = try parseCoordinateTuple(drag["to"], name: "drag.to")
+    let screenStart = try snapshotCache.screenPoint(for: start, in: app)
+    let screenEnd = try snapshotCache.screenPoint(for: end, in: app)
+    try activator.activate(app)
+    try mouseDragPoster.drag(from: screenStart, to: screenEnd)
+  }
+
+  private func performSelectText(_ value: Any?, app: ResolvedMacApp) throws {
+    guard let payload = value as? [String: Any],
+      Set(payload.keys).isSubset(of: ["elementID", "text", "prefix", "suffix", "selection"]),
+      payload.keys.contains("elementID"),
+      payload.keys.contains("text"),
+      let elementID = payload["elementID"] as? String,
+      let text = payload["text"] as? String,
+      optionalString(payload["prefix"]),
+      optionalString(payload["suffix"]),
+      let rawSelection = (payload["selection"] as? String) ?? "text" as String?,
+      let selection = TextSelectionKind(rawValue: rawSelection)
+    else {
+      throw MacAppActionError.invalidAction("selectText payload is malformed")
+    }
+    let element = try snapshotCache.element(id: elementID, for: app)
+    try activator.activate(app)
+    try accessibilityActions.selectText(
+      text,
+      prefix: payload["prefix"] as? String,
+      suffix: payload["suffix"] as? String,
+      selection: selection,
+      on: element
+    )
+  }
+
+  private func optionalString(_ value: Any?) -> Bool {
+    value == nil || value is String
+  }
+
+  private func parseCoordinateTuple(_ value: Any?, name: String) throws -> CGPoint {
+    guard let values = value as? [NSNumber], values.count == 2,
+      values.allSatisfy({ CFGetTypeID($0) != CFBooleanGetTypeID() })
+    else {
+      throw MacAppActionError.invalidAction("\(name) must be a two-number coordinate")
+    }
+    let point = CGPoint(x: values[0].doubleValue, y: values[1].doubleValue)
+    guard point.x.isFinite, point.y.isFinite else {
+      throw MacAppActionError.invalidAction("\(name) coordinates must be finite")
+    }
+    return point
   }
 
   private func performClick(_ click: [String: Any], app: ResolvedMacApp) throws {
@@ -223,6 +371,11 @@ public struct MacAppActionPerformer: AppActionPerforming {
     }
 
     try activator.activate(app)
+    if let element, button == .left, count == 1,
+      try accessibilityPrimaryClicker.click(element: element.value)
+    {
+      return
+    }
     let point: CGPoint
     switch target {
     case .elementID:
@@ -231,7 +384,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
       }
       point = CGPoint(x: frame.midX, y: frame.midY)
     case .coordinate(let coordinate):
-      point = coordinate
+      point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
     try mouseClickPoster.click(at: point, button: button, count: count)
   }
@@ -251,10 +404,9 @@ public struct MacAppActionPerformer: AppActionPerforming {
     guard let number = scroll["pages"] as? NSNumber,
       CFGetTypeID(number) != CFBooleanGetTypeID(),
       number.doubleValue.isFinite,
-      number.doubleValue > 0,
-      number.doubleValue <= 10
+      number.doubleValue > 0
     else {
-      throw MacAppActionError.invalidAction("scroll pages must be greater than 0 and at most 10")
+      throw MacAppActionError.invalidAction("scroll pages must be a finite number greater than 0")
     }
 
     let element: AXUIElement?
@@ -275,13 +427,28 @@ public struct MacAppActionPerformer: AppActionPerforming {
       }
       point = CGPoint(x: frame.midX, y: frame.midY)
     case .coordinate(let coordinate):
-      point = coordinate
+      point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
-    try scrollEventPoster.scroll(
-      at: point,
-      direction: direction,
-      pages: number.doubleValue
-    )
+    let requestedPages = number.doubleValue
+    let wholePages = min(240, Int(min(Double(Int.max), requestedPages.rounded(.down))))
+    let axPages: Int
+    if let element {
+      axPages = try accessibilityPageScroller.scroll(
+        element: element,
+        direction: direction,
+        pageCount: wholePages
+      )
+    } else {
+      axPages = 0
+    }
+    let remainingPages = requestedPages - Double(axPages)
+    if remainingPages > 0 {
+      try scrollEventPoster.scroll(
+        at: point,
+        direction: direction,
+        pages: remainingPages
+      )
+    }
   }
 
   private func prepareForInput(_ app: ResolvedMacApp) throws {

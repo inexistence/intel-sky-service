@@ -1,10 +1,12 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 
 public enum WindowScreenshotError: Error, CustomStringConvertible {
   case permissionRequired
   case captureFailed(Int32, String)
   case outputMissing
+  case invalidImage
 
   public var description: String {
     switch self {
@@ -14,14 +16,26 @@ public enum WindowScreenshotError: Error, CustomStringConvertible {
       return "screencapture failed with status \(status): \(message)"
     case .outputMissing:
       return "screencapture completed without producing a PNG"
+    case .invalidImage:
+      return "screencapture produced a PNG without readable pixel dimensions"
     }
+  }
+}
+
+public struct CapturedWindowScreenshot: Sendable, Equatable {
+  public let url: URL
+  public let pixelSize: CGSize
+
+  public init(url: URL, pixelSize: CGSize) {
+    self.url = url
+    self.pixelSize = pixelSize
   }
 }
 
 public struct WindowScreenshotter: Sendable {
   public init() {}
 
-  public func capture(windowID: CGWindowID) throws -> URL {
+  public func capture(windowID: CGWindowID) throws -> CapturedWindowScreenshot {
     guard CGPreflightScreenCaptureAccess() else {
       throw WindowScreenshotError.permissionRequired
     }
@@ -53,7 +67,18 @@ public struct WindowScreenshotter: Sendable {
       throw WindowScreenshotError.outputMissing
     }
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
-    return output
+    guard let source = CGImageSourceCreateWithURL(output as CFURL, nil),
+      let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+      image.width > 0,
+      image.height > 0
+    else {
+      try? FileManager.default.removeItem(at: output)
+      throw WindowScreenshotError.invalidImage
+    }
+    return CapturedWindowScreenshot(
+      url: output,
+      pixelSize: CGSize(width: image.width, height: image.height)
+    )
   }
 
   private func purgeExpiredScreenshots(in directory: URL) {

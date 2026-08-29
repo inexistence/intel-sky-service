@@ -4,6 +4,40 @@ public enum SkyProtocol {
   public static let apiVersion = "CodexComputerUseIPC-5"
 }
 
+public enum SkyServerErrorCode: Int, Sendable {
+  case senderProcessNotAuthenticated = -10_000
+  case couldNotGetRequestData = -10_001
+  case couldNotGetRequestTypeName = -10_002
+  case couldNotResolveRequestType = -10_003
+  case unhandledEvent = -10_004
+  case unknownError = -10_005
+  case appNotAllowed = -10_006
+  case runningApplicationNotFound = -10_007
+  case accessibilityError = -10_008
+  case permissionsNotGranted = -10_009
+  case invalidApp = -10_010
+  case noActiveSession = -10_011
+  case userStoppedSession = -10_012
+  case incompatibleClientVersion = -10_013
+  case permissionsPending = -10_014
+  case blockedURL = -10_015
+  case userIntervened = -10_016
+  case couldNotGetSenderPID = -10_017
+  case ambiguousApp = -10_018
+  case couldNotGetBootstrapPort = -10_019
+  case screenLocked = -10_020
+}
+
+enum SkyRuntimeError: Error, CustomStringConvertible {
+  case deadlineExceeded
+
+  var description: String {
+    switch self {
+    case .deadlineExceeded: return "Request deadline exceeded"
+    }
+  }
+}
+
 public enum SkyRPCError: Error, CustomStringConvertible {
   case parseError
   case invalidRequest(String)
@@ -102,40 +136,46 @@ public struct SkyRequestRouter: Sendable {
       throw SkyRPCError.invalidRequest("Missing or invalid params")
     }
     try validateVersion(params["clientApiVersion"] as? String)
-
-    switch method {
-    case "ping":
-      return ["serverApiVersion": SkyProtocol.apiVersion]
-    case "request":
-      guard let requestType = params["requestType"] as? String else {
-        throw SkyRPCError.invalidRequest("Missing requestType")
-      }
-      guard let request = params["request"] as? [String: Any] else {
-        throw SkyRPCError.invalidRequest("Missing or invalid request payload")
-      }
-      switch requestType {
-      case "ComputerUseIPCListAppsRequest":
-        return try appCatalog.listApps()
-      case "ComputerUseIPCAppGetSkyshotRequest":
-        guard let appStateProvider else {
+    let deadline = try RequestDeadline(params["deadlineUnixMilliseconds"])
+    return try RequestDeadlineContext.withDeadline(deadline.date) {
+      try deadline.check()
+      switch method {
+      case "ping":
+        return ["serverApiVersion": SkyProtocol.apiVersion]
+      case "request":
+        guard let requestType = params["requestType"] as? String else {
+          throw SkyRPCError.invalidRequest("Missing requestType")
+        }
+        guard let request = params["request"] as? [String: Any] else {
+          throw SkyRPCError.invalidRequest("Missing or invalid request payload")
+        }
+        let result: Any
+        switch requestType {
+        case "ComputerUseIPCListAppsRequest":
+          result = try appCatalog.listApps()
+        case "ComputerUseIPCAppGetSkyshotRequest":
+          guard let appStateProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appStateProvider.getAppState(request: request)
+        case "ComputerUseIPCAppPolicyRequest":
+          guard let appStateProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appStateProvider.getAppPolicy(request: request)
+        case "ComputerUseIPCAppPerformActionRequest":
+          guard let appActionPerformer else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appActionPerformer.performAction(request: request)
+        default:
           throw SkyRPCError.unsupportedRequestType(requestType)
         }
-        return try appStateProvider.getAppState(request: request)
-      case "ComputerUseIPCAppPolicyRequest":
-        guard let appStateProvider else {
-          throw SkyRPCError.unsupportedRequestType(requestType)
-        }
-        return try appStateProvider.getAppPolicy(request: request)
-      case "ComputerUseIPCAppPerformActionRequest":
-        guard let appActionPerformer else {
-          throw SkyRPCError.unsupportedRequestType(requestType)
-        }
-        return try appActionPerformer.performAction(request: request)
+        try deadline.check()
+        return result
       default:
-        throw SkyRPCError.unsupportedRequestType(requestType)
+        throw SkyRPCError.unsupportedMethod(method)
       }
-    default:
-      throw SkyRPCError.unsupportedMethod(method)
     }
   }
 
@@ -154,9 +194,111 @@ public struct SkyRequestRouter: Sendable {
     case SkyRPCError.parseError: return -32700
     case SkyRPCError.invalidRequest: return -32600
     case SkyRPCError.unsupportedMethod: return -32601
-    case SkyRPCError.unsupportedRequestType: return -32601
-    case SkyRPCError.versionMismatch: return -32001
-    default: return -32603
+    case SkyRPCError.unsupportedRequestType:
+      return SkyServerErrorCode.couldNotResolveRequestType.rawValue
+    case SkyRPCError.versionMismatch:
+      return SkyServerErrorCode.incompatibleClientVersion.rawValue
+    case SkyRuntimeError.deadlineExceeded:
+      // IPC-5 has no dedicated deadline code. The ARM binary exposes this
+      // message alongside the generic service error family.
+      return SkyServerErrorCode.unknownError.rawValue
+    case SkySafetyError.screenLocked:
+      return SkyServerErrorCode.screenLocked.rawValue
+    case SkySafetyError.secureInputEnabled:
+      // ARM exposes secure-input state but no dedicated public code.
+      return SkyServerErrorCode.accessibilityError.rawValue
+    case SkySafetyError.userIntervened:
+      return SkyServerErrorCode.userIntervened.rawValue
+    case AccessibilitySnapshotError.permissionRequired,
+      WindowScreenshotError.permissionRequired:
+      return SkyServerErrorCode.permissionsNotGranted.rawValue
+    case AccessibilitySnapshotError.noWindow,
+      is MacAccessibilityActionError,
+      is MacPasteError:
+      return SkyServerErrorCode.accessibilityError.rawValue
+    case ElementSnapshotCacheError.missingSnapshot,
+      ElementSnapshotCacheError.expiredSnapshot:
+      return SkyServerErrorCode.noActiveSession.rawValue
+    case ElementSnapshotCacheError.unknownElement,
+      ElementSnapshotCacheError.missingCoordinateSpace,
+      ElementSnapshotCacheError.coordinateOutsideScreenshot:
+      return SkyServerErrorCode.accessibilityError.rawValue
+    case MacAppResolutionError.notRunning,
+      MacAppResolutionError.launchFailed:
+      return SkyServerErrorCode.runningApplicationNotFound.rawValue
+    case MacAppResolutionError.missingIdentifier,
+      MacAppResolutionError.missingBundleIdentifier,
+      MacAppResolutionError.missingAppPath:
+      return SkyServerErrorCode.invalidApp.rawValue
+    case MacAppResolutionError.noWindow:
+      return SkyServerErrorCode.accessibilityError.rawValue
+    case MacAppActionError.invalidAction:
+      return SkyServerErrorCode.couldNotGetRequestData.rawValue
+    case MacAppActionError.unsupportedAction:
+      return SkyServerErrorCode.unhandledEvent.rawValue
+    case MacAppActionError.activationFailed:
+      return SkyServerErrorCode.runningApplicationNotFound.rawValue
+    case MacAppActionError.missingElementFrame,
+      MacAppActionError.targetOutsideDisplays,
+      MacAppActionError.eventCreationFailed:
+      return SkyServerErrorCode.accessibilityError.rawValue
+    default: return SkyServerErrorCode.unknownError.rawValue
     }
+  }
+}
+
+private struct RequestDeadline {
+  private let unixMilliseconds: Double?
+
+  var date: Date? {
+    unixMilliseconds.map { Date(timeIntervalSince1970: $0 / 1_000) }
+  }
+
+  init(_ value: Any?) throws {
+    guard let value else {
+      unixMilliseconds = nil
+      return
+    }
+    guard let number = value as? NSNumber,
+      CFGetTypeID(number) != CFBooleanGetTypeID(),
+      number.doubleValue.isFinite
+    else {
+      throw SkyRPCError.invalidRequest("deadlineUnixMilliseconds must be a finite number")
+    }
+    unixMilliseconds = number.doubleValue
+  }
+
+  func check(now: Date = Date()) throws {
+    guard let unixMilliseconds else { return }
+    if now.timeIntervalSince1970 * 1_000 >= unixMilliseconds {
+      throw SkyRuntimeError.deadlineExceeded
+    }
+  }
+}
+
+enum RequestDeadlineContext {
+  private static let key = "dev.huangjianbin.intel-sky-service.request-deadline"
+
+  static func withDeadline<T>(_ deadline: Date?, operation: () throws -> T) rethrows -> T {
+    let dictionary = Thread.current.threadDictionary
+    let previous = dictionary[key]
+    if let deadline {
+      dictionary[key] = deadline
+    } else {
+      dictionary.removeObject(forKey: key)
+    }
+    defer {
+      if let previous {
+        dictionary[key] = previous
+      } else {
+        dictionary.removeObject(forKey: key)
+      }
+    }
+    return try operation()
+  }
+
+  static func check(now: Date = Date()) throws {
+    guard let deadline = Thread.current.threadDictionary[key] as? Date else { return }
+    if now >= deadline { throw SkyRuntimeError.deadlineExceeded }
   }
 }

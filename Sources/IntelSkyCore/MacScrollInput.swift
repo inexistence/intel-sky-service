@@ -36,6 +36,79 @@ protocol ScrollEventPosting: Sendable {
   ) throws
 }
 
+protocol AccessibilityPageScrolling: Sendable {
+  func scroll(
+    element: AXUIElement,
+    direction: ComputerUseScrollDirection,
+    pageCount: Int
+  ) throws -> Int
+}
+
+struct MacAccessibilityPageScroller: AccessibilityPageScrolling {
+  func scroll(
+    element: AXUIElement,
+    direction: ComputerUseScrollDirection,
+    pageCount: Int
+  ) throws -> Int {
+    guard pageCount > 0, let target = scrollTarget(from: element, direction: direction) else {
+      return 0
+    }
+    let action = actionName(for: direction)
+    var completed = 0
+    for _ in 0..<pageCount {
+      try RequestDeadlineContext.check()
+      try UserInterventionContext.check()
+      guard AXUIElementPerformAction(target, action as CFString) == .success else { break }
+      completed += 1
+    }
+    return completed
+  }
+
+  private func scrollTarget(
+    from element: AXUIElement,
+    direction: ComputerUseScrollDirection
+  ) -> AXUIElement? {
+    let action = actionName(for: direction)
+    var candidate: AXUIElement? = element
+    for _ in 0..<64 {
+      guard let current = candidate else { return nil }
+      var rawNames: CFArray?
+      if AXUIElementCopyActionNames(current, &rawNames) == .success,
+        let names = rawNames as? [String], names.contains(action)
+      {
+        return current
+      }
+      candidate = parent(of: current)
+    }
+    return nil
+  }
+
+  private func parent(of element: AXUIElement) -> AXUIElement? {
+    var rawParent: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(
+        element,
+        kAXParentAttribute as CFString,
+        &rawParent
+      ) == .success,
+      let rawParent,
+      CFGetTypeID(rawParent) == AXUIElementGetTypeID()
+    else {
+      return nil
+    }
+    return unsafeDowncast(rawParent, to: AXUIElement.self)
+  }
+
+  private func actionName(for direction: ComputerUseScrollDirection) -> String {
+    switch direction {
+    case .up: return "AXScrollUpByPage"
+    case .down: return "AXScrollDownByPage"
+    case .left: return "AXScrollLeftByPage"
+    case .right: return "AXScrollRightByPage"
+    }
+  }
+}
+
 struct ScrollDelta: Equatable, Sendable {
   let vertical: Int32
   let horizontal: Int32
@@ -53,14 +126,17 @@ struct ScrollDeltaPlan: Sendable {
     case .left, .right: axisExtent = screenFrame.width
     }
     let pageExtent = min(1_200, max(240, axisExtent * 0.8))
-    let magnitude = max(1, Int32((pageExtent * pages).rounded()))
+    let rawMagnitude = (pageExtent * pages).rounded()
+    let magnitude = max(1, Int32(min(Double(Int32.max), rawMagnitude)))
     let signedMagnitude: Int32
     switch direction {
     case .up, .left: signedMagnitude = magnitude
     case .down, .right: signedMagnitude = -magnitude
     }
 
-    let eventCount = max(1, Int(ceil(Double(magnitude) / 10)))
+    // Keep one request bounded even when the client asks for an extreme number
+    // of pages. The official client accepts every finite positive value.
+    let eventCount = min(240, max(1, Int(ceil(Double(magnitude) / 10))))
     let baseDelta = signedMagnitude / Int32(eventCount)
     let remainder = signedMagnitude % Int32(eventCount)
     return (0..<eventCount).map { index in
@@ -127,8 +203,12 @@ struct CGScrollEventPoster: ScrollEventPosting {
       throw MacAppActionError.eventCreationFailed
     }
 
+    try RequestDeadlineContext.check()
+    try UserInterventionContext.check()
     move.post(tap: .cghidEventTap)
     for (index, event) in events.enumerated() {
+      try RequestDeadlineContext.check()
+      try UserInterventionContext.check()
       event.post(tap: .cghidEventTap)
       if index + 1 < events.count { Thread.sleep(forTimeInterval: 0.005) }
     }

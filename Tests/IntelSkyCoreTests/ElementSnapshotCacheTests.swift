@@ -75,6 +75,44 @@ import Testing
   _ = try cache.element(id: "2", for: second, at: Date(timeIntervalSince1970: 102))
 }
 
+@Test func screenshotCoordinatesMapThroughWindowOriginAndRetinaScale() throws {
+  let cache = ElementSnapshotCache()
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot([:]),
+    for: app,
+    coordinateSpace: WindowCoordinateSpace(
+      screenFrame: CGRect(x: 100, y: 200, width: 400, height: 300),
+      screenshotPixelSize: CGSize(width: 800, height: 600)
+    )
+  )
+
+  let point = try cache.screenPoint(for: CGPoint(x: 200, y: 100), in: app)
+
+  #expect(point == CGPoint(x: 200, y: 250))
+}
+
+@Test func screenshotCoordinateRequiresImageAndRejectsOutOfBoundsPoint() throws {
+  let cache = ElementSnapshotCache()
+  let app = testApp(pid: 10)
+  cache.store(testSnapshot([:]), for: app)
+  #expect(throws: ElementSnapshotCacheError.self) {
+    try cache.screenPoint(for: .zero, in: app)
+  }
+
+  cache.store(
+    testSnapshot([:]),
+    for: app,
+    coordinateSpace: WindowCoordinateSpace(
+      screenFrame: CGRect(x: 100, y: 200, width: 400, height: 300),
+      screenshotPixelSize: CGSize(width: 800, height: 600)
+    )
+  )
+  #expect(throws: ElementSnapshotCacheError.self) {
+    try cache.screenPoint(for: CGPoint(x: 801, y: 10), in: app)
+  }
+}
+
 private func testApp(bundleIdentifier: String = "example.app", pid: pid_t) -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: pid,

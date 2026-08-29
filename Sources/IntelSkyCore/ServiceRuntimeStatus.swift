@@ -4,15 +4,18 @@ import Foundation
 public struct ServiceRuntimeStatus: Codable, Equatable, Sendable {
   public let permissions: ServicePermissionStatus
   public let processIdentifier: Int32
+  public let physicalInputMonitoring: Bool
   public let updatedAt: Date
 
   public init(
     permissions: ServicePermissionStatus,
     processIdentifier: Int32,
+    physicalInputMonitoring: Bool = false,
     updatedAt: Date
   ) {
     self.permissions = permissions
     self.processIdentifier = processIdentifier
+    self.physicalInputMonitoring = physicalInputMonitoring
     self.updatedAt = updatedAt
   }
 }

@@ -1,6 +1,6 @@
 # intel-sky-service
 
-An experimental, clean-room compatibility service for the local macOS IPC used by the bundled `@oai/sky` client. The immediate goal is to restore a small, auditable subset of Codex Computer Use on Intel Macs.
+An experimental, clean-room compatibility service for the local macOS IPC used by the bundled `@oai/sky` client. The goal is to restore the complete public Codex Computer Use window API on Intel Macs while keeping the official client and Codex installation unmodified.
 
 This is not an OpenAI product. The protocol is undocumented; compatibility is based on observing the locally installed client. The implementation does not use an API key or send requests to an external model service.
 
@@ -11,15 +11,17 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - 4-byte little-endian length prefix with an 8 MiB limit
 - immediate `ping` response
 - peer validation after `ping`: same macOS user and the signed OpenAI chain `node_repl → codex → com.openai.codex`
-- read-only `ComputerUseIPCListAppsRequest` backed by `NSWorkspace`
-- read-only `ComputerUseIPCAppGetSkyshotRequest` with a bounded Accessibility tree and focused-window PNG
+- `ComputerUseIPCListAppsRequest` backed by running `NSWorkspace` apps plus the official Spotlight recent-usage query (`lastUsedDate` and `useCount`)
+- `ComputerUseIPCAppGetSkyshotRequest` with app auto-launch, stable Accessibility element IDs, bounded tree diffs, and focused-window PNG
 - latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL and 16-app limit
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
-- snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or absolute coordinate
+- snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
 - snapshot-bound `pressKey` chords and bounded Unicode `typeText` input
-- snapshot-bound vertical and horizontal scrolling by element ID or coordinate
+- snapshot-bound vertical and horizontal scrolling, with AX page actions and bounded pixel fallback
+- all eleven public APIs: `list_apps`, `get_app_state`, `click`, `drag`, `paste`, `perform_secondary_action`, `press_key`, `scroll`, `select_text`, `set_value`, and `type_text`
+- signed x86_64 App bundle and per-user LaunchAgent installer
 
-Persistence, installers, and launch agents are not implemented yet. Screenshot and Accessibility permissions are checked but never requested automatically.
+The public surface is implemented, but exact ARM semantics, focus/interruption behavior, virtual-cursor presentation, loading-aware settling, and long-run resilience are still active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
 ## Build and test
 
@@ -94,7 +96,7 @@ Restart the LaunchAgent after changing privacy settings, then verify that both p
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 
-Click, keyboard, and scroll actions require a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. Coordinate actions are also snapshot-bound, and no event is posted unless the target application becomes active. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll requests accept up to 10 pages and move the pointer to the target before posting bounded pixel-wheel events.
+Every action requires a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. Screenshot coordinates are mapped through the captured window origin and image scale, including Retina screenshots, and fail closed when stale or outside the image. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll accepts every finite positive page count; element scrolling prefers AX page actions, while unsupported and fractional movement uses bounded pixel-wheel events.
 
 ## Security boundary
 
