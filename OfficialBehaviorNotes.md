@@ -323,8 +323,10 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that point, including during capture, latches subsequent actions to `userIntervened` until another
   clean state query. Other known target processes are unaffected. When Input Monitoring is not
   granted, monitoring remains disabled without a permission prompt and `service-status.json`
-  reports the degraded capability. `HIGH_CONFIDENCE`; exact official target resolution, debounce,
-  and whether some intervention reasons persist for the entire turn remain `NEEDS_ARM_ORACLE`.
+  reports the degraded capability. If its event tap becomes available after an earlier snapshot,
+  that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
+  resolution, debounce, and whether some intervention reasons persist for the entire turn remain
+  `NEEDS_ARM_ORACLE`.
 
 ## Oracle backlog
 

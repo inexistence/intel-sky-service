@@ -123,6 +123,24 @@ import Testing
   #expect(throws: SkySafetyError.self) { try coordinator.requireFreshState(for: app) }
 }
 
+@Test func inputMonitoringBecomingAvailableRequiresAStateRequery() throws {
+  let monitor = StubUserInterventionMonitor()
+  monitor.available = false
+  let coordinator = ComputerUseInterventionCoordinator(monitor: monitor)
+  let app = trackerTestApp(pid: 10)
+  coordinator.recordFreshState(
+    for: app,
+    checkpoint: coordinator.stateRefreshCheckpoint(for: app)
+  )
+
+  monitor.available = true
+
+  #expect(throws: SkySafetyError.self) { try coordinator.requireFreshState(for: app) }
+  let checkpoint = coordinator.stateRefreshCheckpoint(for: app)
+  coordinator.recordFreshState(for: app, checkpoint: checkpoint)
+  try coordinator.requireFreshState(for: app)
+}
+
 private func trackerTestApp(pid: pid_t) -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: pid,
@@ -136,7 +154,8 @@ private final class StubUserInterventionMonitor: UserInterventionMonitoring,
   @unchecked Sendable
 {
   var generations: [pid_t: UInt64] = [:]
-  var isAvailable: Bool { true }
+  var available = true
+  var isAvailable: Bool { available }
   func checkpoint() -> UInt64 { generations.values.reduce(0, &+) }
   func checkpoint(for processIdentifier: pid_t) -> UInt64 {
     generations[processIdentifier] ?? 0

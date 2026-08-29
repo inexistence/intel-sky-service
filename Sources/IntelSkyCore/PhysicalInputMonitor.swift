@@ -216,12 +216,11 @@ final class ComputerUseInterventionCoordinator: ComputerUseInterventionArbitrati
 
   func requireFreshState(for app: ResolvedMacApp) throws {
     guard monitor.isAvailable else { return }
-    guard
-      let baseline = lock.withLock({ baselineByBundleIdentifier[app.bundleIdentifier] }),
-      baseline.processIdentifier == app.processIdentifier
-    else {
-      return
+    guard let baseline = lock.withLock({ baselineByBundleIdentifier[app.bundleIdentifier] }) else {
+      throw SkySafetyError.userIntervened
     }
+    // PID replacement is rejected by the snapshot cache with its more specific stale-session error.
+    guard baseline.processIdentifier == app.processIdentifier else { return }
     guard monitor.checkpoint(for: app.processIdentifier) == baseline.checkpoint else {
       throw SkySafetyError.userIntervened
     }
