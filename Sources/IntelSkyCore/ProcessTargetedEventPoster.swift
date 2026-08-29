@@ -44,21 +44,21 @@ enum ProcessTargetedEventPoster {
     event.postToPid(target.processIdentifier)
   }
 
-  static func syntheticFocusSequence(for target: ComputerUseEventTarget) -> (
+  static func syntheticFocusSequence(for _: ComputerUseEventTarget) -> (
     begin: [SyntheticFocusEventDescriptor], end: [SyntheticFocusEventDescriptor]
   ) {
     (
       begin: [
+        SyntheticFocusEventDescriptor(type: 21, subtype: 0x8000, windowNumber: 0),
         SyntheticFocusEventDescriptor(
           type: 13,
           subtype: 1,
-          windowNumber: Int(target.windowID)
+          windowNumber: 0
         ),
-        SyntheticFocusEventDescriptor(type: 21, subtype: 0x8000, windowNumber: 0),
       ],
       end: [
-        SyntheticFocusEventDescriptor(type: 21, subtype: 0x4000, windowNumber: 0),
         SyntheticFocusEventDescriptor(type: 13, subtype: 2, windowNumber: 0),
+        SyntheticFocusEventDescriptor(type: 21, subtype: 0x4000, windowNumber: 0),
       ]
     )
   }

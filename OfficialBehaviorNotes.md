@@ -170,6 +170,32 @@ above. Snapshot expiry or a missing window ID fails closed before input. The pro
 constants and event routing are `CONFIRMED_STATIC_BINARY`; Intel schema/event-construction tests are
 `HIGH_CONFIDENCE`, with an already-approved Calculator/TextEdit runtime smoke still pending.
 
+An attended Intel runtime smoke against the unmodified bundled `@oai/sky` confirmed Finder full
+state and no-change diff capture, Calculator full state and AX element clicks, and TextEdit
+`set_value`, `select_text`, Unicode `type_text`, and control-local `Super_L+Right`. Physical user
+input interrupted an in-flight action with `userIntervened`, and a fresh state query cleared the
+requery latch. `CONFIRMED_INTEL_RUNTIME`. The same smoke exposed one remaining input gap: menu-level
+shortcuts such as `Super_L+a` and `Super_L+v` do not enter AppKit menu-key-equivalent dispatch over
+the current process-targeted event path. Consequently `paste` safely times out, restores the prior
+clipboard, and leaves the document unchanged. Running the pasteboard provider on the main thread
+and delaying the synthetic-focus envelope were both tested and ruled out. TextEdit's background AX
+menu tree is readable and exposes the expected shortcut metadata; however, `AXPress` on the matched
+Select All item returns success while the background-disabled command remains undispatched. Public
+AX menu activation is therefore also ruled out as a substitute for the official focus illusion.
+A targeted ARM disassembly of the virtual-key/menu dispatch path is required before changing this
+behavior.
+
+Targeted ARM vtable recovery and disassembly later identified all four events constructed by
+`SyntheticAppFocusEnforcer`. The enter path sends `21/0x8000` before AppKit `13/1`, and the leave
+path sends AppKit `13/2` before `21/0x4000`; every event has `windowNumber == 0`, zero modifier
+flags, and zero `data1`/`data2`, while the target PID is supplied separately to the process-event
+sender. Intel had incorrectly attached the captured window ID to the first `13/1` event and used
+the opposite pair ordering, and now matches the recovered envelope. `CONFIRMED_STATIC_BINARY`.
+An attended TextEdit probe after both corrections still appended text after `Super_L+a` rather
+than replacing the document selection. Replaying the four notifications alone is therefore
+insufficient; the remaining behavior resides in the enforcer's three-bit activation/focus state
+machine and event-tap/tracker coordination. `CONFIRMED_INTEL_RUNTIME`.
+
 Intel now tracks scoped turns, handles explicit turn-ended requests, and treats an observed turn-ID
 change as an implicit boundary. Before the first operation that truly foregrounds a target, it
 captures the user's frontmost app and focused AX window. It restores only at the turn boundary and
@@ -274,6 +300,15 @@ addon confirms that its executable path matches the canonical path; the accepted
 to `connectRemoteHostedPIPContentHost`. The internal node_repl host-services pipe merely asks this
 same controller to ensure the service and does not carry the App path itself.
 `CONFIRMED_INTEL_CLIENT_SOURCE`.
+
+An attended Intel smoke while the compatibility service was running solely through its per-user
+LaunchAgent showed no native Computer Use status item in the macOS menu bar. At that time neither
+`CODEX_ELECTRON_COMPUTER_USE_APP_PATH` nor `INTEL_SKY_EXPERIMENTAL_PIP` was present in ChatGPT's
+launch environment. This is consistent with the static client path above: socket discovery alone
+does not register a managed service PID with the native status/PIP controller. The status request
+handler is implemented, but its real native UI path remains untested until ChatGPT is deliberately
+restarted in managed-service mode. `CONFIRMED_INTEL_RUNTIME` for the standalone topology;
+`NEEDS_INTEL_MANAGED_RUNTIME` for the native status item.
 
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
