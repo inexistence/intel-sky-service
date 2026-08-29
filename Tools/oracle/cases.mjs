@@ -1,8 +1,16 @@
-// Public @oai/sky window API cases. Inputs use ${NAME} fixture placeholders.
+// Public @oai/sky window API cases plus the public low-level Mac client startApp call.
+// Inputs use ${NAME} fixture placeholders.
 // The safe default suite contains only list_apps; every app-targeted case must be
 // explicitly enabled because the official client can display an authorization UI.
 export const oracleCases = Object.freeze([
   { id: "list_apps", operation: "list_apps", input: null, risk: "read_only" },
+  {
+    id: "start_app.initial_state",
+    operation: "startApp",
+    surface: "mac_client",
+    input: { app: "${APP}" },
+    risk: "target_authorization",
+  },
   {
     id: "get_app_state.full",
     operation: "get_app_state",

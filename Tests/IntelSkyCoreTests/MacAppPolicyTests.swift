@@ -85,7 +85,7 @@ func officialSafetyCategoriesAreForbidden(bundleIdentifier: String) {
   #expect(policy.decision == .forbidden)
 }
 
-@Test func HTTPURLSchemeIsClassifiedAsBrowser() throws {
+@Test func httpURLSchemeIsClassifiedAsBrowser() throws {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent(UUID().uuidString, isDirectory: true)
     .appendingPathExtension("app")
@@ -188,6 +188,7 @@ private struct StubPolicyInterventionArbitrator: ComputerUseInterventionArbitrat
   let resolver = PolicyTrackingResolver()
   let provider = MacAppStateProvider(
     resolver: resolver,
+    screenLockChecker: NoopScreenLockChecker(),
     interventionArbitrator: StubPolicyInterventionArbitrator(),
     policyEvaluator: RejectingPolicyEvaluator()
   )

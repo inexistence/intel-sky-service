@@ -63,8 +63,19 @@ public protocol AppCatalog: Sendable {
 }
 
 public protocol AppStateProviding: Sendable {
+  func startApp(request: [String: Any]) throws -> [String: Any]
   func getAppState(request: [String: Any]) throws -> [String: Any]
   func getAppPolicy(request: [String: Any]) throws -> [String: Any]
+}
+
+extension AppStateProviding {
+  /// IPC-5 associates AppStart with the same initial Skyshot result shape as getAppState.
+  /// A start always establishes a new full-tree baseline, even when the App is already running.
+  public func startApp(request: [String: Any]) throws -> [String: Any] {
+    var initialStateRequest = request
+    initialStateRequest["disableDiff"] = true
+    return try getAppState(request: initialStateRequest)
+  }
 }
 
 public protocol AppActionPerforming: Sendable {
@@ -199,6 +210,11 @@ public struct SkyRequestRouter: Sendable {
             throw SkyRPCError.unsupportedRequestType(requestType)
           }
           result = try appStateProvider.getAppPolicy(request: request)
+        case "ComputerUseIPCAppStartRequest":
+          guard let appStateProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appStateProvider.startApp(request: request)
         case "ComputerUseIPCAppPerformActionRequest":
           guard let appActionPerformer else {
             throw SkyRPCError.unsupportedRequestType(requestType)

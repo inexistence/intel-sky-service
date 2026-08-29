@@ -4,14 +4,14 @@ import { compareTraces } from "./compare-traces.mjs";
 import { oracleCases } from "./cases.mjs";
 import { runCases } from "./run-cases.mjs";
 
-test("manifest covers every public window operation", () => {
+test("manifest covers high-level window operations and low-level startApp", () => {
   const operations = new Set(oracleCases.map((item) => item.operation));
   assert.deepEqual(
     [...operations].sort(),
     [
       "click", "drag", "get_app_state", "list_apps", "paste",
       "perform_secondary_action", "press_key", "scroll", "select_text",
-      "set_value", "type_text",
+      "set_value", "startApp", "type_text",
     ],
   );
 });
@@ -38,6 +38,26 @@ test("authorization and mutation gates fail before invoking sky", async () => {
     }),
     /allowMutating/,
   );
+});
+
+test("low-level startApp case uses the supplied unmodified Mac client", async () => {
+  const calls = [];
+  const trace = await runCases({
+    sky: {},
+    macClient: {
+      async startApp(input) {
+        calls.push(input);
+        return { app: { bundleIdentifier: input.app, pid: 42 } };
+      },
+    },
+    label: "fake",
+    caseIds: ["start_app.initial_state"],
+    fixtures: { APP: "com.example.fixture" },
+    allowTargetAuthorization: true,
+  });
+
+  assert.deepEqual(calls, [{ app: "com.example.fixture" }]);
+  assert.equal(trace.cases[0].outcome.status, "success");
 });
 
 test("comparator ignores volatile metadata and app order", () => {
@@ -72,4 +92,3 @@ test("comparator preserves semantic differences", () => {
   assert.equal(report.summary.differences, 1);
   assert.equal(report.cases[0].status, "different");
 });
-

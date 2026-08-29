@@ -46,6 +46,15 @@ ARM/Intel traces. Target authorization and mutation are separately opt-in so una
 silently open Computer Use approval UI or modify an App. Harness behavior has non-GUI regression
 coverage; official ARM traces for the case matrix remain `NEEDS_ARM_ORACLE`.
 
+The public low-level `MacComputerUseClient` additionally exposes `startApp`, which sends
+`ComputerUseIPCAppStartRequest` with `app` and returns `MacWindowAppState`. ARM Swift field metadata
+contains the matching one-field request and the `ComputerUseIPCSkyshotResult` shape (`app`,
+`skyshot`, `appSpecificInstructions`). `CONFIRMED_CLIENT_SOURCE` and `CONFIRMED_STATIC_BINARY`.
+Intel now routes this request through the same policy, non-activating launch, window-readiness,
+loading-settle, screenshot, and AX capture path as `get_app_state`, forcing a full-tree initial
+baseline. The authorization-gated differential harness has a dedicated low-level-client case.
+`HIGH_CONFIDENCE`; exact behavior when the target is already running remains `NEEDS_ARM_ORACLE`.
+
 ## Confirmed wire behavior
 
 - The socket defaults to
@@ -292,6 +301,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
 
 - The official plugin says `get_app_state` transparently launches a non-running app.
   `CONFIRMED_CLIENT_SOURCE`.
+- The official low-level Mac client also has an explicit `startApp` request returning the same
+  window-state result family. Intel supports it and forces a fresh full-tree baseline after launch.
+  `HIGH_CONFIDENCE`; already-running and launch-failure timing remain `NEEDS_ARM_ORACLE`.
 - It normally waits about one second after an action and up to five additional seconds when loading
   indicators or other state changes are detected. `CONFIRMED_CLIENT_SOURCE`.
 - ARM request types include app start/stop/modify, frontmost window, capture updates, turn-ended,

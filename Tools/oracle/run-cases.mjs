@@ -47,6 +47,7 @@ function assertAllowed(testCase, options) {
  */
 export async function runCases({
   sky,
+  macClient,
   label,
   caseIds = ["list_apps"],
   fixtures = {},
@@ -84,9 +85,13 @@ export async function runCases({
     let input;
     try {
       input = materialize(testCase.input, fixtures);
-      const method = sky[testCase.operation];
-      if (typeof method !== "function") throw new Error(`sky.${testCase.operation} is unavailable`);
-      const result = input === null ? await method.call(sky) : await method.call(sky, input);
+      const client = testCase.surface === "mac_client" ? macClient : sky;
+      const surfaceName = testCase.surface === "mac_client" ? "macClient" : "sky";
+      const method = client?.[testCase.operation];
+      if (typeof method !== "function") {
+        throw new Error(`${surfaceName}.${testCase.operation} is unavailable`);
+      }
+      const result = input === null ? await method.call(client) : await method.call(client, input);
       trace.cases.push({
         id: testCase.id,
         operation: testCase.operation,
@@ -115,4 +120,3 @@ export async function runCases({
 export function traceToJSON(trace) {
   return JSON.stringify(trace, null, 2);
 }
-

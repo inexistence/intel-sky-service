@@ -33,6 +33,35 @@ private struct StubAppStateProvider: AppStateProviding {
   }
 }
 
+private final class TrackingStartAppStateProvider: AppStateProviding, @unchecked Sendable {
+  private(set) var startRequests: [[String: Any]] = []
+
+  func startApp(request: [String: Any]) throws -> [String: Any] {
+    startRequests.append(request)
+    return [
+      "app": ["bundleIdentifier": request["app"] as? String ?? "unknown", "pid": 456],
+      "skyshot": ["text": "[0] AXWindow title=\"Started\""],
+    ]
+  }
+
+  func getAppState(request: [String: Any]) throws -> [String: Any] {
+    throw SkyRPCError.invalidRequest("start request was routed as get state")
+  }
+
+  func getAppPolicy(request: [String: Any]) throws -> [String: Any] { [:] }
+}
+
+private final class DefaultStartAppStateProvider: AppStateProviding, @unchecked Sendable {
+  private(set) var stateRequests: [[String: Any]] = []
+
+  func getAppState(request: [String: Any]) throws -> [String: Any] {
+    stateRequests.append(request)
+    return ["app": ["bundleIdentifier": request["app"] as? String ?? "unknown"]]
+  }
+
+  func getAppPolicy(request: [String: Any]) throws -> [String: Any] { [:] }
+}
+
 private struct StubActionPerformer: AppActionPerforming {
   func performAction(request: [String: Any]) throws -> [String: Any] {
     [:]
@@ -213,6 +242,40 @@ private func decode(_ data: Data) throws -> [String: Any] {
   let skyshot = try #require(result["skyshot"] as? [String: Any])
 
   #expect(skyshot["text"] as? String == "[0] AXWindow title=\"Finder\"")
+}
+
+@Test func startAppUsesOfficialRequestTypeAndSkyshotEnvelope() throws {
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 21,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "requestType": "ComputerUseIPCAppStartRequest",
+      "request": ["app": "com.example.fixture"],
+    ],
+  ])
+  let provider = TrackingStartAppStateProvider()
+  let router = SkyRequestRouter(appCatalog: StubCatalog(), appStateProvider: provider)
+
+  let response = try decode(router.handle(request))
+  let result = try #require(response["result"] as? [String: Any])
+  let app = try #require(result["app"] as? [String: Any])
+  let skyshot = try #require(result["skyshot"] as? [String: Any])
+
+  #expect(provider.startRequests.count == 1)
+  #expect(provider.startRequests[0]["app"] as? String == "com.example.fixture")
+  #expect(app["bundleIdentifier"] as? String == "com.example.fixture")
+  #expect(skyshot["text"] as? String == "[0] AXWindow title=\"Started\"")
+}
+
+@Test func defaultStartAppForcesFullInitialState() throws {
+  let provider = DefaultStartAppStateProvider()
+  _ = try provider.startApp(request: ["app": "com.example.fixture"])
+
+  #expect(provider.stateRequests.count == 1)
+  #expect(provider.stateRequests[0]["app"] as? String == "com.example.fixture")
+  #expect(provider.stateRequests[0]["disableDiff"] as? Bool == true)
 }
 
 @Test func getAppPolicyRoutesBeforeHighLevelApproval() throws {
