@@ -74,6 +74,24 @@ During protocol development, the unmodified bundled `@oai/sky` client from ChatG
 
 For the LaunchAgent installation, add `~/Applications/Intel Sky Service.app` in System Settings → Privacy & Security → Accessibility and Screen & System Audio Recording. Restart the agent after changing permissions, then open a new Codex task so Computer Use is discovered against the running socket. Rebuilding an ad-hoc-signed App changes its code identity and may require granting permissions again; a stable Apple Development signature avoids that churn.
 
+When launched as an App, the service asks macOS for either permission if it is missing. Permission prompts are issued by the service process itself so macOS records the correct responsible application identity.
+
+Check permissions for a direct invocation:
+
+```sh
+~/Applications/Intel\ Sky\ Service.app/Contents/MacOS/intel-sky-service --check-permissions
+```
+
+The command returns exit status 0 only when both permissions are granted; otherwise it returns 77 and prints the individual states as JSON. Because macOS can attribute TCC checks to a process's responsible parent, this direct check is not authoritative for a LaunchAgent.
+
+The running service writes its own authoritative startup state to:
+
+```text
+~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/service-status.json
+```
+
+Restart the LaunchAgent after changing privacy settings, then verify that both permission fields in this owner-only file are `true`.
+
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 
 Click, keyboard, and scroll actions require a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. Coordinate actions are also snapshot-bound, and no event is posted unless the target application becomes active. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll requests accept up to 10 pages and move the pointer to the target before posting bounded pixel-wheel events.

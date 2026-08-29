@@ -44,7 +44,7 @@ public final class SkyUnixServer {
     if listener >= 0 { close(listener) }
   }
 
-  public func run() throws -> Never {
+  public func run(onReady: () -> Void = {}) throws -> Never {
     try prepareSocketDirectory()
     try UnixSocketFilePreparer.removeStaleSocketIfSafe(at: socketPath)
     var address = try makeUnixSocketAddress(socketPath)
@@ -60,6 +60,7 @@ public final class SkyUnixServer {
     guard bindResult == 0 else { throw systemError("bind") }
     guard chmod(socketPath, S_IRUSR | S_IWUSR) == 0 else { throw systemError("chmod") }
     guard listen(listener, 8) == 0 else { throw systemError("listen") }
+    onReady()
 
     while true {
       let client = accept(listener, nil, nil)

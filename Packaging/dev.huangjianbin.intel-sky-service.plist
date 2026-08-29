@@ -4,6 +4,10 @@
 <dict>
   <key>Label</key>
   <string>dev.huangjianbin.intel-sky-service</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>dev.huangjianbin.intel-sky-service</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
     <string>__EXECUTABLE_PATH__</string>

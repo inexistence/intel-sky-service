@@ -1,10 +1,26 @@
+import AppKit
 import Foundation
 import IntelSkyCore
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments == ["--help"] || arguments == ["-h"] {
-  print("usage: intel-sky-service [--socket /absolute/path/computeruse.sock]")
+  print(
+    "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] | --check-permissions"
+  )
   exit(0)
+}
+if arguments == ["--check-permissions"] {
+  let status = ServicePermissionDiagnostics().currentStatus()
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+  do {
+    FileHandle.standardOutput.write(try encoder.encode(status))
+    FileHandle.standardOutput.write(Data("\n".utf8))
+  } catch {
+    fputs("could not encode permission status: \(error)\n", stderr)
+    exit(1)
+  }
+  exit(status.allGranted ? 0 : 77)
 }
 let configuration: SkyServiceConfiguration
 do {
@@ -14,6 +30,10 @@ do {
   exit(64)
 }
 let socketPath = configuration.socketPath
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
+application.finishLaunching()
+ServicePermissionRequester().requestMissingPermissions()
 
 let resolver = MacAppResolver()
 let snapshotCache = ElementSnapshotCache()
@@ -34,7 +54,25 @@ let server = SkyUnixServer(
 
 fputs("intel-sky-service starting at \(socketPath)\n", stderr)
 do {
-  try server.run()
+  try server.run {
+    let permissions = ServicePermissionDiagnostics().currentStatus()
+    do {
+      try ServiceRuntimeStatusWriter.write(
+        ServiceRuntimeStatus(
+          permissions: permissions,
+          processIdentifier: ProcessInfo.processInfo.processIdentifier,
+          updatedAt: Date()
+        ),
+        nextToSocketAt: socketPath
+      )
+    } catch {
+      fputs("warning: could not write runtime status: \(error)\n", stderr)
+    }
+    fputs(
+      "permissions: accessibility=\(permissions.accessibility) screenRecording=\(permissions.screenRecording)\n",
+      stderr
+    )
+  }
 } catch {
   fputs("fatal: \(error)\n", stderr)
   exit(1)

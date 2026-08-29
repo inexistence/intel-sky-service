@@ -46,19 +46,46 @@ protocol MouseClickPosting: Sendable {
 struct WorkspaceAppActivator: AppActivating {
   func activate(_ app: ResolvedMacApp) throws {
     guard let runningApp = NSRunningApplication(processIdentifier: app.processIdentifier),
-      !runningApp.isTerminated,
-      runningApp.activate(options: [])
+      !runningApp.isTerminated
     else {
       throw MacAppActionError.activationFailed(app.bundleIdentifier)
     }
+    if runningApp.isActive { return }
 
-    let deadline = Date().addingTimeInterval(0.5)
-    while !runningApp.isActive, !runningApp.isTerminated, Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.02)
+    if runningApp.activate(options: [.activateAllWindows]),
+      waitUntilActive(runningApp, timeout: 0.5)
+    {
+      return
     }
-    guard runningApp.isActive, !runningApp.isTerminated else {
+
+    guard !app.appPath.isEmpty else {
       throw MacAppActionError.activationFailed(app.bundleIdentifier)
     }
+    let openProcess = Process()
+    openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    openProcess.arguments = [app.appPath]
+    openProcess.standardOutput = FileHandle.nullDevice
+    openProcess.standardError = FileHandle.nullDevice
+    do {
+      try openProcess.run()
+      openProcess.waitUntilExit()
+    } catch {
+      throw MacAppActionError.activationFailed(app.bundleIdentifier)
+    }
+    guard openProcess.terminationStatus == 0 else {
+      throw MacAppActionError.activationFailed(app.bundleIdentifier)
+    }
+    guard waitUntilActive(runningApp, timeout: 2) else {
+      throw MacAppActionError.activationFailed(app.bundleIdentifier)
+    }
+  }
+
+  private func waitUntilActive(_ app: NSRunningApplication, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !app.isActive, !app.isTerminated, Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    return app.isActive && !app.isTerminated
   }
 }
 
