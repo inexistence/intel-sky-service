@@ -112,6 +112,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     )
     if let existing = lock.withLock({ presentations[key] }), !existing.ending {
       try? existing.surface.update(imageURL: imageURL)
+      existing.capture.refresh()
       return
     }
 

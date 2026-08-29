@@ -5,6 +5,7 @@ import ScreenCaptureKit
 
 protocol RemoteHostedPIPWindowCapturing: Sendable {
   func start()
+  func refresh()
   func stop()
 }
 
@@ -20,7 +21,10 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     qos: .userInteractive
   )
   private var stream: SCStream?
-  private var startTask: Task<Void, Never>?
+  private var capturedWindowID: CGWindowID?
+  private var reconciling = false
+  private var refreshPending = false
+  private var recoveryAttempt = 0
   private var stopped = false
 
   init(processIdentifier: pid_t, outputSize: CGSize, surface: RemoteHostedPIPSurface) {
@@ -29,75 +33,175 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     self.surface = surface
   }
 
-  func start() {
-    let task = lock.withLock { () -> Task<Void, Never>? in
-      guard startTask == nil, stream == nil, !stopped else { return nil }
-      let task = Task { [weak self] in
-        guard let self else { return }
-        await self.startCapture()
+  func start() { refresh() }
+
+  func refresh() {
+    let shouldReconcile = lock.withLock { () -> Bool in
+      guard !stopped else { return false }
+      guard !reconciling else {
+        refreshPending = true
+        return false
       }
-      startTask = task
-      return task
+      reconciling = true
+      return true
     }
-    _ = task
+    if shouldReconcile { requestShareableContent() }
   }
 
   func stop() {
-    let state = lock.withLock { () -> (Task<Void, Never>?, SCStream?) in
-      guard !stopped else { return (nil, nil) }
+    let stream = lock.withLock { () -> SCStream? in
+      guard !stopped else { return nil }
       stopped = true
-      let state = (startTask, stream)
-      startTask = nil
-      stream = nil
-      return state
+      reconciling = false
+      refreshPending = false
+      capturedWindowID = nil
+      let stream = self.stream
+      self.stream = nil
+      return stream
     }
-    state.0?.cancel()
-    guard let stream = state.1 else {
-      surface.resetToFallbackImage()
-      return
-    }
-    Task { [surface] in
-      try? await stream.stopCapture()
-      surface.resetToFallbackImage()
+    surface.resetToFallbackImage()
+    stream?.stopCapture(completionHandler: nil)
+  }
+
+  private func requestShareableContent() {
+    SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) {
+      [weak self] content, error in
+      guard let self else { return }
+      guard error == nil, let content else {
+        self.reconciliationFailed(stream: nil)
+        return
+      }
+      self.reconcile(with: content)
     }
   }
 
-  private func startCapture() async {
-    do {
-      let content = try await SCShareableContent.current
-      try Task.checkCancellation()
-      guard let window = Self.bestWindow(in: content.windows, processIdentifier: processIdentifier)
-      else { throw CaptureError.windowUnavailable }
-
-      let filter = SCContentFilter(desktopIndependentWindow: window)
-      let configuration = SCStreamConfiguration()
-      configuration.width = max(1, Int(outputSize.width.rounded()))
-      configuration.height = max(1, Int(outputSize.height.rounded()))
-      configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-      configuration.pixelFormat = kCVPixelFormatType_32BGRA
-      configuration.queueDepth = 5
-      configuration.scalesToFit = true
-      configuration.preservesAspectRatio = true
-      configuration.showsCursor = false
-      configuration.capturesAudio = false
-
-      let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-      try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-      let shouldStart = lock.withLock { () -> Bool in
-        guard !stopped else { return false }
-        self.stream = stream
-        return true
-      }
-      guard shouldStart else { return }
-      try await stream.startCapture()
-    } catch is CancellationError {
+  private func reconcile(with content: SCShareableContent) {
+    guard let window = Self.bestWindow(in: content.windows, processIdentifier: processIdentifier)
+    else {
+      reconciliationFailed(stream: nil)
       return
-    } catch {
-      lock.withLock {
-        startTask = nil
-        stream = nil
+    }
+
+    let filter = SCContentFilter(desktopIndependentWindow: window)
+    let existing = lock.withLock { () -> SCStream? in
+      guard !stopped else { return nil }
+      return stream
+    }
+    guard !lock.withLock({ stopped }) else {
+      finishReconciliation()
+      return
+    }
+
+    if let existing {
+      guard lock.withLock({ capturedWindowID != window.windowID }) else {
+        lock.withLock { recoveryAttempt = 0 }
+        finishReconciliation()
+        return
       }
-      surface.resetToFallbackImage()
+      existing.updateContentFilter(filter) { [weak self, weak existing] error in
+        guard let self, let existing else { return }
+        guard error == nil else {
+          self.reconciliationFailed(stream: existing)
+          return
+        }
+        self.lock.withLock {
+          guard !self.stopped, self.stream === existing else { return }
+          self.capturedWindowID = window.windowID
+          self.recoveryAttempt = 0
+        }
+        self.finishReconciliation()
+      }
+      return
+    }
+
+    startCapture(filter: filter, windowID: window.windowID)
+  }
+
+  private func startCapture(filter: SCContentFilter, windowID: CGWindowID) {
+    let stream = SCStream(filter: filter, configuration: makeConfiguration(), delegate: self)
+    do {
+      try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+    } catch {
+      reconciliationFailed(stream: nil)
+      return
+    }
+
+    let shouldStart = lock.withLock { () -> Bool in
+      guard !stopped, self.stream == nil else { return false }
+      self.stream = stream
+      capturedWindowID = windowID
+      return true
+    }
+    guard shouldStart else {
+      finishReconciliation()
+      return
+    }
+
+    stream.startCapture { [weak self, weak stream] error in
+      guard let self, let stream else { return }
+      guard error == nil else {
+        self.reconciliationFailed(stream: stream)
+        return
+      }
+      self.lock.withLock {
+        guard !self.stopped, self.stream === stream else { return }
+        self.recoveryAttempt = 0
+      }
+      self.finishReconciliation()
+    }
+  }
+
+  private func makeConfiguration() -> SCStreamConfiguration {
+    let configuration = SCStreamConfiguration()
+    configuration.width = max(1, Int(outputSize.width.rounded()))
+    configuration.height = max(1, Int(outputSize.height.rounded()))
+    configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+    configuration.pixelFormat = kCVPixelFormatType_32BGRA
+    configuration.queueDepth = 5
+    configuration.scalesToFit = true
+    configuration.preservesAspectRatio = true
+    configuration.showsCursor = false
+    configuration.capturesAudio = false
+    return configuration
+  }
+
+  private func reconciliationFailed(stream failedStream: SCStream?) {
+    let state = lock.withLock { () -> (relevant: Bool, discarded: SCStream?, reset: Bool) in
+      guard !stopped else { return (false, nil, false) }
+      if let failedStream, stream !== failedStream { return (false, nil, false) }
+      let shouldDiscard = failedStream != nil
+      let discardedStream = shouldDiscard ? stream : nil
+      if shouldDiscard {
+        stream = nil
+        capturedWindowID = nil
+      }
+      return (true, discardedStream, stream == nil)
+    }
+    guard state.relevant else { return }
+    state.discarded?.stopCapture(completionHandler: nil)
+    if state.reset { surface.resetToFallbackImage() }
+    finishReconciliation(scheduleRecovery: true)
+  }
+
+  private func finishReconciliation(scheduleRecovery: Bool = false) {
+    let outcome = lock.withLock { () -> (refresh: Bool, recoveryDelay: TimeInterval?) in
+      guard !stopped else { return (false, nil) }
+      reconciling = false
+      if refreshPending {
+        refreshPending = false
+        reconciling = true
+        return (true, nil)
+      }
+      guard scheduleRecovery, recoveryAttempt < 3 else { return (false, nil) }
+      recoveryAttempt += 1
+      return (false, 0.25 * pow(2, Double(recoveryAttempt - 1)))
+    }
+    if outcome.refresh {
+      requestShareableContent()
+    } else if let delay = outcome.recoveryDelay {
+      DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?.refresh()
+      }
     }
   }
 
@@ -113,13 +217,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
   }
 
   func stream(_ stream: SCStream, didStopWithError error: any Error) {
-    let shouldReset = lock.withLock { () -> Bool in
-      guard self.stream === stream else { return false }
-      self.stream = nil
-      startTask = nil
-      return true
-    }
-    if shouldReset { surface.resetToFallbackImage() }
+    reconciliationFailed(stream: stream)
   }
 
   private static func bestWindow(in windows: [SCWindow], processIdentifier: pid_t) -> SCWindow? {
@@ -141,9 +239,5 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
           && ($0.isOnScreen || $0.isActive) && $0.frame.width > 1 && $0.frame.height > 1
       }
       .min { (rank[$0.windowID] ?? Int.max) < (rank[$1.windowID] ?? Int.max) }
-  }
-
-  private enum CaptureError: Error {
-    case windowUnavailable
   }
 }

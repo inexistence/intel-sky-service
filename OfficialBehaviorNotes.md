@@ -255,10 +255,14 @@ producer selector ABI, a real local CAContext surface, presentation publication/
 a desktop-independent ScreenCaptureKit stream for the target's front normal window and feeds BGRA
 frames at up to 30 fps into an `AVSampleBufferDisplayLayer`; the latest `get_app_state` image remains
 visible until the first frame and returns if capture stops. Capture excludes the physical cursor
-because cursor state is sent separately to the native host. Unit tests replace capture with a fake,
-so routine tests cannot request Screen Recording or per-target Computer Use approval.
-`HIGH_CONFIDENCE`. Dynamic managed-host verification and exact stream resizing/window-replacement
-behavior remain pending, so the feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1`.
+because cursor state is sent separately to the native host. Every subsequent `get_app_state`
+reconciles the capture against the target process's current front normal window and updates the
+existing `SCStream` filter when the window ID changes. Stream creation, filter-update, and delegate
+failures fall back to the retained state image and use finite 0.25/0.5/1-second recovery attempts;
+late callbacks from replaced streams are ignored by identity. Unit tests replace capture with a
+fake, so routine tests cannot request Screen Recording or per-target Computer Use approval.
+`HIGH_CONFIDENCE`. Dynamic managed-host verification and exact host-visible resize behavior remain
+pending, so the feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

@@ -35,6 +35,20 @@ import UniformTypeIdentifiers
   #expect(capture.started)
 
   coordinator?.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.apple.finder"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.apple.finder", "pid": 123],
+      "skyshot": [
+        "text": "Finder refreshed",
+        "screenshot": ["url": imageURL.absoluteString, "mimeType": "image/png"],
+      ],
+    ]
+  )
+  #expect(capture.refreshCount == 1)
+
+  coordinator?.observe(
     requestType: "ComputerUseIPCCodexTurnEndedRequest",
     request: ["threadID": "thread", "turnID": "turn"],
     codexTurnMetadata: nil,
@@ -52,10 +66,13 @@ private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   private let lock = NSLock()
   private var didStart = false
   private var didStop = false
+  private var storedRefreshCount = 0
   var started: Bool { lock.withLock { didStart } }
   var stopped: Bool { lock.withLock { didStop } }
+  var refreshCount: Int { lock.withLock { storedRefreshCount } }
 
   func start() { lock.withLock { didStart = true } }
+  func refresh() { lock.withLock { storedRefreshCount += 1 } }
   func stop() { lock.withLock { didStop = true } }
 }
 
