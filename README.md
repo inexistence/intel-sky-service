@@ -68,6 +68,16 @@ Scripts/install-launch-agent.sh
 
 The installer copies the App to `~/Applications` and creates the per-user LaunchAgent `dev.huangjianbin.intel-sky-service`. The service uses its own bundle identity; it does not impersonate OpenAI's `com.openai.sky.CUAService` or request OpenAI's application-group entitlement.
 
+After a ChatGPT update, run the read-only native-host compatibility audit before enabling any
+future experimental PIP integration:
+
+```sh
+Scripts/audit-pip-host.sh
+```
+
+It fails closed when the Intel host architecture, OpenAI signing team, or required XPC selectors
+change.
+
 During protocol development, the unmodified bundled `@oai/sky` client from ChatGPT `26.825.41651` successfully completed the IPC-5 handshake, returned the local app list, and captured Finder state on x86_64. The production peer policy additionally requires the real `node_repl → codex → com.openai.codex` process chain; launching ChatGPT's signed Node binary from a shell is intentionally rejected.
 
 ## Permissions
