@@ -21,7 +21,7 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - all eleven public APIs: `list_apps`, `get_app_state`, `click`, `drag`, `paste`, `perform_secondary_action`, `press_key`, `scroll`, `select_text`, `set_value`, and `type_text`
 - signed x86_64 App bundle and per-user LaunchAgent installer
 
-The public surface is implemented, including physical-input interruption, lock/secure-input checks, loading-aware settling, an input-transparent software cursor, turn tracking, and conservative focus restoration. Exact ARM synthetic-focus/PIP semantics and long-run resilience are still active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
+The eleven public `@oai/sky` APIs are implemented, including physical-input interruption, lock/secure-input checks, loading-aware settling, an input-transparent software cursor, turn tracking, and conservative focus restoration. The native Codex PIP/container uses a separate hidden capture protocol and private host XPC integration; it is not yet implemented. Exact ARM synthetic-focus/PIP semantics and long-run resilience remain active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
 ## Build and test
 

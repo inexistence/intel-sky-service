@@ -172,6 +172,41 @@ state machine, menu handling, and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`
 the private process-notification-based synthetic-focus illusion and the PIP-host integration, so
 those portions remain `KNOWN_DIFFERENCE`.
 
+## Native host capture and PIP boundary
+
+The eleven public `@oai/sky` actions are not the whole native-host surface. ARM protocol metadata
+also declares `ComputerUseIPCAppStartCaptureRequest`, `ComputerUseIPCAppNextCaptureUpdateRequest`,
+capture update/result types, and event-stream start/status/stop requests. The official service owns
+a `CUAServiceRemoteHostedPIPController`; the shared ComputerUse framework publishes
+`RemoteHostedPIPContentStream` instances through a private remote-hosted-PIP XPC protocol and
+renders separate window and cursor capture streams. `CONFIRMED_STATIC_BINARY`.
+
+Intel ChatGPT's main-process bundle independently contains a `computer-use-start-capture` bridge.
+It sends a worker `start` request with an animation target, bundle identifier, permission request
+ID, and request ID, then forwards asynchronous `computer-use-capture-updated` events to the
+renderer. Its remote-hosted-PIP task manager associates presentations with task/thread visibility
+and completes them at turn boundaries. `CONFIRMED_INTEL_CLIENT_SOURCE`.
+
+The current Intel app also ships a signed, pure-x86_64 `Resources/native/sky.node` containing the
+host implementation. Its Objective-C metadata exposes eight host XPC methods: publish presentation,
+set source PID, prepare/complete operation, will-end, invalidate, note interaction, and set cursor
+location. Its producer callback protocol exposes connect, max-display-size, perform-action, and
+did-end-stream. The host bootstraps the service with an Apple Event whose class/ID are `SkCu` and
+`PiPB`, carrying a Mach reply port used to rendezvous two private XPC endpoints.
+`CONFIRMED_INTEL_STATIC_BINARY`.
+
+The supplied ARM service is not protocol-identical to the installed Intel host: its producer
+protocol metadata has five methods rather than four, and its strings include the newer
+`setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore
+target the installed Intel `sky.node` contract and treat ARM behavior as an oracle, rather than
+copying the ARM protocol surface verbatim. `CONFIRMED_STATIC_BINARY`.
+
+Consequently, the public node_repl tool surface can be protocol-complete while the native Codex
+container experience remains absent. A locally drawn overlay can reproduce visible feedback, but
+embedding the live target inside Codex requires the hidden capture request family plus the private
+host XPC contract. That integration is version-coupled and remains `KNOWN_DIFFERENCE`; unsupported
+request stubs must not be advertised as a working native PIP implementation.
+
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,
 `cannotSetValueForNonSettableElement`, `cannotSelectTextForElement`, and
