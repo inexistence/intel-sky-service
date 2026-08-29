@@ -118,6 +118,47 @@ This proves that focus arbitration, physical-input monitoring, software cursor f
 interruption are deliberate runtime subsystems rather than presentation-only details.
 `CONFIRMED_STATIC_BINARY`.
 
+Targeted ARM symbol and disassembly analysis adds the following details:
+
+- `SyntheticAppFocusEnforcer` tracks `applicationBelievesItIsActive`,
+  `applicationBelievesItHasFocus`, and `applicationIsActive`; its
+  `enforceActiveState(for:)` path constructs a private AppKit process-notification event using
+  `NSEventType.processNotification` and `kCPSNotifyKeyFocusReturned`.
+- `SystemFocusStealPreventer` exposes process-scoped start/stop calls plus target-lost/target-gained
+  callbacks and menu-dismissal suppression.
+- `RemoteHostedPIPContentStream` stores `threadID`, `turnID`, `focusRestoreTarget`, associated window
+  IDs, and a stream-end timeout; its lifecycle exposes `willEndStream`, `noteInteraction`, and
+  `invalidate`.
+
+Together these show that official focus restoration is stream/turn-scoped and that the target can
+be made to believe it is focused without ordinary foreground activation. `CONFIRMED_STATIC_BINARY`.
+
+The official Mac JS transport includes `codexTurnMetadata` on each IPC request. Live node_repl
+metadata contains `session_id`, `thread_id`, and `turn_id`; the ARM binary also exposes
+`ComputerUseIPCCodexTurnEndedRequest(threadID:turnID:)`. `CONFIRMED_CLIENT_SOURCE` and
+`CONFIRMED_INTEL_RUNTIME` for the observed metadata envelope.
+
+Intel now attempts background AX-only operations before activating the target: single-left
+element click uses `AXPress`; complete AX page scroll, `setValue`, secondary AX actions, and text
+selection do not foreground the app. Activation is deferred until a CGEvent/keyboard fallback is
+actually required. In a real smoke, Finder remained frontmost while an AXPress changed Calculator
+from `112222222` to `1122222222`. `CONFIRMED_INTEL_RUNTIME`.
+
+Intel now tracks scoped turns, handles explicit turn-ended requests, and treats an observed turn-ID
+change as an implicit boundary. Before the first operation that truly foregrounds a target, it
+captures the user's frontmost app and focused AX window. It restores only at the turn boundary and
+only if the current frontmost process is one controlled during that turn; restoration is suppressed
+after physical input or an independent user focus change. The state machine, routing, and safety
+conditions have regression coverage. A host-style dynamic turn-ended smoke is still
+`NEEDS_ARM_ORACLE`: node_repl's seatbelt correctly denied a direct JavaScript socket connection,
+and the public high-level `sky` surface does not expose the lifecycle request.
+
+The socket server now accepts up to eight clients concurrently while serializing Computer Use
+request execution. This prevents a persistent node_repl transport from blocking a separate trusted
+lifecycle connection without allowing overlapping desktop actions. The identity of the Intel
+turn-ended caller is not yet dynamically confirmed, so the peer allowlist has not been broadened.
+`HIGH_CONFIDENCE` for server concurrency; caller integration remains `NEEDS_ARM_ORACLE`.
+
 Intel now renders an independently drawn, non-activating software cursor for click, drag, and
 scroll operations. It is an input-transparent status-level panel that joins all Spaces, does not
 move the physical pointer, animates between positions, shows pressed feedback, and hides after an
@@ -128,8 +169,8 @@ access. `CONFIRMED_INTEL_RUNTIME`.
 
 The official cursor's exact artwork, path/spring constants, PIP/container integration, visibility
 state machine, menu handling, and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel still lacks
-the official-equivalent focus-arbitration and focus-restore state machine, so that portion remains
-`KNOWN_DIFFERENCE`.
+the private process-notification-based synthetic-focus illusion and the PIP-host integration, so
+those portions remain `KNOWN_DIFFERENCE`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

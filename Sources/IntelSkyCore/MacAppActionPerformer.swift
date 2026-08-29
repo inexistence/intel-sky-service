@@ -44,6 +44,12 @@ protocol MouseClickPosting: Sendable {
 }
 
 struct WorkspaceAppActivator: AppActivating {
+  private let focusArbitrator: any ComputerUseFocusArbitrating
+
+  init(focusArbitrator: any ComputerUseFocusArbitrating = ComputerUseFocusCoordinator.shared) {
+    self.focusArbitrator = focusArbitrator
+  }
+
   func activate(_ app: ResolvedMacApp) throws {
     guard let runningApp = NSRunningApplication(processIdentifier: app.processIdentifier),
       !runningApp.isTerminated
@@ -51,6 +57,7 @@ struct WorkspaceAppActivator: AppActivating {
       throw MacAppActionError.activationFailed(app.bundleIdentifier)
     }
     if runningApp.isActive { return }
+    focusArbitrator.targetWillBeActivated(app)
 
     if runningApp.activate(options: [.activateAllWindows]),
       waitUntilActive(runningApp, timeout: 0.5)
@@ -263,7 +270,6 @@ public struct MacAppActionPerformer: AppActionPerforming {
         throw MacAppActionError.invalidAction("setValue requires elementID and value")
       }
       let element = try snapshotCache.element(id: elementID, for: app)
-      try activator.activate(app)
       try accessibilityActions.setValue(value, on: element)
     case "performSecondaryAction":
       guard let payload = action[actionName] as? [String: Any],
@@ -277,7 +283,6 @@ public struct MacAppActionPerformer: AppActionPerforming {
         )
       }
       let element = try snapshotCache.element(id: elementID, for: app)
-      try activator.activate(app)
       try accessibilityActions.performSecondaryAction(secondaryAction, on: element)
     case "selectText":
       try performSelectText(action[actionName], app: app)
@@ -329,7 +334,6 @@ public struct MacAppActionPerformer: AppActionPerforming {
       throw MacAppActionError.invalidAction("selectText payload is malformed")
     }
     let element = try snapshotCache.element(id: elementID, for: app)
-    try activator.activate(app)
     try accessibilityActions.selectText(
       text,
       prefix: payload["prefix"] as? String,
@@ -375,7 +379,6 @@ public struct MacAppActionPerformer: AppActionPerforming {
       element = nil
     }
 
-    try activator.activate(app)
     let visualizationPoint: CGPoint?
     switch target {
     case .elementID:
@@ -391,6 +394,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     {
       return
     }
+    try activator.activate(app)
     let point: CGPoint
     switch target {
     case .elementID:
@@ -432,8 +436,6 @@ public struct MacAppActionPerformer: AppActionPerforming {
       try snapshotCache.validateSnapshot(for: app)
       element = nil
     }
-    try activator.activate(app)
-
     let point: CGPoint
     switch target {
     case .elementID(let elementID):
@@ -459,6 +461,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     }
     let remainingPages = requestedPages - Double(axPages)
     if remainingPages > 0 {
+      try activator.activate(app)
       try scrollEventPoster.scroll(
         at: point,
         direction: direction,

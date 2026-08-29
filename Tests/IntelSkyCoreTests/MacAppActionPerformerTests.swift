@@ -48,10 +48,11 @@ import Testing
   let mouse = RecordingMouseClickPoster()
   let axClick = RecordingAccessibilityPrimaryClicker(didClick: true)
   let visualizer = RecordingComputerUseVisualizer()
+  let activator = RecordingActivator()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
     snapshotCache: cache,
-    activator: RecordingActivator(),
+    activator: activator,
     frameReader: StubFrameReader(frame: CGRect(x: 20, y: 40, width: 100, height: 200)),
     mouseClickPoster: mouse,
     accessibilityPrimaryClicker: axClick,
@@ -70,6 +71,7 @@ import Testing
   )
 
   #expect(axClick.elements.count == 1)
+  #expect(activator.activatedApps.isEmpty)
   #expect(mouse.clicks.isEmpty)
   #expect(visualizer.clicks == [CGPoint(x: 70, y: 140)])
 }
@@ -359,10 +361,11 @@ import Testing
   )
   let scroll = RecordingScrollEventPoster()
   let axScroll = RecordingAccessibilityPageScroller(completedPages: 1)
+  let activator = RecordingActivator()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
     snapshotCache: cache,
-    activator: RecordingActivator(),
+    activator: activator,
     frameReader: StubFrameReader(frame: CGRect(x: 20, y: 40, width: 100, height: 200)),
     mouseClickPoster: RecordingMouseClickPoster(),
     keyboardInputPoster: RecordingKeyboardInputPoster(),
@@ -381,6 +384,7 @@ import Testing
   #expect(axScroll.requests.count == 1)
   #expect(axScroll.requests.first?.direction == .down)
   #expect(axScroll.requests.first?.pageCount == 1)
+  #expect(activator.activatedApps == [app])
   #expect(scroll.scrolls.first?.pages == 0.5)
 }
 
@@ -395,10 +399,11 @@ import Testing
     for: app
   )
   let scroll = RecordingScrollEventPoster()
+  let activator = RecordingActivator()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
     snapshotCache: cache,
-    activator: RecordingActivator(),
+    activator: activator,
     frameReader: StubFrameReader(frame: CGRect(x: 0, y: 0, width: 100, height: 100)),
     mouseClickPoster: RecordingMouseClickPoster(),
     keyboardInputPoster: RecordingKeyboardInputPoster(),
@@ -414,6 +419,7 @@ import Testing
     )
   )
 
+  #expect(activator.activatedApps.isEmpty)
   #expect(scroll.scrolls.isEmpty)
 }
 
@@ -577,10 +583,11 @@ import Testing
     for: app
   )
   let accessibility = RecordingAccessibilityActions()
+  let activator = RecordingActivator()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
     snapshotCache: cache,
-    activator: RecordingActivator(),
+    activator: activator,
     frameReader: StubFrameReader(frame: nil),
     mouseClickPoster: RecordingMouseClickPoster(),
     accessibilityActions: accessibility
@@ -611,6 +618,7 @@ import Testing
     )
   )
 
+  #expect(activator.activatedApps.isEmpty)
   #expect(accessibility.setValues.map(\.value) == ["replacement"])
   #expect(accessibility.secondaryActions.map(\.action) == ["Show Menu"])
   #expect(accessibility.selections.map(\.selection) == [.cursorAfter])

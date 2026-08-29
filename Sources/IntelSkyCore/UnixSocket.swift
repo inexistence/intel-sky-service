@@ -28,6 +28,12 @@ public final class SkyUnixServer: @unchecked Sendable {
   private let socketPath: String
   private let router: SkyRequestRouter
   private let authorizer: any PeerAuthorizing
+  private let connectionQueue = DispatchQueue(
+    label: "dev.huangjianbin.intel-sky-service.connections",
+    qos: .userInitiated,
+    attributes: .concurrent
+  )
+  private let connectionSlots = DispatchSemaphore(value: 8)
   private var listener: Int32 = -1
 
   public init(
@@ -68,12 +74,18 @@ public final class SkyUnixServer: @unchecked Sendable {
         if errno == EINTR { continue }
         throw systemError("accept")
       }
-      defer { close(client) }
-      try setReceiveTimeout(milliseconds: 2_000, on: client)
-      do {
-        try serve(client)
-      } catch {
-        fputs("connection rejected: \(error)\n", stderr)
+      connectionSlots.wait()
+      connectionQueue.async { [self] in
+        defer {
+          close(client)
+          connectionSlots.signal()
+        }
+        do {
+          try setReceiveTimeout(milliseconds: 2_000, on: client)
+          try serve(client)
+        } catch {
+          fputs("connection rejected: \(error)\n", stderr)
+        }
       }
     }
   }

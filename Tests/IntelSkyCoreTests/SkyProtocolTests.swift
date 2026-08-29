@@ -240,3 +240,34 @@ private func decode(_ data: Data) throws -> [String: Any] {
 
   #expect(result.isEmpty)
 }
+
+@Test func codexTurnEndedRequestClearsMatchingTurnLifecycle() throws {
+  let lifecycle = ComputerUseTurnCoordinator(eventHandler: { _ in })
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 20,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "codexTurnMetadata": [
+        "session_id": "session",
+        "thread_id": "thread",
+        "turn_id": "turn",
+      ],
+      "requestType": "ComputerUseIPCCodexTurnEndedRequest",
+      "request": ["threadID": "thread", "turnID": "turn"],
+    ],
+  ])
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appStateProvider: nil,
+    appActionPerformer: nil,
+    turnLifecycle: lifecycle
+  )
+
+  let response = try decode(router.handle(request))
+  let result = try #require(response["result"] as? [String: Any])
+
+  #expect(result.isEmpty)
+  #expect(lifecycle.currentIdentity == nil)
+}

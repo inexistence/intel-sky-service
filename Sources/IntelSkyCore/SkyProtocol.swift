@@ -75,18 +75,40 @@ public struct SkyRequestRouter: Sendable {
   private let appCatalog: any AppCatalog
   private let appStateProvider: (any AppStateProviding)?
   private let appActionPerformer: (any AppActionPerforming)?
+  private let executionGate: SkyRequestExecutionGate
+  private let turnLifecycle: any ComputerUseTurnLifecycleHandling
 
   public init(
     appCatalog: any AppCatalog,
     appStateProvider: (any AppStateProviding)? = nil,
     appActionPerformer: (any AppActionPerforming)? = nil
   ) {
+    self.init(
+      appCatalog: appCatalog,
+      appStateProvider: appStateProvider,
+      appActionPerformer: appActionPerformer,
+      turnLifecycle: ComputerUseTurnCoordinator()
+    )
+  }
+
+  init(
+    appCatalog: any AppCatalog,
+    appStateProvider: (any AppStateProviding)?,
+    appActionPerformer: (any AppActionPerforming)?,
+    turnLifecycle: any ComputerUseTurnLifecycleHandling
+  ) {
     self.appCatalog = appCatalog
     self.appStateProvider = appStateProvider
     self.appActionPerformer = appActionPerformer
+    self.executionGate = SkyRequestExecutionGate()
+    self.turnLifecycle = turnLifecycle
   }
 
   public func handle(_ payload: Data) -> Data {
+    executionGate.withLock { handleSerially(payload) }
+  }
+
+  private func handleSerially(_ payload: Data) -> Data {
     var requestID: Any = NSNull()
     do {
       let decoded: Any
@@ -139,6 +161,7 @@ public struct SkyRequestRouter: Sendable {
     let deadline = try RequestDeadline(params["deadlineUnixMilliseconds"])
     return try RequestDeadlineContext.withDeadline(deadline.date) {
       try deadline.check()
+      turnLifecycle.observe(metadata: params["codexTurnMetadata"])
       switch method {
       case "ping":
         return ["serverApiVersion": SkyProtocol.apiVersion]
@@ -151,6 +174,9 @@ public struct SkyRequestRouter: Sendable {
         }
         let result: Any
         switch requestType {
+        case "ComputerUseIPCCodexTurnEndedRequest":
+          turnLifecycle.end(request: request)
+          result = [:]
         case "ComputerUseIPCListAppsRequest":
           result = try appCatalog.listApps()
         case "ComputerUseIPCAppGetSkyshotRequest":
@@ -244,6 +270,16 @@ public struct SkyRequestRouter: Sendable {
       return SkyServerErrorCode.accessibilityError.rawValue
     default: return SkyServerErrorCode.unknownError.rawValue
     }
+  }
+}
+
+private final class SkyRequestExecutionGate: @unchecked Sendable {
+  private let lock = NSRecursiveLock()
+
+  func withLock<T>(_ operation: () -> T) -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return operation()
   }
 }
 
