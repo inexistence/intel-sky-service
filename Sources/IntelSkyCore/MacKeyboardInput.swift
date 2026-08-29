@@ -242,12 +242,12 @@ struct MacKeyChordParser: Sendable {
 }
 
 protocol KeyboardInputPosting: Sendable {
-  func press(_ chord: ParsedKeyChord) throws
-  func typeText(_ text: String) throws
+  func press(_ chord: ParsedKeyChord, target: ComputerUseEventTarget) throws
+  func typeText(_ text: String, target: ComputerUseEventTarget) throws
 }
 
 struct CGKeyboardInputPoster: KeyboardInputPosting {
-  func press(_ chord: ParsedKeyChord) throws {
+  func press(_ chord: ParsedKeyChord, target: ComputerUseEventTarget) throws {
     try requireAccessibilityPermission()
     let orderedModifiers = KeyboardModifier.allCases.filter(chord.modifiers.contains)
     var flags: CGEventFlags = []
@@ -264,31 +264,35 @@ struct CGKeyboardInputPoster: KeyboardInputPosting {
     }
     try RequestDeadlineContext.check()
     try UserInterventionContext.check()
-    for event in events { event.post(tap: .cghidEventTap) }
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
+      for event in events { ProcessTargetedEventPoster.postKeyboard(event, to: target) }
+    }
   }
 
-  func typeText(_ text: String) throws {
+  func typeText(_ text: String, target: ComputerUseEventTarget) throws {
     try requireAccessibilityPermission()
-    for chunk in Self.utf16Chunks(for: text) {
-      try RequestDeadlineContext.check()
-      try UserInterventionContext.check()
-      guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-        let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-      else {
-        throw MacAppActionError.eventCreationFailed
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
+      for chunk in Self.utf16Chunks(for: text) {
+        try RequestDeadlineContext.check()
+        try UserInterventionContext.check()
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+        else {
+          throw MacAppActionError.eventCreationFailed
+        }
+        chunk.withUnsafeBufferPointer { buffer in
+          down.keyboardSetUnicodeString(
+            stringLength: buffer.count,
+            unicodeString: buffer.baseAddress
+          )
+          up.keyboardSetUnicodeString(
+            stringLength: buffer.count,
+            unicodeString: buffer.baseAddress
+          )
+        }
+        ProcessTargetedEventPoster.postKeyboard(down, to: target)
+        ProcessTargetedEventPoster.postKeyboard(up, to: target)
       }
-      chunk.withUnsafeBufferPointer { buffer in
-        down.keyboardSetUnicodeString(
-          stringLength: buffer.count,
-          unicodeString: buffer.baseAddress
-        )
-        up.keyboardSetUnicodeString(
-          stringLength: buffer.count,
-          unicodeString: buffer.baseAddress
-        )
-      }
-      down.post(tap: .cghidEventTap)
-      up.post(tap: .cghidEventTap)
     }
   }
 

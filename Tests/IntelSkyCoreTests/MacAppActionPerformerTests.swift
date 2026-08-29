@@ -12,7 +12,8 @@ import Testing
       text: "test",
       elementsByID: ["7": AXUIElementCreateApplication(app.processIdentifier)]
     ),
-    for: app
+    for: app,
+    coordinateSpace: testCoordinateSpace()
   )
   let activator = RecordingActivator()
   let mouse = RecordingMouseClickPoster()
@@ -31,8 +32,9 @@ import Testing
       mouseButton: 0
     ))
 
-  #expect(activator.activatedApps == [app])
+  #expect(activator.activatedApps.isEmpty)
   #expect(mouse.clicks == [RecordedClick(point: CGPoint(x: 30, y: 50), button: .left, count: 2)])
+  #expect(mouse.targets == [testEventTarget()])
 }
 
 @Test func singleLeftElementClickPrefersAccessibilityPress() throws {
@@ -203,7 +205,7 @@ import Testing
   #expect(mouse.clicks.isEmpty)
 }
 
-@Test func pressKeyRequiresSnapshotThenActivatesAndPostsChord() throws {
+@Test func pressKeyRequiresSnapshotThenPostsChordWithoutActivation() throws {
   let app = actionTestApp()
   let cache = ElementSnapshotCache()
   cache.store(testActionSnapshot(), for: app, coordinateSpace: testCoordinateSpace())
@@ -222,12 +224,13 @@ import Testing
     request: actionRequest(name: "pressKey", payload: ["_0": "Ctrl+Shift+period"])
   )
 
-  #expect(activator.activatedApps == [app])
+  #expect(activator.activatedApps.isEmpty)
   #expect(keyboard.chords == [ParsedKeyChord(keyCode: 47, modifiers: [.control, .shift])])
+  #expect(keyboard.targets == [testEventTarget()])
   #expect(keyboard.typedTexts.isEmpty)
 }
 
-@Test func typeTextRequiresSnapshotThenActivatesAndPostsUnicode() throws {
+@Test func typeTextRequiresSnapshotThenPostsUnicodeWithoutActivation() throws {
   let app = actionTestApp()
   let cache = ElementSnapshotCache()
   cache.store(testActionSnapshot(), for: app, coordinateSpace: testCoordinateSpace())
@@ -246,8 +249,9 @@ import Testing
     request: actionRequest(name: "type", payload: ["_0": "Hello，世界 👋"])
   )
 
-  #expect(activator.activatedApps == [app])
+  #expect(activator.activatedApps.isEmpty)
   #expect(keyboard.typedTexts == ["Hello，世界 👋"])
+  #expect(keyboard.targets == [testEventTarget()])
   #expect(keyboard.chords.isEmpty)
 }
 
@@ -320,7 +324,8 @@ import Testing
       text: "test",
       elementsByID: ["8": AXUIElementCreateApplication(app.processIdentifier)]
     ),
-    for: app
+    for: app,
+    coordinateSpace: testCoordinateSpace()
   )
   let activator = RecordingActivator()
   let scroll = RecordingScrollEventPoster()
@@ -342,7 +347,7 @@ import Testing
     )
   )
 
-  #expect(activator.activatedApps == [app])
+  #expect(activator.activatedApps.isEmpty)
   #expect(
     scroll.scrolls == [
       RecordedScroll(point: CGPoint(x: 70, y: 140), direction: .down, pages: 1.5)
@@ -357,7 +362,8 @@ import Testing
       text: "test",
       elementsByID: ["8": AXUIElementCreateApplication(app.processIdentifier)]
     ),
-    for: app
+    for: app,
+    coordinateSpace: testCoordinateSpace()
   )
   let scroll = RecordingScrollEventPoster()
   let axScroll = RecordingAccessibilityPageScroller(completedPages: 1)
@@ -384,7 +390,7 @@ import Testing
   #expect(axScroll.requests.count == 1)
   #expect(axScroll.requests.first?.direction == .down)
   #expect(axScroll.requests.first?.pageCount == 1)
-  #expect(activator.activatedApps == [app])
+  #expect(activator.activatedApps.isEmpty)
   #expect(scroll.scrolls.first?.pages == 0.5)
 }
 
@@ -566,7 +572,7 @@ import Testing
     )
   )
 
-  #expect(activator.activatedApps == [app])
+  #expect(activator.activatedApps.isEmpty)
   #expect(
     drag.drags == [
       RecordedDrag(from: CGPoint(x: 100, y: 150), to: CGPoint(x: 500, y: 450))
@@ -628,7 +634,7 @@ import Testing
 @Test func pasteUsesOfficialFormatAndRequiresCurrentSnapshot() throws {
   let app = actionTestApp()
   let cache = ElementSnapshotCache()
-  cache.store(testActionSnapshot(), for: app)
+  cache.store(testActionSnapshot(), for: app, coordinateSpace: testCoordinateSpace())
   let paste = RecordingPasteOperation()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
@@ -647,6 +653,7 @@ import Testing
   )
 
   #expect(paste.requests == [RecordedPaste(text: "**hello**", format: .markdown)])
+  #expect(paste.targets == [testEventTarget()])
 }
 
 private struct StubActionResolver: MacAppResolving {
@@ -680,22 +687,32 @@ private struct RecordedClick: Equatable {
 
 private final class RecordingMouseClickPoster: MouseClickPosting, @unchecked Sendable {
   private(set) var clicks: [RecordedClick] = []
+  private(set) var targets: [ComputerUseEventTarget] = []
 
-  func click(at point: CGPoint, button: ComputerUseMouseButton, count: Int) throws {
+  func click(
+    at point: CGPoint,
+    button: ComputerUseMouseButton,
+    count: Int,
+    target: ComputerUseEventTarget
+  ) throws {
     clicks.append(RecordedClick(point: point, button: button, count: count))
+    targets.append(target)
   }
 }
 
 private final class RecordingKeyboardInputPoster: KeyboardInputPosting, @unchecked Sendable {
   private(set) var chords: [ParsedKeyChord] = []
   private(set) var typedTexts: [String] = []
+  private(set) var targets: [ComputerUseEventTarget] = []
 
-  func press(_ chord: ParsedKeyChord) throws {
+  func press(_ chord: ParsedKeyChord, target: ComputerUseEventTarget) throws {
     chords.append(chord)
+    targets.append(target)
   }
 
-  func typeText(_ text: String) throws {
+  func typeText(_ text: String, target: ComputerUseEventTarget) throws {
     typedTexts.append(text)
+    targets.append(target)
   }
 }
 
@@ -707,13 +724,16 @@ private struct RecordedScroll: Equatable {
 
 private final class RecordingScrollEventPoster: ScrollEventPosting, @unchecked Sendable {
   private(set) var scrolls: [RecordedScroll] = []
+  private(set) var targets: [ComputerUseEventTarget] = []
 
   func scroll(
     at point: CGPoint,
     direction: ComputerUseScrollDirection,
-    pages: Double
+    pages: Double,
+    target: ComputerUseEventTarget
   ) throws {
     scrolls.append(RecordedScroll(point: point, direction: direction, pages: pages))
+    targets.append(target)
   }
 }
 
@@ -750,9 +770,11 @@ private struct RecordedDrag: Equatable {
 
 private final class RecordingMouseDragPoster: MouseDragPosting, @unchecked Sendable {
   private(set) var drags: [RecordedDrag] = []
+  private(set) var targets: [ComputerUseEventTarget] = []
 
-  func drag(from start: CGPoint, to end: CGPoint) throws {
+  func drag(from start: CGPoint, to end: CGPoint, target: ComputerUseEventTarget) throws {
     drags.append(RecordedDrag(from: start, to: end))
+    targets.append(target)
   }
 }
 
@@ -841,13 +863,16 @@ private struct RecordedPaste: Equatable {
 
 private final class RecordingPasteOperation: PastePerforming, @unchecked Sendable {
   private(set) var requests: [RecordedPaste] = []
+  private(set) var targets: [ComputerUseEventTarget] = []
 
   func paste(
     text: String,
     format: PasteContentFormat,
-    keyboard: any KeyboardInputPosting
+    keyboard: any KeyboardInputPosting,
+    target: ComputerUseEventTarget
   ) throws {
     requests.append(RecordedPaste(text: text, format: format))
+    targets.append(target)
   }
 }
 
@@ -890,7 +915,16 @@ private func testActionSnapshot() -> CapturedAccessibilitySnapshot {
 
 private func testCoordinateSpace() -> WindowCoordinateSpace {
   WindowCoordinateSpace(
+    windowID: 77,
     screenFrame: CGRect(x: 100, y: 150, width: 400, height: 300),
     screenshotPixelSize: CGSize(width: 800, height: 600)
+  )
+}
+
+private func testEventTarget() -> ComputerUseEventTarget {
+  ComputerUseEventTarget(
+    processIdentifier: actionTestApp().processIdentifier,
+    windowID: 77,
+    screenFrame: CGRect(x: 100, y: 150, width: 400, height: 300)
   )
 }

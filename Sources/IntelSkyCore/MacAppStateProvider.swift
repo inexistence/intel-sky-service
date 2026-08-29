@@ -46,6 +46,7 @@ public struct MacAppStateProvider: AppStateProviding {
         "mimeType": "image/png",
       ]
       coordinateSpace = WindowCoordinateSpace(
+        windowID: window.windowID,
         screenFrame: window.screenFrame,
         screenshotPixelSize: screenshot.pixelSize
       )

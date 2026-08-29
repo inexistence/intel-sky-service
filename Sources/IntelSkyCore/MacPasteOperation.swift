@@ -28,7 +28,8 @@ protocol PastePerforming: Sendable {
   func paste(
     text: String,
     format: PasteContentFormat,
-    keyboard: any KeyboardInputPosting
+    keyboard: any KeyboardInputPosting,
+    target: ComputerUseEventTarget
   ) throws
 }
 
@@ -36,7 +37,19 @@ struct MacPasteOperation: PastePerforming {
   func paste(
     text: String,
     format: PasteContentFormat,
-    keyboard: any KeyboardInputPosting
+    keyboard: any KeyboardInputPosting,
+    target: ComputerUseEventTarget
+  ) throws {
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
+      try performPaste(text: text, format: format, keyboard: keyboard, target: target)
+    }
+  }
+
+  private func performPaste(
+    text: String,
+    format: PasteContentFormat,
+    keyboard: any KeyboardInputPosting,
+    target: ComputerUseEventTarget
   ) throws {
     let pasteboard = NSPasteboard.general
     let previous = PasteboardSnapshot(pasteboard: pasteboard)
@@ -57,7 +70,7 @@ struct MacPasteOperation: PastePerforming {
     }
 
     let chord = try MacKeyChordParser().parse("Super_L+v")
-    try keyboard.press(chord)
+    try keyboard.press(chord, target: target)
     guard try provider.waitForRead(timeout: 2) else {
       if pasteboard.changeCount != operationChangeCount {
         throw MacPasteError.clipboardChangedDuringPaste

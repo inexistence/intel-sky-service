@@ -16,12 +16,12 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL and 16-app limit
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
-- snapshot-bound `pressKey` chords and bounded Unicode `typeText` input
+- snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input
 - snapshot-bound vertical and horizontal scrolling, with AX page actions and bounded pixel fallback
 - all eleven public APIs: `list_apps`, `get_app_state`, `click`, `drag`, `paste`, `perform_secondary_action`, `press_key`, `scroll`, `select_text`, `set_value`, and `type_text`
 - signed x86_64 App bundle and per-user LaunchAgent installer
 
-The eleven public `@oai/sky` APIs are implemented, including physical-input interruption, lock/secure-input checks, loading-aware settling, an input-transparent software cursor, turn tracking, and conservative focus restoration. The hidden Appshot Apple Event bridge and an experimental native Codex PIP path are also implemented: the service can rendezvous with Intel `sky.node`, publish a real CAContext, continuously feed the target window through ScreenCaptureKit and `AVSampleBufferDisplayLayer`, retain state snapshots as a failure fallback, forward cursor state, and end capture with its turn. Exact ARM synthetic-focus/capture semantics and long-run resilience remain active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
+The eleven public `@oai/sky` APIs are implemented, including physical-input interruption, lock/secure-input checks, loading-aware settling, PID/window-targeted synthetic input that does not foreground the target, an input-transparent software cursor, turn tracking, and conservative focus restoration. The hidden Appshot Apple Event bridge and an experimental native Codex PIP path are also implemented: the service can rendezvous with Intel `sky.node`, publish a real CAContext, continuously feed the target window through ScreenCaptureKit and `AVSampleBufferDisplayLayer`, retain state snapshots as a failure fallback, forward cursor state, and end capture with its turn. Exact ARM focus/capture lifetimes and long-run resilience remain active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
 ## Build and test
 

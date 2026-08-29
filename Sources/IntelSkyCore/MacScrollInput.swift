@@ -32,7 +32,8 @@ protocol ScrollEventPosting: Sendable {
   func scroll(
     at point: CGPoint,
     direction: ComputerUseScrollDirection,
-    pages: Double
+    pages: Double,
+    target: ComputerUseEventTarget
   ) throws
 }
 
@@ -165,7 +166,8 @@ struct CGScrollEventPoster: ScrollEventPosting {
   func scroll(
     at point: CGPoint,
     direction: ComputerUseScrollDirection,
-    pages: Double
+    pages: Double,
+    target: ComputerUseEventTarget
   ) throws {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
     guard let screen = screens.frame(containing: point) else {
@@ -203,14 +205,16 @@ struct CGScrollEventPoster: ScrollEventPosting {
       throw MacAppActionError.eventCreationFailed
     }
 
-    try RequestDeadlineContext.check()
-    try UserInterventionContext.check()
-    move.post(tap: .cghidEventTap)
-    for (index, event) in events.enumerated() {
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
       try RequestDeadlineContext.check()
       try UserInterventionContext.check()
-      event.post(tap: .cghidEventTap)
-      if index + 1 < events.count { Thread.sleep(forTimeInterval: 0.005) }
+      ProcessTargetedEventPoster.post(move, to: target)
+      for (index, event) in events.enumerated() {
+        try RequestDeadlineContext.check()
+        try UserInterventionContext.check()
+        ProcessTargetedEventPoster.post(event, to: target)
+        if index + 1 < events.count { Thread.sleep(forTimeInterval: 0.005) }
+      }
     }
   }
 }

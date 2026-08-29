@@ -124,6 +124,14 @@ Targeted ARM symbol and disassembly analysis adds the following details:
   `applicationBelievesItHasFocus`, and `applicationIsActive`; its
   `enforceActiveState(for:)` path constructs a private AppKit process-notification event using
   `NSEventType.processNotification` and `kCPSNotifyKeyFocusReturned`.
+- `SynthesizedEvent` exposes process-targeted click, drag, scroll, key, and Unicode typing
+  constructors. Every event bundle has `send(to: pid)`, whose disassembly calls
+  `CGEventAPI.postToPid`; mouse constructors take the target window ID, bounds, and coordinate
+  orientation instead of posting through the global HID tap.
+- The exact synthetic-focus envelope is visible in disassembly: AppKit-defined subtype `1` with
+  the target window number, process-notification subtype `0x8000` (key focus returned), followed
+  on teardown by process-notification subtype `0x4000` (key focus removed) and AppKit-defined
+  subtype `2` (application deactivated).
 - `SystemFocusStealPreventer` exposes process-scoped start/stop calls plus target-lost/target-gained
   callbacks and menu-dismissal suppression.
 - `RemoteHostedPIPContentStream` stores `threadID`, `turnID`, `focusRestoreTarget`, associated window
@@ -138,11 +146,14 @@ metadata contains `session_id`, `thread_id`, and `turn_id`; the ARM binary also 
 `ComputerUseIPCCodexTurnEndedRequest(threadID:turnID:)`. `CONFIRMED_CLIENT_SOURCE` and
 `CONFIRMED_INTEL_RUNTIME` for the observed metadata envelope.
 
-Intel now attempts background AX-only operations before activating the target: single-left
-element click uses `AXPress`; complete AX page scroll, `setValue`, secondary AX actions, and text
-selection do not foreground the app. Activation is deferred until a CGEvent/keyboard fallback is
-actually required. In a real smoke, Finder remained frontmost while an AXPress changed Calculator
-from `112222222` to `1122222222`. `CONFIRMED_INTEL_RUNTIME`.
+Intel uses background AX operations for single-left element click (`AXPress`), complete AX page
+scroll, `setValue`, secondary AX actions, and text selection. Physical fallbacks no longer activate
+the target or post through the global HID tap: click, drag, pixel scroll, key chords, Unicode typing,
+and paste are bound to the latest snapshot's PID/window ID and use `CGEvent.postToPid`. Each bundle
+is bracketed by the exact activation/focus-returned and focus-removed/deactivation notifications
+above. Snapshot expiry or a missing window ID fails closed before input. The process-notification
+constants and event routing are `CONFIRMED_STATIC_BINARY`; Intel schema/event-construction tests are
+`HIGH_CONFIDENCE`, with an already-approved Calculator/TextEdit runtime smoke still pending.
 
 Intel now tracks scoped turns, handles explicit turn-ended requests, and treats an observed turn-ID
 change as an implicit boundary. Before the first operation that truly foregrounds a target, it
@@ -167,10 +178,11 @@ overlay window being ordered in and out five seconds later. The earlier cross-pr
 `CGWindowList` probe was a false negative because that diagnostic process lacked Screen Recording
 access. `CONFIRMED_INTEL_RUNTIME`.
 
-The official cursor's exact artwork, path/spring constants, PIP/container integration, visibility
-state machine, menu handling, and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel still lacks
-the private process-notification-based synthetic-focus illusion and the PIP-host integration, so
-those portions remain `KNOWN_DIFFERENCE`.
+The official cursor's exact artwork, path/spring constants, visibility state machine, menu handling,
+and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel now has the synthetic-focus envelope and
+native PIP-host integration, but its focus illusion is action-scoped rather than maintained by the
+official observer/event-tap state machine across the whole stream. That lifetime distinction remains
+a `KNOWN_DIFFERENCE` pending runtime calibration.
 
 ## Native host capture and PIP boundary
 

@@ -26,6 +26,7 @@ public enum ElementSnapshotCacheError: Error, CustomStringConvertible {
 }
 
 struct WindowCoordinateSpace: Sendable, Equatable {
+  let windowID: CGWindowID
   let screenFrame: CGRect
   let screenshotPixelSize: CGSize
 
@@ -46,6 +47,12 @@ struct WindowCoordinateSpace: Sendable, Equatable {
       y: screenFrame.minY + screenshotPoint.y * screenFrame.height / screenshotPixelSize.height
     )
   }
+}
+
+struct ComputerUseEventTarget: Sendable, Equatable {
+  let processIdentifier: pid_t
+  let windowID: CGWindowID
+  let screenFrame: CGRect
 }
 
 public final class ElementSnapshotCache: @unchecked Sendable {
@@ -132,6 +139,22 @@ public final class ElementSnapshotCache: @unchecked Sendable {
       throw ElementSnapshotCacheError.missingCoordinateSpace(app.bundleIdentifier)
     }
     return try coordinateSpace.screenPoint(for: screenshotPoint)
+  }
+
+  func eventTarget(for app: ResolvedMacApp, at date: Date = Date()) throws
+    -> ComputerUseEventTarget
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    let entry = try validEntry(for: app, at: date)
+    guard let coordinateSpace = entry.coordinateSpace else {
+      throw ElementSnapshotCacheError.missingCoordinateSpace(app.bundleIdentifier)
+    }
+    return ComputerUseEventTarget(
+      processIdentifier: app.processIdentifier,
+      windowID: coordinateSpace.windowID,
+      screenFrame: coordinateSpace.screenFrame
+    )
   }
 
   private func validEntry(for app: ResolvedMacApp, at date: Date) throws -> Entry {

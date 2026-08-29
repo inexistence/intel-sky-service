@@ -82,14 +82,24 @@ import Testing
     testSnapshot([:]),
     for: app,
     coordinateSpace: WindowCoordinateSpace(
+      windowID: 77,
       screenFrame: CGRect(x: 100, y: 200, width: 400, height: 300),
       screenshotPixelSize: CGSize(width: 800, height: 600)
     )
   )
 
   let point = try cache.screenPoint(for: CGPoint(x: 200, y: 100), in: app)
+  let target = try cache.eventTarget(for: app)
 
   #expect(point == CGPoint(x: 200, y: 250))
+  #expect(
+    target
+      == ComputerUseEventTarget(
+        processIdentifier: 10,
+        windowID: 77,
+        screenFrame: CGRect(x: 100, y: 200, width: 400, height: 300)
+      )
+  )
 }
 
 @Test func screenshotCoordinateRequiresImageAndRejectsOutOfBoundsPoint() throws {
@@ -104,6 +114,7 @@ import Testing
     testSnapshot([:]),
     for: app,
     coordinateSpace: WindowCoordinateSpace(
+      windowID: 77,
       screenFrame: CGRect(x: 100, y: 200, width: 400, height: 300),
       screenshotPixelSize: CGSize(width: 800, height: 600)
     )

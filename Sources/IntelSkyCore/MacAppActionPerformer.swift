@@ -40,7 +40,12 @@ protocol AppActivating: Sendable {
 }
 
 protocol MouseClickPosting: Sendable {
-  func click(at point: CGPoint, button: ComputerUseMouseButton, count: Int) throws
+  func click(
+    at point: CGPoint,
+    button: ComputerUseMouseButton,
+    count: Int,
+    target: ComputerUseEventTarget
+  ) throws
 }
 
 struct WorkspaceAppActivator: AppActivating {
@@ -97,7 +102,12 @@ struct WorkspaceAppActivator: AppActivating {
 }
 
 struct CGMouseClickPoster: MouseClickPosting {
-  func click(at point: CGPoint, button: ComputerUseMouseButton, count: Int) throws {
+  func click(
+    at point: CGPoint,
+    button: ComputerUseMouseButton,
+    count: Int,
+    target: ComputerUseEventTarget
+  ) throws {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
     let types: (down: CGEventType, up: CGEventType, button: CGMouseButton)
     switch button {
@@ -106,30 +116,32 @@ struct CGMouseClickPoster: MouseClickPosting {
     case .middle: types = (.otherMouseDown, .otherMouseUp, .center)
     }
 
-    for clickIndex in 1...count {
-      try RequestDeadlineContext.check()
-      try UserInterventionContext.check()
-      guard
-        let down = CGEvent(
-          mouseEventSource: nil,
-          mouseType: types.down,
-          mouseCursorPosition: point,
-          mouseButton: types.button
-        ),
-        let up = CGEvent(
-          mouseEventSource: nil,
-          mouseType: types.up,
-          mouseCursorPosition: point,
-          mouseButton: types.button
-        )
-      else {
-        throw MacAppActionError.eventCreationFailed
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
+      for clickIndex in 1...count {
+        try RequestDeadlineContext.check()
+        try UserInterventionContext.check()
+        guard
+          let down = CGEvent(
+            mouseEventSource: nil,
+            mouseType: types.down,
+            mouseCursorPosition: point,
+            mouseButton: types.button
+          ),
+          let up = CGEvent(
+            mouseEventSource: nil,
+            mouseType: types.up,
+            mouseCursorPosition: point,
+            mouseButton: types.button
+          )
+        else {
+          throw MacAppActionError.eventCreationFailed
+        }
+        down.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
+        up.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
+        ProcessTargetedEventPoster.post(down, to: target)
+        ProcessTargetedEventPoster.post(up, to: target)
+        if clickIndex < count { Thread.sleep(forTimeInterval: 0.05) }
       }
-      down.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
-      up.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
-      down.post(tap: .cghidEventTap)
-      up.post(tap: .cghidEventTap)
-      if clickIndex < count { Thread.sleep(forTimeInterval: 0.05) }
     }
   }
 }
@@ -238,8 +250,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
     case "pressKey":
       let key = try parseSingleStringPayload(action[actionName], actionName: actionName)
       let chord = try MacKeyChordParser().parse(key)
-      try prepareForInput(app)
-      try keyboardInputPoster.press(chord)
+      let target = try snapshotCache.eventTarget(for: app)
+      try keyboardInputPoster.press(chord, target: target)
     case "type":
       let text = try parseSingleStringPayload(action[actionName], actionName: actionName)
       guard !text.isEmpty else {
@@ -249,8 +261,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
         throw MacAppActionError.invalidAction("type text exceeds 10,000 UTF-16 code units")
       }
       try secureInputChecker.requireTextInjectionAllowed()
-      try prepareForInput(app)
-      try keyboardInputPoster.typeText(text)
+      let target = try snapshotCache.eventTarget(for: app)
+      try keyboardInputPoster.typeText(text, target: target)
     case "scroll":
       guard let scroll = action[actionName] as? [String: Any] else {
         throw MacAppActionError.invalidAction("scroll payload must be an object")
@@ -296,8 +308,13 @@ public struct MacAppActionPerformer: AppActionPerforming {
         throw MacAppActionError.invalidAction("paste requires text and format text, md, or html")
       }
       try secureInputChecker.requireTextInjectionAllowed()
-      try prepareForInput(app)
-      try pasteOperation.paste(text: text, format: format, keyboard: keyboardInputPoster)
+      let target = try snapshotCache.eventTarget(for: app)
+      try pasteOperation.paste(
+        text: text,
+        format: format,
+        keyboard: keyboardInputPoster,
+        target: target
+      )
     default:
       throw MacAppActionError.unsupportedAction(actionName)
     }
@@ -314,9 +331,9 @@ public struct MacAppActionPerformer: AppActionPerforming {
     let end = try parseCoordinateTuple(drag["to"], name: "drag.to")
     let screenStart = try snapshotCache.screenPoint(for: start, in: app)
     let screenEnd = try snapshotCache.screenPoint(for: end, in: app)
-    try activator.activate(app)
+    let target = try snapshotCache.eventTarget(for: app)
     visualizer.showDrag(from: screenStart, to: screenEnd)
-    try mouseDragPoster.drag(from: screenStart, to: screenEnd)
+    try mouseDragPoster.drag(from: screenStart, to: screenEnd, target: target)
   }
 
   private func performSelectText(_ value: Any?, app: ResolvedMacApp) throws {
@@ -394,7 +411,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     {
       return
     }
-    try activator.activate(app)
+    let eventTarget = try snapshotCache.eventTarget(for: app)
     let point: CGPoint
     switch target {
     case .elementID:
@@ -405,7 +422,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     case .coordinate(let coordinate):
       point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
-    try mouseClickPoster.click(at: point, button: button, count: count)
+    try mouseClickPoster.click(at: point, button: button, count: count, target: eventTarget)
   }
 
   private func performScroll(_ scroll: [String: Any], app: ResolvedMacApp) throws {
@@ -461,18 +478,14 @@ public struct MacAppActionPerformer: AppActionPerforming {
     }
     let remainingPages = requestedPages - Double(axPages)
     if remainingPages > 0 {
-      try activator.activate(app)
+      let eventTarget = try snapshotCache.eventTarget(for: app)
       try scrollEventPoster.scroll(
         at: point,
         direction: direction,
-        pages: remainingPages
+        pages: remainingPages,
+        target: eventTarget
       )
     }
-  }
-
-  private func prepareForInput(_ app: ResolvedMacApp) throws {
-    try snapshotCache.validateSnapshot(for: app)
-    try activator.activate(app)
   }
 
   private func parseSingleStringPayload(_ value: Any?, actionName: String) throws -> String {

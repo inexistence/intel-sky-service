@@ -3,11 +3,11 @@ import CoreGraphics
 import Foundation
 
 protocol MouseDragPosting: Sendable {
-  func drag(from start: CGPoint, to end: CGPoint) throws
+  func drag(from start: CGPoint, to end: CGPoint, target: ComputerUseEventTarget) throws
 }
 
 struct CGMouseDragPoster: MouseDragPosting {
-  func drag(from start: CGPoint, to end: CGPoint) throws {
+  func drag(from start: CGPoint, to end: CGPoint, target: ComputerUseEventTarget) throws {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
     guard
       let down = CGEvent(
@@ -48,20 +48,22 @@ struct CGMouseDragPoster: MouseDragPosting {
       dragEvents.append(event)
     }
 
-    try RequestDeadlineContext.check()
-    try UserInterventionContext.check()
-    down.post(tap: .cghidEventTap)
-    do {
-      for event in dragEvents {
-        try RequestDeadlineContext.check()
-        try UserInterventionContext.check()
-        event.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.008)
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
+      try RequestDeadlineContext.check()
+      try UserInterventionContext.check()
+      ProcessTargetedEventPoster.post(down, to: target)
+      do {
+        for event in dragEvents {
+          try RequestDeadlineContext.check()
+          try UserInterventionContext.check()
+          ProcessTargetedEventPoster.post(event, to: target)
+          Thread.sleep(forTimeInterval: 0.008)
+        }
+      } catch {
+        ProcessTargetedEventPoster.post(up, to: target)
+        throw error
       }
-    } catch {
-      up.post(tap: .cghidEventTap)
-      throw error
+      ProcessTargetedEventPoster.post(up, to: target)
     }
-    up.post(tap: .cghidEventTap)
   }
 }
