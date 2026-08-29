@@ -10,6 +10,7 @@ public struct MacAppStateProvider: AppStateProviding {
   private let screenLockChecker: any ScreenLockChecking
   private let interventionArbitrator: any ComputerUseInterventionArbitrating
   private let policyEvaluator: any MacAppPolicyEvaluating
+  private let sessionCoordinator: any ComputerUseSessionCoordinating
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -29,7 +30,8 @@ public struct MacAppStateProvider: AppStateProviding {
       treeDiffer: treeDiffer,
       screenLockChecker: screenLockChecker,
       interventionArbitrator: ComputerUseInterventionCoordinator.shared,
-      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator()
+      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator(),
+      sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
 
@@ -42,7 +44,8 @@ public struct MacAppStateProvider: AppStateProviding {
     treeDiffer: AccessibilityTreeDiffer = .init(),
     screenLockChecker: any ScreenLockChecking = CGSessionScreenLockChecker(),
     interventionArbitrator: any ComputerUseInterventionArbitrating,
-    policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator()
+    policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator(),
+    sessionCoordinator: any ComputerUseSessionCoordinating = NoopComputerUseSessionCoordinator()
   ) {
     self.resolver = resolver
     self.accessibility = accessibility
@@ -53,11 +56,18 @@ public struct MacAppStateProvider: AppStateProviding {
     self.screenLockChecker = screenLockChecker
     self.interventionArbitrator = interventionArbitrator
     self.policyEvaluator = policyEvaluator
+    self.sessionCoordinator = sessionCoordinator
   }
 
   public func getAppState(request: [String: Any]) throws -> [String: Any] {
     try screenLockChecker.requireUnlocked()
     let policyTarget = try resolver.resolveApplication(request["app"])
+    try sessionCoordinator.requireNotStopped(policyTarget)
+    let sessionScope = ComputerUseSessionOperationContext.begin(
+      coordinator: sessionCoordinator,
+      app: policyTarget
+    )
+    defer { sessionScope.end() }
     try policyEvaluator.requireAllowed(policyTarget)
     let app = try resolver.resolveOrLaunch(request["app"])
     let interventionCheckpoint = interventionArbitrator.stateRefreshCheckpoint(for: app)
@@ -82,8 +92,10 @@ public struct MacAppStateProvider: AppStateProviding {
         screenshotPixelSize: screenshot.pixelSize
       )
     }
+    try sessionScope.check()
     snapshotCache.store(snapshot, for: app, coordinateSpace: coordinateSpace)
     interventionArbitrator.recordFreshState(for: app, checkpoint: interventionCheckpoint)
+    sessionCoordinator.recordActive(app)
 
     return [
       "app": [

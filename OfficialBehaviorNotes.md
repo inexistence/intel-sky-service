@@ -214,6 +214,15 @@ ID, and request ID, then forwards asynchronous `computer-use-capture-updated` ev
 renderer. Its remote-hosted-PIP task manager associates presentations with task/thread visibility
 and completes them at turn boundaries. `CONFIRMED_INTEL_CLIENT_SOURCE`.
 
+The same installed Intel ChatGPT status-item path requests
+`ComputerUseIPCCodexStatusItemMenuStateRequest`. Its validated response contains
+`computerUse.activeApplications` descriptors (`id`, `name`, nullable `bundleIdentifier` and
+`bundleURL`) plus Computer History state. Selecting `computer-use/stop-application` sends an
+authenticated `SkCu`/`SndR` Apple Event with `ComputerUseIPCAppStopRequest { app }` and expects an
+empty response. `CONFIRMED_INTEL_CLIENT_SOURCE`. No current ChatGPT caller was found for the ARM
+metadata-only `FrontmostWindow` or `AppModify` requests, so they remain lower-priority hidden
+surfaces rather than assumed requirements.
+
 The exact Intel Appshot transport is now confirmed. ChatGPT sends synchronous Apple Events with
 class/ID `SkCu`/`SndR`, parameters `RspT` (request type), `ReqD` (UTF-8 JSON data), and `ClVn`
 (`CodexComputerUseNativeBridge-1`) directly to the managed service PID. The current start request
@@ -227,6 +236,18 @@ Intel implements this bridge with OpenAI-host signature validation, exact event 
 and schema checks, and a capture queue that emits metadata, AX text, screenshot, and completion
 updates. It never launches the ARM service. `HIGH_CONFIDENCE`; a real Appshot run against an already
 approved target remains pending.
+
+Intel now also tracks successfully captured Apps as turn-scoped sessions, returns the current
+ChatGPT status-menu schema (with Computer History truthfully reported unavailable/stopped), and
+handles the authenticated App-stop request. A stop immediately removes the App from status state,
+cancels in-flight work at cooperative action/deadline checkpoints, blocks subsequent state and
+action requests with `userStoppedSession` (`-10012`), and invalidates its experimental native PIP.
+The latch clears only at a turn start/transition/end; the per-turn active registry is cleared at the
+same boundary, so actions in a new turn require a fresh state capture even if an old AX snapshot is
+still cached. Both Apple Event and socket request paths are supported. Schema, routing,
+cancellation, PIP cleanup, and turn-boundary behavior have non-GUI regression coverage.
+`HIGH_CONFIDENCE`; the real native status-item click path remains `NEEDS_ARM_ORACLE` and pending an
+attended Intel smoke, as do exact official `id` and `bundleURL` value conventions.
 
 The current Intel app also ships a signed, pure-x86_64 `Resources/native/sky.node` containing the
 host implementation. Its Objective-C metadata exposes eight host XPC methods: publish presentation,
@@ -322,6 +343,11 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
 - ARM includes `CUALockScreenGuardian.app`, lock-state monitoring, physical-input callbacks,
   secure-input checks, blocked URL state, user-stop/intervention errors, idle timeout, and hardened
   socket ownership checks. `CONFIRMED_STATIC_BINARY`.
+- ARM exposes `appStoppedByUser`, the public `userStoppedSession` code (`-10012`), and the exact
+  instruction that an explicitly stopped App remains unavailable for the current turn and becomes
+  available on the next assistant turn. Intel reproduces that turn-scoped latch and exact message,
+  including cooperative cancellation of an operation already in progress. `HIGH_CONFIDENCE`;
+  exact stop timing in non-cooperative macOS calls remains `NEEDS_ARM_ORACLE`.
 - The ARM service contains `CodexAppServerComputerUsePolicyProvider`, a cached organization policy
   with `allow_persistent_approval`, `allowed_bundle_ids`, and `denied_bundle_ids`, and a separate
   service-local forbidden-target classifier guarded by the internal

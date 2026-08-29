@@ -200,6 +200,31 @@ private struct StubPolicyInterventionArbitrator: ComputerUseInterventionArbitrat
   #expect(resolver.resolveOrLaunchCount == 0)
 }
 
+@Test func getAppStateRejectsUserStoppedTargetBeforeLaunch() throws {
+  let resolver = PolicyTrackingResolver()
+  let sessions = ComputerUseSessionCoordinator()
+  sessions.recordActive(
+    ResolvedMacApp(
+      processIdentifier: 123,
+      bundleIdentifier: "example.forbidden",
+      displayName: "Forbidden Fixture",
+      appPath: "/Applications/Forbidden Fixture.app"
+    ))
+  _ = try sessions.stopApplication(request: ["app": "example.forbidden"])
+  let provider = MacAppStateProvider(
+    resolver: resolver,
+    screenLockChecker: NoopScreenLockChecker(),
+    interventionArbitrator: StubPolicyInterventionArbitrator(),
+    sessionCoordinator: sessions
+  )
+
+  #expect(throws: SkySafetyError.self) {
+    _ = try provider.getAppState(request: ["app": "example.forbidden"])
+  }
+  #expect(resolver.resolveApplicationCount == 1)
+  #expect(resolver.resolveOrLaunchCount == 0)
+}
+
 private final class PolicyTrackingResolver: MacAppResolving, @unchecked Sendable {
   private(set) var resolveApplicationCount = 0
   private(set) var resolveOrLaunchCount = 0

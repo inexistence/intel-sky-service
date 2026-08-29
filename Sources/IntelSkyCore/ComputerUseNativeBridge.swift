@@ -71,6 +71,7 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
   private let lock = NSLock()
   private let appStateProvider: any AppStateProviding
   private let appCaptureProvider: any AppCaptureProviding
+  private let sessionCoordinator: any ComputerUseSessionCoordinating
   private let hostAuthorizer: any ProcessAuthorizing
   private var started = false
 
@@ -80,6 +81,7 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
   ) {
     self.appStateProvider = appStateProvider
     self.appCaptureProvider = appCaptureProvider
+    sessionCoordinator = ComputerUseSessionCoordinator.shared
     hostAuthorizer = OpenAIChatGPTHostAuthorizer()
     super.init()
   }
@@ -87,10 +89,12 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
   init(
     appStateProvider: any AppStateProviding,
     appCaptureProvider: any AppCaptureProviding,
-    hostAuthorizer: any ProcessAuthorizing
+    hostAuthorizer: any ProcessAuthorizing,
+    sessionCoordinator: any ComputerUseSessionCoordinating = ComputerUseSessionCoordinator.shared
   ) {
     self.appStateProvider = appStateProvider
     self.appCaptureProvider = appCaptureProvider
+    self.sessionCoordinator = sessionCoordinator
     self.hostAuthorizer = hostAuthorizer
     super.init()
   }
@@ -173,6 +177,10 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
       return try appCaptureProvider.startCapture(request: request.request)
     case "ComputerUseIPCAppNextCaptureUpdateRequest":
       return try appCaptureProvider.nextCaptureUpdate(request: request.request)
+    case "ComputerUseIPCAppStopRequest":
+      return try sessionCoordinator.stopApplication(request: request.request)
+    case "ComputerUseIPCCodexStatusItemMenuStateRequest":
+      return sessionCoordinator.statusItemMenuState()
     default:
       throw ComputerUseNativeBridgeError.unsupportedRequestType(request.requestType)
     }
@@ -190,6 +198,10 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
       return SkyServerErrorCode.couldNotGetRequestData.rawValue
     case ComputerUseNativeBridgeError.unsupportedRequestType:
       return SkyServerErrorCode.couldNotResolveRequestType.rawValue
+    case ComputerUseSessionError.invalidStopRequest:
+      return SkyServerErrorCode.couldNotGetRequestData.rawValue
+    case ComputerUseSessionError.noActiveSession:
+      return SkyServerErrorCode.noActiveSession.rawValue
     case is PeerAuthorizationError:
       return SkyServerErrorCode.senderProcessNotAuthenticated.rawValue
     default:

@@ -43,6 +43,7 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
   init(
     eventHandler: @escaping @Sendable (ComputerUseTurnLifecycleEvent) -> Void = {
       ComputerUseFocusCoordinator.shared.handle($0)
+      ComputerUseSessionCoordinator.shared.handle($0)
     }
   ) {
     self.eventHandler = eventHandler

@@ -90,6 +90,7 @@ public struct SkyRequestRouter: Sendable {
   private let executionGate: SkyRequestExecutionGate
   private let turnLifecycle: any ComputerUseTurnLifecycleHandling
   private let requestObserver: (any SkyRequestResultObserving)?
+  private let sessionCoordinator: any ComputerUseSessionCoordinating
 
   public init(
     appCatalog: any AppCatalog,
@@ -104,7 +105,8 @@ public struct SkyRequestRouter: Sendable {
       appActionPerformer: appActionPerformer,
       appCaptureProvider: appCaptureProvider,
       requestObserver: requestObserver,
-      turnLifecycle: ComputerUseTurnCoordinator()
+      turnLifecycle: ComputerUseTurnCoordinator(),
+      sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
 
@@ -114,7 +116,8 @@ public struct SkyRequestRouter: Sendable {
     appActionPerformer: (any AppActionPerforming)?,
     appCaptureProvider: (any AppCaptureProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil,
-    turnLifecycle: any ComputerUseTurnLifecycleHandling
+    turnLifecycle: any ComputerUseTurnLifecycleHandling,
+    sessionCoordinator: any ComputerUseSessionCoordinating = NoopComputerUseSessionCoordinator()
   ) {
     self.appCatalog = appCatalog
     self.appStateProvider = appStateProvider
@@ -123,6 +126,7 @@ public struct SkyRequestRouter: Sendable {
     self.requestObserver = requestObserver
     self.executionGate = SkyRequestExecutionGate()
     self.turnLifecycle = turnLifecycle
+    self.sessionCoordinator = sessionCoordinator
   }
 
   public func handle(_ payload: Data) -> Data {
@@ -215,6 +219,10 @@ public struct SkyRequestRouter: Sendable {
             throw SkyRPCError.unsupportedRequestType(requestType)
           }
           result = try appStateProvider.startApp(request: request)
+        case "ComputerUseIPCAppStopRequest":
+          result = try sessionCoordinator.stopApplication(request: request)
+        case "ComputerUseIPCCodexStatusItemMenuStateRequest":
+          result = sessionCoordinator.statusItemMenuState()
         case "ComputerUseIPCAppPerformActionRequest":
           guard let appActionPerformer else {
             throw SkyRPCError.unsupportedRequestType(requestType)
@@ -275,6 +283,8 @@ public struct SkyRequestRouter: Sendable {
     case SkySafetyError.secureInputEnabled:
       // ARM exposes secure-input state but no dedicated public code.
       return SkyServerErrorCode.accessibilityError.rawValue
+    case SkySafetyError.userStoppedSession:
+      return SkyServerErrorCode.userStoppedSession.rawValue
     case SkySafetyError.userIntervened:
       return SkyServerErrorCode.userIntervened.rawValue
     case is MacAppPolicyError:
@@ -310,6 +320,10 @@ public struct SkyRequestRouter: Sendable {
       return SkyServerErrorCode.runningApplicationNotFound.rawValue
     case is AppCaptureSessionError:
       return SkyServerErrorCode.couldNotGetRequestData.rawValue
+    case ComputerUseSessionError.invalidStopRequest:
+      return SkyServerErrorCode.couldNotGetRequestData.rawValue
+    case ComputerUseSessionError.noActiveSession:
+      return SkyServerErrorCode.noActiveSession.rawValue
     case MacAppActionError.missingElementFrame,
       MacAppActionError.targetOutsideDisplays,
       MacAppActionError.eventCreationFailed:
@@ -380,6 +394,7 @@ enum RequestDeadlineContext {
   }
 
   static func check(now: Date = Date()) throws {
+    try ComputerUseSessionOperationContext.check()
     guard let deadline = Thread.current.threadDictionary[key] as? Date else { return }
     if now >= deadline { throw SkyRuntimeError.deadlineExceeded }
   }

@@ -79,6 +79,15 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     try? host.setCursorLocation(point, isActive: isActive)
   }
 
+  func stopApplication(bundleIdentifier: String) {
+    let presentationIDs = lock.withLock {
+      presentations.compactMap { key, presentation in
+        key.bundleIdentifier == bundleIdentifier ? presentation.id : nil
+      }
+    }
+    for presentationID in presentationIDs { invalidate(presentationID: presentationID) }
+  }
+
   func observe(
     requestType: String,
     request: [String: Any],
@@ -86,7 +95,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     result: Any
   ) {
     switch requestType {
-    case "ComputerUseIPCAppGetSkyshotRequest":
+    case "ComputerUseIPCAppGetSkyshotRequest", "ComputerUseIPCAppStartRequest":
       publishOrUpdate(codexTurnMetadata: codexTurnMetadata, result: result)
     case "ComputerUseIPCCodexTurnEndedRequest":
       endPresentations(request: request)

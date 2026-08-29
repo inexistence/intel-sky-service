@@ -48,6 +48,32 @@ import Testing
   #expect(mouse.clicks.isEmpty)
 }
 
+@Test func userStoppedSessionRejectsActionBeforeTargetMutation() throws {
+  let app = actionTestApp()
+  let sessions = ComputerUseSessionCoordinator()
+  sessions.recordActive(app)
+  _ = try sessions.stopApplication(request: ["app": app.bundleIdentifier])
+  let mouse = RecordingMouseClickPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: ElementSnapshotCache(),
+    activator: RecordingActivator(),
+    frameReader: StubFrameReader(frame: nil),
+    mouseClickPoster: mouse,
+    sessionCoordinator: sessions
+  )
+
+  #expect(throws: SkySafetyError.self) {
+    try performer.performAction(
+      request: clickRequest(
+        at: ["coordinate": ["_0": [10, 20]]],
+        clickCount: 1,
+        mouseButton: 0
+      ))
+  }
+  #expect(mouse.clicks.isEmpty)
+}
+
 private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
   func policy(for app: ResolvedMacApplication) -> MacAppPolicy {
     MacAppPolicy(

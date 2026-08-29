@@ -166,6 +166,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
   private let interventionArbitrator: any ComputerUseInterventionArbitrating
   private let visualizer: any ComputerUseVisualizing
   private let policyEvaluator: any MacAppPolicyEvaluating
+  private let sessionCoordinator: any ComputerUseSessionCoordinating
 
   public init(
     resolver: any MacAppResolving = MacAppResolver(),
@@ -191,7 +192,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
       userInterventionMonitor: PhysicalInputMonitor.shared,
       interventionArbitrator: ComputerUseInterventionCoordinator.shared,
       visualizer: ComputerUseVisualCoordinator.shared,
-      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator()
+      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator(),
+      sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
 
@@ -216,7 +218,8 @@ public struct MacAppActionPerformer: AppActionPerforming {
     interventionArbitrator: any ComputerUseInterventionArbitrating =
       NoopComputerUseInterventionArbitrator(),
     visualizer: any ComputerUseVisualizing = NoopComputerUseVisualizer(),
-    policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator()
+    policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator(),
+    sessionCoordinator: any ComputerUseSessionCoordinating = NoopComputerUseSessionCoordinator()
   ) {
     self.resolver = resolver
     self.snapshotCache = snapshotCache
@@ -237,13 +240,21 @@ public struct MacAppActionPerformer: AppActionPerforming {
     self.interventionArbitrator = interventionArbitrator
     self.visualizer = visualizer
     self.policyEvaluator = policyEvaluator
+    self.sessionCoordinator = sessionCoordinator
   }
 
   public func performAction(request: [String: Any]) throws -> [String: Any] {
     try screenLockChecker.requireUnlocked()
     try RequestDeadlineContext.check()
     let app = try resolver.resolve(request["app"])
-    try policyEvaluator.requireAllowed(ResolvedMacApplication(app))
+    let sessionTarget = ResolvedMacApplication(app)
+    try sessionCoordinator.requireActionAllowed(sessionTarget)
+    let sessionScope = ComputerUseSessionOperationContext.begin(
+      coordinator: sessionCoordinator,
+      app: sessionTarget
+    )
+    defer { sessionScope.end() }
+    try policyEvaluator.requireAllowed(sessionTarget)
     try interventionArbitrator.requireFreshState(for: app)
     let interventionScope = UserInterventionContext.begin(
       monitor: userInterventionMonitor,
@@ -332,6 +343,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     default:
       throw MacAppActionError.unsupportedAction(actionName)
     }
+    try sessionScope.check()
     try interventionScope.check()
     interactionTracker.recordAction(for: app)
     return [:]

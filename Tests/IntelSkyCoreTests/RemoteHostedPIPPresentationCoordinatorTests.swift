@@ -67,6 +67,37 @@ import UniformTypeIdentifiers
   #expect(capture.stopped)
 }
 
+@Test func userStopInvalidatesMatchingPIPOnly() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": [
+        "text": "Fixture",
+        "screenshot": ["url": imageURL.absoluteString, "mimeType": "image/png"],
+      ],
+    ]
+  )
+  let presentationID = try #require(host.presentationID)
+
+  coordinator.stopApplication(bundleIdentifier: "com.example.other")
+  #expect(!capture.stopped)
+  coordinator.stopApplication(bundleIdentifier: "com.example.fixture")
+
+  #expect(capture.stopped)
+  #expect(host.events.contains("invalidate:\(presentationID)"))
+}
+
 private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   @unchecked Sendable
 {

@@ -80,6 +80,12 @@ private struct PolicyRejectedActionPerformer: AppActionPerforming {
   }
 }
 
+private struct UserStoppedActionPerformer: AppActionPerforming {
+  func performAction(request: [String: Any]) throws -> [String: Any] {
+    throw SkySafetyError.userStoppedSession
+  }
+}
+
 private func decode(_ data: Data) throws -> [String: Any] {
   try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
@@ -193,6 +199,79 @@ private func decode(_ data: Data) throws -> [String: Any] {
   let response = try decode(router.handle(request))
   let error = try #require(response["error"] as? [String: Any])
   #expect(error["code"] as? Int == SkyServerErrorCode.appNotAllowed.rawValue)
+}
+
+@Test func userStoppedSessionUsesOfficialErrorCodeAndMessage() throws {
+  let request = try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": 22,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "requestType": "ComputerUseIPCAppPerformActionRequest",
+      "request": ["app": "com.example.fixture", "action": ["pressKey": ["_0": "A"]]],
+    ],
+  ])
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appActionPerformer: UserStoppedActionPerformer()
+  )
+
+  let response = try decode(router.handle(request))
+  let error = try #require(response["error"] as? [String: Any])
+  #expect(error["code"] as? Int == SkyServerErrorCode.userStoppedSession.rawValue)
+  #expect((error["message"] as? String)?.contains("explicitly stopped by the user") == true)
+}
+
+@Test func socketTransportAlsoRoutesStatusAndStopRequests() throws {
+  let sessions = ComputerUseSessionCoordinator()
+  sessions.recordActive(
+    ResolvedMacApp(
+      processIdentifier: 55,
+      bundleIdentifier: "com.example.fixture",
+      displayName: "Fixture",
+      appPath: "/Applications/Fixture.app"
+    ))
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appStateProvider: nil,
+    appActionPerformer: nil,
+    turnLifecycle: ComputerUseTurnCoordinator(eventHandler: { _ in }),
+    sessionCoordinator: sessions
+  )
+
+  let statusResponse = try decode(
+    router.handle(
+      try requestPayload(
+        id: 23,
+        type: "ComputerUseIPCCodexStatusItemMenuStateRequest",
+        request: [:]
+      )))
+  let status = try #require(statusResponse["result"] as? [String: Any])
+  let computerUse = try #require(status["computerUse"] as? [String: Any])
+  #expect((computerUse["activeApplications"] as? [[String: Any]])?.count == 1)
+
+  let stopResponse = try decode(
+    router.handle(
+      try requestPayload(
+        id: 24,
+        type: "ComputerUseIPCAppStopRequest",
+        request: ["app": "com.example.fixture"]
+      )))
+  #expect((stopResponse["result"] as? [String: Any])?.isEmpty == true)
+}
+
+private func requestPayload(id: Int, type: String, request: [String: Any]) throws -> Data {
+  try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": id,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "requestType": type,
+      "request": request,
+    ],
+  ])
 }
 
 @Test func malformedJSONReturnsStandardParseError() throws {
