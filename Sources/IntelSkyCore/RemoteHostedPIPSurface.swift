@@ -4,11 +4,15 @@ import ImageIO
 import ObjectiveC.runtime
 import QuartzCore
 
+@_silgen_name("CGSMainConnectionID")
+private func remoteHostedPIPMainConnectionID() -> UInt32
+
 enum RemoteHostedPIPSurfaceError: Error, CustomStringConvertible {
   case contextClassUnavailable
   case contextCreationFailed
   case invalidContextIdentifier
   case invalidImage
+  case fenceUnavailable
 
   var description: String {
     switch self {
@@ -16,6 +20,7 @@ enum RemoteHostedPIPSurfaceError: Error, CustomStringConvertible {
     case .contextCreationFailed: return "CAContext could not be created"
     case .invalidContextIdentifier: return "CAContext returned an invalid context identifier"
     case .invalidImage: return "PIP surface image is invalid"
+    case .fenceUnavailable: return "The PIP surface could not create a transaction fence"
     }
   }
 }
@@ -27,7 +32,8 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private let fallbackLayer: CALayer
   private let displayLayer: AVSampleBufferDisplayLayer
   let contextID: UInt32
-  private(set) var size: CGSize
+  private var storedSize: CGSize
+  var size: CGSize { lock.withLock { storedSize } }
 
   init(size: CGSize) throws {
     guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else {
@@ -36,7 +42,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     guard let contextClass = NSClassFromString("CAContext") else {
       throw RemoteHostedPIPSurfaceError.contextClassUnavailable
     }
-    let factorySelector = NSSelectorFromString("localContextWithOptions:")
+    let factorySelector = NSSelectorFromString("contextWithCGSConnection:options:")
     guard class_getClassMethod(contextClass, factorySelector) != nil else {
       throw RemoteHostedPIPSurfaceError.contextCreationFailed
     }
@@ -44,7 +50,12 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       contextClass,
       to: (any RemoteHostedPIPCAContextFactorySPI.Type).self
     )
-    guard let context = factory.makeContext(options: nil) as? NSObject else {
+    guard
+      let context = factory.makeContext(
+        connection: remoteHostedPIPMainConnectionID(),
+        options: [:]
+      ) as? NSObject
+    else {
       throw RemoteHostedPIPSurfaceError.contextCreationFailed
     }
 
@@ -77,26 +88,28 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     self.fallbackLayer = fallbackLayer
     self.displayLayer = displayLayer
     self.contextID = contextID
-    self.size = size
+    storedSize = size
   }
 
   convenience init(imageURL: URL) throws {
     let image = try Self.readImage(at: imageURL)
     try self.init(size: CGSize(width: image.width, height: image.height))
-    update(image: image)
+    _ = update(image: image)
   }
 
-  func update(imageURL: URL) throws {
+  @discardableResult
+  func update(imageURL: URL) throws -> Bool {
     update(image: try Self.readImage(at: imageURL))
   }
 
-  private func update(image: CGImage) {
+  private func update(image: CGImage) -> Bool {
     lock.withLock {
       let newSize = CGSize(width: image.width, height: image.height)
+      let resized = storedSize != newSize
       CATransaction.begin()
       CATransaction.setDisableActions(true)
-      if size != newSize {
-        size = newSize
+      if resized {
+        storedSize = newSize
         rootLayer.frame = CGRect(origin: .zero, size: newSize)
         fallbackLayer.frame = rootLayer.bounds
         displayLayer.frame = rootLayer.bounds
@@ -105,6 +118,20 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       fallbackLayer.isHidden = false
       CATransaction.commit()
       CATransaction.flush()
+      return resized
+    }
+  }
+
+  func createFencePort() throws -> mach_port_t {
+    try lock.withLock {
+      let selector = NSSelectorFromString("createFencePort")
+      guard context.responds(to: selector) else {
+        throw RemoteHostedPIPSurfaceError.fenceUnavailable
+      }
+      let spi = unsafeBitCast(context, to: (any RemoteHostedPIPCAContextSPI).self)
+      let port = spi.createFencePort()
+      guard port != MACH_PORT_NULL else { throw RemoteHostedPIPSurfaceError.fenceUnavailable }
+      return port
     }
   }
 
@@ -147,12 +174,14 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
 }
 
 @objc private protocol RemoteHostedPIPCAContextFactorySPI {
-  @objc(localContextWithOptions:)
-  static func makeContext(options: [String: Any]?) -> AnyObject?
+  @objc(contextWithCGSConnection:options:)
+  static func makeContext(connection: UInt32, options: [String: Any]?) -> AnyObject?
 }
 
 @objc private protocol RemoteHostedPIPCAContextSPI {
   @objc var contextId: UInt32 { get }
   @objc(setLayer:)
   func setLayer(_ layer: CALayer)
+  @objc(createFencePort)
+  func createFencePort() -> mach_port_t
 }

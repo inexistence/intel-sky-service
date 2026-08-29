@@ -24,6 +24,14 @@ protocol RemoteHostedPIPHostCalling: Sendable {
     size: CGSize
   ) throws
   func setSourceProcessIdentifier(_ pid: pid_t, presentationID: String) throws
+  func prepareResize(
+    presentationID: String,
+    operationID: UInt64,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws
+  func completeOperation(presentationID: String, operationID: UInt64) throws
   func willEndStream(presentationID: String) throws
   func invalidatePresentation(id: String) throws
   func noteInteraction(presentationID: String) throws
@@ -169,6 +177,39 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
     }
   }
 
+  func prepareResize(
+    presentationID: String,
+    operationID: UInt64,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws {
+    let fencePayload = xpc_dictionary_create(nil, nil, 0)
+    xpc_dictionary_set_mach_send(fencePayload, "fence", fencePort)
+    try performHostCall { host, reply in
+      host.prepareOperation(
+        presentationID: presentationID,
+        operationID: operationID,
+        kind: "resize",
+        contextID: contextID,
+        width: size.width,
+        height: size.height,
+        fencePayload: fencePayload,
+        reply: reply
+      )
+    }
+  }
+
+  func completeOperation(presentationID: String, operationID: UInt64) throws {
+    try performHostCall { host, reply in
+      host.completeOperation(
+        presentationID: presentationID,
+        operationID: operationID,
+        reply: reply
+      )
+    }
+  }
+
   func willEndStream(presentationID: String) throws {
     try performHostCall { host, reply in
       host.willEndStream(presentationID: presentationID, reply: reply)
@@ -212,7 +253,7 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
       with: RemoteHostedPIPContentProducerXPCProtocol.self
     )
     let hostInterface = NSXPCInterface(with: RemoteHostedPIPContentHostXPCProtocol.self)
-    configureFencePayload(on: hostInterface)
+    Self.configureFencePayload(on: hostInterface)
     newConnection.exportedInterface = producerInterface
     newConnection.exportedObject = producer
     newConnection.remoteObjectInterface = hostInterface
@@ -249,7 +290,7 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
     if isActive { producer.connectionDidInvalidate() }
   }
 
-  private func configureFencePayload(on interface: NSXPCInterface) {
+  static func configureFencePayload(on interface: NSXPCInterface) {
     let spi = unsafeBitCast(interface, to: (any RemoteHostedPIPXPCInterfaceSPI).self)
     spi.setXPCType(
       XPC_TYPE_DICTIONARY,

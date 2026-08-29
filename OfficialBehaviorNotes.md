@@ -245,6 +245,15 @@ protocol metadata has five methods rather than four, and its strings include the
 target the installed Intel `sky.node` contract and treat ARM behavior as an oracle, rather than
 copying the ARM protocol surface verbatim. `CONFIRMED_STATIC_BINARY`.
 
+Intel `sky.node` validates monotonically sequential operation IDs and recognizes exactly three
+two-phase presentation operation kinds: `resize`, `resize-in-progress`, and `replace-context`.
+Stable source-size changes use `resize`; the request carries the current context ID, source size,
+and an XPC dictionary containing a Mach send right named `fence`, followed by
+`completeOperationWithPresentationID:operationID:withReply:`. Its own attachment path constructs
+CAContext with `contextWithCGSConnection:options:`. On this Intel system that factory, unlike
+`localContextWithOptions:`, produces a context implementing `createFencePort`.
+`CONFIRMED_INTEL_STATIC_AND_LOCAL_RUNTIME`.
+
 ARM imports ScreenCaptureKit and AVFoundation, and its `RemoteHostedPIPWindowRenderer` metadata
 contains `SCStream`, `SCContentFilter`, `SCShareableContent`, `AVSampleBufferDisplayLayer`, separate
 window/cursor display layers, and separate capture-stream fields. `CONFIRMED_STATIC_BINARY`.
@@ -261,8 +270,11 @@ existing `SCStream` filter when the window ID changes. Stream creation, filter-u
 failures fall back to the retained state image and use finite 0.25/0.5/1-second recovery attempts;
 late callbacks from replaced streams are ignored by identity. Unit tests replace capture with a
 fake, so routine tests cannot request Screen Recording or per-target Computer Use approval.
-`HIGH_CONFIDENCE`. Dynamic managed-host verification and exact host-visible resize behavior remain
-pending, so the feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1`.
+For stable source-size changes, Intel resizes the CAContext layers, creates a transaction fence,
+sends the host's `resize` prepare/complete sequence, and updates the live `SCStream` configuration.
+The Mach-send fence envelope is covered by a real bidirectional XPC test. `HIGH_CONFIDENCE`.
+Dynamic managed-host verification and long-running resize/recovery stress remain pending, so the
+feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

@@ -8,7 +8,11 @@ import UniformTypeIdentifiers
 
 @Test func pipCoordinatorPublishesStateAndBeginsTurnScopedEnd() throws {
   let imageURL = try makePIPTestImage()
-  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let resizedImageURL = try makePIPTestImage(width: 3, height: 4)
+  defer {
+    try? FileManager.default.removeItem(at: imageURL)
+    try? FileManager.default.removeItem(at: resizedImageURL)
+  }
   let host = RecordingPIPHostCaller()
   let capture = RecordingPIPWindowCapture()
   var coordinator: RemoteHostedPIPPresentationCoordinator? =
@@ -42,11 +46,14 @@ import UniformTypeIdentifiers
       "app": ["bundleIdentifier": "com.apple.finder", "pid": 123],
       "skyshot": [
         "text": "Finder refreshed",
-        "screenshot": ["url": imageURL.absoluteString, "mimeType": "image/png"],
+        "screenshot": ["url": resizedImageURL.absoluteString, "mimeType": "image/png"],
       ],
     ]
   )
   #expect(capture.refreshCount == 1)
+  #expect(capture.outputSize == CGSize(width: 3, height: 4))
+  #expect(host.events.contains("prepare:\(presentationID):1:3x4"))
+  #expect(host.events.contains("complete:\(presentationID):1"))
 
   coordinator?.observe(
     requestType: "ComputerUseIPCCodexTurnEndedRequest",
@@ -67,12 +74,19 @@ private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   private var didStart = false
   private var didStop = false
   private var storedRefreshCount = 0
+  private var storedOutputSize: CGSize?
   var started: Bool { lock.withLock { didStart } }
   var stopped: Bool { lock.withLock { didStop } }
   var refreshCount: Int { lock.withLock { storedRefreshCount } }
+  var outputSize: CGSize? { lock.withLock { storedOutputSize } }
 
   func start() { lock.withLock { didStart = true } }
-  func refresh() { lock.withLock { storedRefreshCount += 1 } }
+  func refresh(outputSize: CGSize) {
+    lock.withLock {
+      storedRefreshCount += 1
+      storedOutputSize = outputSize
+    }
+  }
   func stop() { lock.withLock { didStop = true } }
 }
 
@@ -101,6 +115,24 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
     lock.withLock { storedEvents.append("source:\(pid)") }
   }
 
+  func prepareResize(
+    presentationID: String,
+    operationID: UInt64,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws {
+    #expect(fencePort != MACH_PORT_NULL)
+    lock.withLock {
+      storedEvents.append(
+        "prepare:\(presentationID):\(operationID):\(Int(size.width))x\(Int(size.height))")
+    }
+  }
+
+  func completeOperation(presentationID: String, operationID: UInt64) throws {
+    lock.withLock { storedEvents.append("complete:\(presentationID):\(operationID)") }
+  }
+
   func willEndStream(presentationID: String) throws {
     lock.withLock { storedEvents.append("will-end:\(presentationID)") }
   }
@@ -120,21 +152,21 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
   }
 }
 
-private func makePIPTestImage() throws -> URL {
+private func makePIPTestImage(width: Int = 2, height: Int = 2) throws -> URL {
   let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
   let context = try #require(
     CGContext(
       data: nil,
-      width: 2,
-      height: 2,
+      width: width,
+      height: height,
       bitsPerComponent: 8,
-      bytesPerRow: 8,
+      bytesPerRow: width * 4,
       space: colorSpace,
       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     )
   )
   context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
-  context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+  context.fill(CGRect(x: 0, y: 0, width: width, height: height))
   let image = try #require(context.makeImage())
   let url = FileManager.default.temporaryDirectory
     .appendingPathComponent(UUID().uuidString)

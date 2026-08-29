@@ -1,5 +1,11 @@
 import AppKit
+@preconcurrency import Darwin
 import Foundation
+
+@inline(__always)
+private nonisolated(unsafe) func remoteHostedPIPTaskPort() -> mach_port_t {
+  mach_task_self_
+}
 
 public protocol SkyRequestResultObserving: Sendable {
   func observe(
@@ -24,6 +30,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     let processIdentifier: pid_t
     let surface: RemoteHostedPIPSurface
     let capture: any RemoteHostedPIPWindowCapturing
+    var nextOperationID: UInt64
     var ending: Bool
   }
 
@@ -111,8 +118,35 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       bundleIdentifier: bundleIdentifier
     )
     if let existing = lock.withLock({ presentations[key] }), !existing.ending {
-      try? existing.surface.update(imageURL: imageURL)
-      existing.capture.refresh()
+      guard let resized = try? existing.surface.update(imageURL: imageURL) else { return }
+      if resized {
+        do {
+          let fencePort = try existing.surface.createFencePort()
+          defer { mach_port_deallocate(remoteHostedPIPTaskPort(), fencePort) }
+          try host.prepareResize(
+            presentationID: existing.id,
+            operationID: existing.nextOperationID,
+            contextID: existing.surface.contextID,
+            size: existing.surface.size,
+            fencePort: fencePort
+          )
+          try host.completeOperation(
+            presentationID: existing.id,
+            operationID: existing.nextOperationID
+          )
+          lock.withLock {
+            guard var presentation = presentations[key], presentation.id == existing.id else {
+              return
+            }
+            presentation.nextOperationID += 1
+            presentations[key] = presentation
+          }
+        } catch {
+          invalidate(presentationID: existing.id)
+          return
+        }
+      }
+      existing.capture.refresh(outputSize: existing.surface.size)
       return
     }
 
@@ -142,6 +176,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           processIdentifier: processIdentifier,
           surface: surface,
           capture: capture,
+          nextOperationID: 1,
           ending: false
         )
       }

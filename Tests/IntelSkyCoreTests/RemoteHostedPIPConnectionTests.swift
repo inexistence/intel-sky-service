@@ -1,8 +1,14 @@
+@preconcurrency import Darwin
 import Foundation
 import Testing
 import XPC
 
 @testable import IntelSkyCore
+
+@inline(__always)
+private nonisolated(unsafe) func pipTestTaskPort() -> mach_port_t {
+  mach_task_self_
+}
 
 @Test func pipProducerCompletesRealBidirectionalXPCHandshake() throws {
   let producer = RemoteHostedPIPContentProducer()
@@ -15,7 +21,9 @@ import XPC
   client.remoteObjectInterface = NSXPCInterface(
     with: RemoteHostedPIPContentProducerXPCProtocol.self
   )
-  client.exportedInterface = NSXPCInterface(with: RemoteHostedPIPContentHostXPCProtocol.self)
+  let hostInterface = NSXPCInterface(with: RemoteHostedPIPContentHostXPCProtocol.self)
+  RemoteHostedPIPConnectionController.configureFencePayload(on: hostInterface)
+  client.exportedInterface = hostInterface
   let host = RecordingPIPHost()
   client.exportedObject = host
   client.activate()
@@ -57,7 +65,25 @@ import XPC
     size: CGSize(width: 640, height: 480)
   )
   try controller.setSourceProcessIdentifier(321, presentationID: "presentation")
-  #expect(host.events == ["publish:presentation:42:640x480", "source:presentation:321"])
+  let surface = try RemoteHostedPIPSurface(size: CGSize(width: 800, height: 600))
+  let fencePort = try surface.createFencePort()
+  defer { mach_port_deallocate(pipTestTaskPort(), fencePort) }
+  try controller.prepareResize(
+    presentationID: "presentation",
+    operationID: 1,
+    contextID: surface.contextID,
+    size: surface.size,
+    fencePort: fencePort
+  )
+  try controller.completeOperation(presentationID: "presentation", operationID: 1)
+  #expect(
+    host.events == [
+      "publish:presentation:42:640x480",
+      "source:presentation:321",
+      "prepare:presentation:1:resize:800x600:fence",
+      "complete:presentation:1",
+    ]
+  )
 }
 
 @Test func pipProducerRejectsInvalidSizeAndUnavailablePresentation() {
@@ -125,13 +151,26 @@ private final class RecordingPIPHost: NSObject, RemoteHostedPIPContentHostXPCPro
     height: Double,
     fencePayload: xpc_object_t,
     reply: @escaping RemoteHostedPIPReply
-  ) { reply(nil) }
+  ) {
+    let fencePort = xpc_dictionary_copy_mach_send(fencePayload, "fence")
+    let hasFence = fencePort != MACH_PORT_NULL
+    if hasFence { mach_port_deallocate(pipTestTaskPort(), fencePort) }
+    lock.withLock {
+      storedEvents.append(
+        "prepare:\(presentationID):\(operationID):\(kind):\(Int(width))x\(Int(height)):\(hasFence ? "fence" : "missing")"
+      )
+    }
+    reply(nil)
+  }
 
   func completeOperation(
     presentationID: String,
     operationID: UInt64,
     reply: @escaping RemoteHostedPIPReply
-  ) { reply(nil) }
+  ) {
+    lock.withLock { storedEvents.append("complete:\(presentationID):\(operationID)") }
+    reply(nil)
+  }
 
   func willEndStream(presentationID: String, reply: @escaping RemoteHostedPIPReply) {
     reply(nil)

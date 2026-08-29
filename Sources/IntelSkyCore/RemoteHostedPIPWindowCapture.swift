@@ -5,7 +5,7 @@ import ScreenCaptureKit
 
 protocol RemoteHostedPIPWindowCapturing: Sendable {
   func start()
-  func refresh()
+  func refresh(outputSize: CGSize)
   func stop()
 }
 
@@ -14,7 +14,6 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
 {
   private let lock = NSLock()
   private let processIdentifier: pid_t
-  private let outputSize: CGSize
   private let surface: RemoteHostedPIPSurface
   private let sampleQueue = DispatchQueue(
     label: "dev.huangjianbin.intel-sky-service.pip-window-capture",
@@ -22,6 +21,8 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
   )
   private var stream: SCStream?
   private var capturedWindowID: CGWindowID?
+  private var desiredOutputSize: CGSize
+  private var configuredOutputSize: CGSize?
   private var reconciling = false
   private var refreshPending = false
   private var recoveryAttempt = 0
@@ -29,13 +30,21 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
 
   init(processIdentifier: pid_t, outputSize: CGSize, surface: RemoteHostedPIPSurface) {
     self.processIdentifier = processIdentifier
-    self.outputSize = outputSize
+    desiredOutputSize = outputSize
     self.surface = surface
   }
 
-  func start() { refresh() }
+  func start() { requestRefresh() }
 
-  func refresh() {
+  func refresh(outputSize: CGSize) {
+    guard outputSize.width.isFinite, outputSize.height.isFinite,
+      outputSize.width > 0, outputSize.height > 0
+    else { return }
+    lock.withLock { desiredOutputSize = outputSize }
+    requestRefresh()
+  }
+
+  private func requestRefresh() {
     let shouldReconcile = lock.withLock { () -> Bool in
       guard !stopped else { return false }
       guard !reconciling else {
@@ -55,6 +64,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
       reconciling = false
       refreshPending = false
       capturedWindowID = nil
+      configuredOutputSize = nil
       let stream = self.stream
       self.stream = nil
       return stream
@@ -83,42 +93,94 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     }
 
     let filter = SCContentFilter(desktopIndependentWindow: window)
-    let existing = lock.withLock { () -> SCStream? in
+    let state = lock.withLock { () -> (SCStream?, CGSize, Bool, Bool)? in
       guard !stopped else { return nil }
-      return stream
+      return (
+        stream,
+        desiredOutputSize,
+        capturedWindowID != window.windowID,
+        configuredOutputSize != desiredOutputSize
+      )
     }
-    guard !lock.withLock({ stopped }) else {
+    guard let state else {
       finishReconciliation()
       return
     }
 
-    if let existing {
-      guard lock.withLock({ capturedWindowID != window.windowID }) else {
+    if let existing = state.0 {
+      guard state.2 || state.3 else {
         lock.withLock { recoveryAttempt = 0 }
         finishReconciliation()
         return
       }
-      existing.updateContentFilter(filter) { [weak self, weak existing] error in
-        guard let self, let existing else { return }
-        guard error == nil else {
-          self.reconciliationFailed(stream: existing)
-          return
-        }
-        self.lock.withLock {
-          guard !self.stopped, self.stream === existing else { return }
-          self.capturedWindowID = window.windowID
-          self.recoveryAttempt = 0
-        }
-        self.finishReconciliation()
-      }
+      updateExistingCapture(
+        existing,
+        filter: filter,
+        windowID: window.windowID,
+        outputSize: state.1,
+        updateFilter: state.2,
+        updateConfiguration: state.3
+      )
       return
     }
 
-    startCapture(filter: filter, windowID: window.windowID)
+    startCapture(filter: filter, windowID: window.windowID, outputSize: state.1)
   }
 
-  private func startCapture(filter: SCContentFilter, windowID: CGWindowID) {
-    let stream = SCStream(filter: filter, configuration: makeConfiguration(), delegate: self)
+  private func updateExistingCapture(
+    _ stream: SCStream,
+    filter: SCContentFilter,
+    windowID: CGWindowID,
+    outputSize: CGSize,
+    updateFilter: Bool,
+    updateConfiguration: Bool
+  ) {
+    let applyConfiguration = { [weak self, weak stream] in
+      guard let self, let stream else { return }
+      guard updateConfiguration else {
+        self.completeCaptureUpdate(stream: stream, windowID: windowID, outputSize: outputSize)
+        return
+      }
+      stream.updateConfiguration(self.makeConfiguration(outputSize: outputSize)) {
+        [weak self, weak stream] error in
+        guard let self, let stream else { return }
+        guard error == nil else {
+          self.reconciliationFailed(stream: stream)
+          return
+        }
+        self.completeCaptureUpdate(stream: stream, windowID: windowID, outputSize: outputSize)
+      }
+    }
+    guard updateFilter else {
+      applyConfiguration()
+      return
+    }
+    stream.updateContentFilter(filter) { [weak self, weak stream] error in
+      guard let self, let stream else { return }
+      guard error == nil else {
+        self.reconciliationFailed(stream: stream)
+        return
+      }
+      applyConfiguration()
+    }
+  }
+
+  private func completeCaptureUpdate(stream: SCStream, windowID: CGWindowID, outputSize: CGSize) {
+    lock.withLock {
+      guard !stopped, self.stream === stream else { return }
+      capturedWindowID = windowID
+      configuredOutputSize = outputSize
+      recoveryAttempt = 0
+    }
+    finishReconciliation()
+  }
+
+  private func startCapture(filter: SCContentFilter, windowID: CGWindowID, outputSize: CGSize) {
+    let stream = SCStream(
+      filter: filter,
+      configuration: makeConfiguration(outputSize: outputSize),
+      delegate: self
+    )
     do {
       try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
     } catch {
@@ -130,6 +192,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
       guard !stopped, self.stream == nil else { return false }
       self.stream = stream
       capturedWindowID = windowID
+      configuredOutputSize = outputSize
       return true
     }
     guard shouldStart else {
@@ -151,7 +214,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     }
   }
 
-  private func makeConfiguration() -> SCStreamConfiguration {
+  private func makeConfiguration(outputSize: CGSize) -> SCStreamConfiguration {
     let configuration = SCStreamConfiguration()
     configuration.width = max(1, Int(outputSize.width.rounded()))
     configuration.height = max(1, Int(outputSize.height.rounded()))
@@ -174,6 +237,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
       if shouldDiscard {
         stream = nil
         capturedWindowID = nil
+        configuredOutputSize = nil
       }
       return (true, discardedStream, stream == nil)
     }
@@ -200,7 +264,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
       requestShareableContent()
     } else if let delay = outcome.recoveryDelay {
       DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
-        self?.refresh()
+        self?.requestRefresh()
       }
     }
   }
