@@ -78,6 +78,17 @@ Scripts/audit-pip-host.sh
 It fails closed when the Intel host architecture, OpenAI signing team, or required XPC selectors
 change.
 
+The App bundle intentionally installs its executable as `Contents/MacOS/SkyComputerUseService`.
+The current ChatGPT managed-service host requires that exact basename. ChatGPT also supports a
+startup-only source override named `CODEX_ELECTRON_COMPUTER_USE_APP_PATH`; when set to this App,
+ChatGPT copies it into its canonical Codex-home location, starts that exact executable, validates
+the resulting PID, and passes the PID to the native PIP host. This variable belongs to the ChatGPT
+main process, not to `node_repl` or the Computer Use MCP environment.
+
+Experimental PIP rendezvous remains off by default. A managed service process can inherit
+`INTEL_SKY_EXPERIMENTAL_PIP=1` from ChatGPT while compatibility is being tested. Do not enable it
+until `Scripts/audit-pip-host.sh` passes for the installed ChatGPT build.
+
 During protocol development, the unmodified bundled `@oai/sky` client from ChatGPT `26.825.41651` successfully completed the IPC-5 handshake, returned the local app list, and captured Finder state on x86_64. The production peer policy additionally requires the real `node_repl → codex → com.openai.codex` process chain; launching ChatGPT's signed Node binary from a shell is intentionally rejected.
 
 ## Permissions
@@ -91,7 +102,7 @@ When launched as an App, the service asks macOS for either permission if it is m
 Check permissions for a direct invocation:
 
 ```sh
-~/Applications/Intel\ Sky\ Service.app/Contents/MacOS/intel-sky-service --check-permissions
+~/Applications/Intel\ Sky\ Service.app/Contents/MacOS/SkyComputerUseService --check-permissions
 ```
 
 The command returns exit status 0 only when both permissions are granted; otherwise it returns 77 and prints the individual states as JSON. Because macOS can attribute TCC checks to a process's responsible parent, this direct check is not authoritative for a LaunchAgent.

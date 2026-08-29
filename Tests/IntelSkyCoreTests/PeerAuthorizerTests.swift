@@ -75,3 +75,17 @@ import Testing
     try authorizer.authorize(PeerIdentity(pid: 10, uid: 502, gid: 20))
   }
 }
+
+@Test func pipHostAuthorizerAcceptsOnlySignedChatGPTIdentity() throws {
+  let allowed = OpenAIChatGPTHostAuthorizer { _ in
+    ValidatedCodeIdentity(identifier: "com.openai.codex")
+  }
+  let denied = OpenAIChatGPTHostAuthorizer { _ in
+    ValidatedCodeIdentity(identifier: "node_repl")
+  }
+
+  try allowed.authorize(processIdentifier: 10)
+  #expect(throws: PeerAuthorizationError.self) {
+    try denied.authorize(processIdentifier: 10)
+  }
+}

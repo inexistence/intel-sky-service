@@ -8,7 +8,7 @@ install_directory="$HOME/Applications"
 installed_app="$install_directory/Intel Sky Service.app"
 agent_directory="$HOME/Library/LaunchAgents"
 agent_path="$agent_directory/dev.huangjianbin.intel-sky-service.plist"
-executable_path="$installed_app/Contents/MacOS/intel-sky-service"
+executable_path="$installed_app/Contents/MacOS/SkyComputerUseService"
 service_target="gui/$UID/dev.huangjianbin.intel-sky-service"
 temporary_directory=""
 
@@ -19,7 +19,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ ! -x "$source_app/Contents/MacOS/intel-sky-service" ]]; then
+if [[ ! -x "$source_app/Contents/MacOS/SkyComputerUseService" ]]; then
   echo "built app not found: $source_app" >&2
   exit 66
 fi
@@ -29,7 +29,7 @@ temporary_directory="$(mktemp -d "$install_directory/.intel-sky-install.XXXXXX")
 temporary_app="$temporary_directory/Intel Sky Service.app"
 ditto "$source_app" "$temporary_app"
 codesign --verify --deep --strict "$temporary_app"
-lipo "$temporary_app/Contents/MacOS/intel-sky-service" -verify_arch x86_64
+lipo "$temporary_app/Contents/MacOS/SkyComputerUseService" -verify_arch x86_64
 
 rm -rf "$installed_app"
 mv "$temporary_app" "$installed_app"

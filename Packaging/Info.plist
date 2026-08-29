@@ -7,7 +7,7 @@
   <key>CFBundleDisplayName</key>
   <string>Intel Sky Service</string>
   <key>CFBundleExecutable</key>
-  <string>intel-sky-service</string>
+  <string>SkyComputerUseService</string>
   <key>CFBundleIdentifier</key>
   <string>dev.huangjianbin.intel-sky-service</string>
   <key>CFBundleInfoDictionaryVersion</key>

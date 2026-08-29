@@ -1,0 +1,140 @@
+import Darwin
+import Foundation
+
+enum RemoteHostedPIPBootstrapError: Error, Equatable, CustomStringConvertible {
+  case incompatibleClientVersion(String?)
+  case missingSenderProcessIdentifier
+  case invalidReplyPort
+
+  var description: String {
+    switch self {
+    case .incompatibleClientVersion(let version):
+      return "incompatible PIP client version: \(version ?? "<missing>")"
+    case .missingSenderProcessIdentifier:
+      return "PIP bootstrap is missing a sender process identifier"
+    case .invalidReplyPort:
+      return "PIP bootstrap contains an invalid Mach reply port"
+    }
+  }
+}
+
+struct RemoteHostedPIPBootstrapRequest: Equatable, Sendable {
+  static let nativeBridgeVersion = "CodexComputerUseNativeBridge-1"
+  static let eventClass: AEEventClass = 0x536B_4375  // SkCu
+  static let eventID: AEEventID = 0x5069_5042  // PiPB
+  static let clientVersionKeyword: AEKeyword = 0x436C_566E  // ClVn
+  static let senderPIDKeyword: AEKeyword = 0x7370_6964  // spid
+  static let replyPortKeyword: AEKeyword = 0x7265_7070  // repp
+
+  let senderProcessIdentifier: pid_t
+  let replyPort: mach_port_t
+
+  init(version: String?, senderProcessIdentifier: Int32?, replyPortData: Data?) throws {
+    guard version == Self.nativeBridgeVersion else {
+      throw RemoteHostedPIPBootstrapError.incompatibleClientVersion(version)
+    }
+    guard let senderProcessIdentifier, senderProcessIdentifier > 0 else {
+      throw RemoteHostedPIPBootstrapError.missingSenderProcessIdentifier
+    }
+    guard let replyPortData, replyPortData.count == MemoryLayout<mach_port_t>.size else {
+      throw RemoteHostedPIPBootstrapError.invalidReplyPort
+    }
+    var replyPort: mach_port_t = 0
+    _ = withUnsafeMutableBytes(of: &replyPort) { destination in
+      replyPortData.copyBytes(to: destination)
+    }
+    guard replyPort != MACH_PORT_NULL else {
+      throw RemoteHostedPIPBootstrapError.invalidReplyPort
+    }
+    self.senderProcessIdentifier = senderProcessIdentifier
+    self.replyPort = replyPort
+  }
+}
+
+public final class RemoteHostedPIPBootstrapController: NSObject, @unchecked Sendable {
+  private static let errorNumberKeyword: AEKeyword = 0x6572_726E  // errn
+  private static let errorStringKeyword: AEKeyword = 0x6572_7273  // errs
+
+  private let lock = NSLock()
+  private let connectionController: RemoteHostedPIPConnectionController
+  private let endpointSender: any RemoteHostedPIPEndpointSending
+  private let hostAuthorizer: any ProcessAuthorizing
+  private var started = false
+
+  public override convenience init() {
+    self.init(
+      connectionController: RemoteHostedPIPConnectionController(),
+      endpointSender: RemoteHostedPIPEndpointTransport(),
+      hostAuthorizer: OpenAIChatGPTHostAuthorizer()
+    )
+  }
+
+  init(
+    connectionController: RemoteHostedPIPConnectionController,
+    endpointSender: any RemoteHostedPIPEndpointSending,
+    hostAuthorizer: any ProcessAuthorizing
+  ) {
+    self.connectionController = connectionController
+    self.endpointSender = endpointSender
+    self.hostAuthorizer = hostAuthorizer
+    super.init()
+  }
+
+  deinit {
+    if started {
+      NSAppleEventManager.shared().removeEventHandler(
+        forEventClass: RemoteHostedPIPBootstrapRequest.eventClass,
+        andEventID: RemoteHostedPIPBootstrapRequest.eventID
+      )
+    }
+  }
+
+  public func start() {
+    let shouldStart = lock.withLock { () -> Bool in
+      guard !started else { return false }
+      started = true
+      return true
+    }
+    guard shouldStart else { return }
+    NSAppleEventManager.shared().setEventHandler(
+      self,
+      andSelector: #selector(handleBootstrapEvent(_:withReplyEvent:)),
+      forEventClass: RemoteHostedPIPBootstrapRequest.eventClass,
+      andEventID: RemoteHostedPIPBootstrapRequest.eventID
+    )
+  }
+
+  @objc private func handleBootstrapEvent(
+    _ event: NSAppleEventDescriptor,
+    withReplyEvent replyEvent: NSAppleEventDescriptor
+  ) {
+    do {
+      let request = try RemoteHostedPIPBootstrapRequest(
+        version: event.paramDescriptor(
+          forKeyword: RemoteHostedPIPBootstrapRequest.clientVersionKeyword
+        )?.stringValue,
+        senderProcessIdentifier: event.attributeDescriptor(
+          forKeyword: RemoteHostedPIPBootstrapRequest.senderPIDKeyword
+        )?.int32Value,
+        replyPortData: event.attributeDescriptor(
+          forKeyword: RemoteHostedPIPBootstrapRequest.replyPortKeyword
+        )?.data
+      )
+      try process(request)
+    } catch {
+      replyEvent.setParam(
+        NSAppleEventDescriptor(int32: Int32(errAEEventNotHandled)),
+        forKeyword: Self.errorNumberKeyword
+      )
+      replyEvent.setParam(
+        NSAppleEventDescriptor(string: String(describing: error)),
+        forKeyword: Self.errorStringKeyword
+      )
+    }
+  }
+
+  func process(_ request: RemoteHostedPIPBootstrapRequest) throws {
+    try hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
+    try endpointSender.send(endpoint: connectionController.endpoint, to: request.replyPort)
+  }
+}

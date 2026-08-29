@@ -20,8 +20,8 @@ swift build -c release --arch x86_64 -Xswiftc -warnings-as-errors
 mkdir -p "$temporary_app/Contents/MacOS"
 cp "$project_directory/Packaging/Info.plist" "$temporary_app/Contents/Info.plist"
 cp "$project_directory/.build/x86_64-apple-macosx/release/intel-sky-service" \
-  "$temporary_app/Contents/MacOS/intel-sky-service"
-chmod 755 "$temporary_app/Contents/MacOS/intel-sky-service"
+  "$temporary_app/Contents/MacOS/SkyComputerUseService"
+chmod 755 "$temporary_app/Contents/MacOS/SkyComputerUseService"
 
 signing_identity="-"
 if security find-identity -v -p codesigning | grep -Fq "\"$requested_identity\""; then

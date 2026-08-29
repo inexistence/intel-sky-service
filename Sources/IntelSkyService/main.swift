@@ -5,7 +5,7 @@ import IntelSkyCore
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments == ["--help"] || arguments == ["-h"] {
   print(
-    "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] | --check-permissions"
+    "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] [--experimental-pip] | --check-permissions"
   )
   exit(0)
 }
@@ -35,6 +35,15 @@ application.setActivationPolicy(.accessory)
 application.finishLaunching()
 ComputerUseVisualCoordinator.warmUp()
 ServicePermissionRequester().requestMissingPermissions()
+let pipBootstrapController: RemoteHostedPIPBootstrapController?
+if configuration.experimentalPIPEnabled {
+  let controller = RemoteHostedPIPBootstrapController()
+  controller.start()
+  pipBootstrapController = controller
+  fputs("experimental remote-hosted PIP bootstrap enabled\n", stderr)
+} else {
+  pipBootstrapController = nil
+}
 
 let resolver = MacAppResolver()
 let snapshotCache = ElementSnapshotCache()

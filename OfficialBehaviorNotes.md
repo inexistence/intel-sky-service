@@ -203,6 +203,16 @@ methods, imports the producer protocol, and begins with `connectWithReply:`. The
 the matching `xpc_pipe_create_from_port` and `xpc_pipe_routine` symbols, confirming the opposite
 side of this rendezvous. `CONFIRMED_STATIC_BINARY`.
 
+Intel ChatGPT discovers the service PID through its managed-service controller, rather than by
+looking up the public Unix socket. At startup it resolves an optional
+`CODEX_ELECTRON_COMPUTER_USE_APP_PATH`, copies that source App with `ditto` to
+`$CODEX_HOME/computer-use/Codex Computer Use.app`, and later spawns the hard-coded executable
+`Contents/MacOS/SkyComputerUseService`. The PID is accepted only while it is running and the native
+addon confirms that its executable path matches the canonical path; the accepted PID is then sent
+to `connectRemoteHostedPIPContentHost`. The internal node_repl host-services pipe merely asks this
+same controller to ensure the service and does not carry the App path itself.
+`CONFIRMED_INTEL_CLIENT_SOURCE`.
+
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
 `setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore

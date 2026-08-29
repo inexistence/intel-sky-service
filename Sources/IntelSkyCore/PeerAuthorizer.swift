@@ -135,7 +135,7 @@ public struct OpenAIPeerAuthorizer: PeerAuthorizing {
     return pid_t(info.pbi_ppid)
   }
 
-  private static func readValidatedIdentity(_ pid: pid_t) throws -> ValidatedCodeIdentity {
+  static func readValidatedIdentity(_ pid: pid_t) throws -> ValidatedCodeIdentity {
     let attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
     var code: SecCode?
     let lookupStatus = SecCodeCopyGuestWithAttributes(nil, attributes, [], &code)
@@ -176,5 +176,33 @@ public struct OpenAIPeerAuthorizer: PeerAuthorizing {
       throw PeerAuthorizationError.missingSigningInfo(pid, infoStatus)
     }
     return ValidatedCodeIdentity(identifier: identifier)
+  }
+}
+
+protocol ProcessAuthorizing: Sendable {
+  func authorize(processIdentifier: pid_t) throws
+}
+
+struct OpenAIChatGPTHostAuthorizer: ProcessAuthorizing {
+  static let allowedIdentifiers: Set<String> = ["com.openai.codex"]
+
+  private let identityProvider: @Sendable (pid_t) throws -> ValidatedCodeIdentity
+
+  init(
+    identityProvider: @escaping @Sendable (pid_t) throws -> ValidatedCodeIdentity =
+      OpenAIPeerAuthorizer.readValidatedIdentity
+  ) {
+    self.identityProvider = identityProvider
+  }
+
+  func authorize(processIdentifier: pid_t) throws {
+    let identity = try identityProvider(processIdentifier)
+    guard Self.allowedIdentifiers.contains(identity.identifier) else {
+      throw PeerAuthorizationError.disallowedIdentifier(
+        processIdentifier,
+        identity.identifier,
+        expected: Self.allowedIdentifiers
+      )
+    }
   }
 }
