@@ -57,6 +57,7 @@ public final class SkyUnixServer: @unchecked Sendable {
 
     listener = socket(AF_UNIX, SOCK_STREAM, 0)
     guard listener >= 0 else { throw systemError("socket") }
+    try UnixSocketOptions.suppressSIGPIPE(on: listener)
 
     let bindResult = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -73,6 +74,13 @@ public final class SkyUnixServer: @unchecked Sendable {
       if client < 0 {
         if errno == EINTR { continue }
         throw systemError("accept")
+      }
+      do {
+        try UnixSocketOptions.suppressSIGPIPE(on: client)
+      } catch {
+        close(client)
+        fputs("connection rejected: \(error)\n", stderr)
+        continue
       }
       connectionSlots.wait()
       connectionQueue.async { [self] in
@@ -181,6 +189,13 @@ public final class SkyUnixClient {
     var address = try makeUnixSocketAddress(socketPath)
     descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { throw UnixSocketError.systemCall("socket", errno) }
+    do {
+      try UnixSocketOptions.suppressSIGPIPE(on: descriptor)
+    } catch {
+      close(descriptor)
+      descriptor = -1
+      throw error
+    }
 
     let result = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -228,6 +243,23 @@ public final class SkyUnixClient {
         }
         return object
       }
+    }
+  }
+}
+
+enum UnixSocketOptions {
+  static func suppressSIGPIPE(on descriptor: Int32) throws {
+    var enabled: Int32 = 1
+    guard
+      setsockopt(
+        descriptor,
+        SOL_SOCKET,
+        SO_NOSIGPIPE,
+        &enabled,
+        socklen_t(MemoryLayout<Int32>.size)
+      ) == 0
+    else {
+      throw UnixSocketError.systemCall("setsockopt(SO_NOSIGPIPE)", errno)
     }
   }
 }
