@@ -52,24 +52,23 @@ public struct WindowScreenshotter: Sendable {
     purgeExpiredScreenshots(in: directory)
 
     let output = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
-    if let processIdentifier, let screenFrame,
-      let additionalWindowIDs = additionalWindowIDs(
-        primaryWindowID: windowID,
-        processIdentifier: processIdentifier,
-        primaryFrame: screenFrame
-      ),
-      !additionalWindowIDs.isEmpty
-    {
+    if let processIdentifier, let screenFrame {
+      let additionalWindowIDs =
+        additionalWindowIDs(
+          primaryWindowID: windowID,
+          processIdentifier: processIdentifier,
+          primaryFrame: screenFrame
+        ) ?? []
       do {
-        return try captureComposite(
+        return try captureWithScreenCaptureKit(
           primaryWindowID: windowID,
           additionalWindowIDs: additionalWindowIDs,
           screenFrame: screenFrame,
           output: output
         )
       } catch {
-        // Transient UI is additive context. Never drop the primary screenshot
-        // if a menu disappears between discovery and ScreenCaptureKit setup.
+        // Never drop the primary screenshot if ScreenCaptureKit is unavailable,
+        // times out, or a transient window disappears during filter setup.
         try? FileManager.default.removeItem(at: output)
       }
     }
@@ -115,7 +114,7 @@ public struct WindowScreenshotter: Sendable {
     )
   }
 
-  private func captureComposite(
+  private func captureWithScreenCaptureKit(
     primaryWindowID: CGWindowID,
     additionalWindowIDs: [CGWindowID],
     screenFrame: CGRect,
@@ -123,7 +122,8 @@ public struct WindowScreenshotter: Sendable {
   ) throws -> CapturedWindowScreenshot {
     guard #available(macOS 14.0, *) else { throw WindowScreenshotError.invalidImage }
     let image = try ScreenCaptureKitScreenshot.capture(
-      windowIDs: additionalWindowIDs + [primaryWindowID],
+      primaryWindowID: primaryWindowID,
+      additionalWindowIDs: additionalWindowIDs,
       screenFrame: screenFrame
     )
     return try write(image: image, to: output)
@@ -223,7 +223,11 @@ public struct WindowScreenshotter: Sendable {
 
 @available(macOS 14.0, *)
 private enum ScreenCaptureKitScreenshot {
-  static func capture(windowIDs: [CGWindowID], screenFrame: CGRect) throws -> CGImage {
+  static func capture(
+    primaryWindowID: CGWindowID,
+    additionalWindowIDs: [CGWindowID],
+    screenFrame: CGRect
+  ) throws -> CGImage {
     let contentBox = SendableResultBox<SCShareableContent>()
     SCShareableContent.getExcludingDesktopWindows(
       true,
@@ -232,29 +236,40 @@ private enum ScreenCaptureKitScreenshot {
       contentBox.finish(value: content, error: error)
     }
     let content = try contentBox.wait()
-    let requestedIDs = Set(windowIDs)
+    let requestedIDs = Set(additionalWindowIDs + [primaryWindowID])
     let windows = content.windows.filter { requestedIDs.contains($0.windowID) }
-    guard windows.contains(where: { $0.windowID == windowIDs.last }),
-      windows.count > 1,
-      let display = content.displays.first(where: { $0.frame.contains(screenFrame.center) })
-    else {
+    guard let primaryWindow = windows.first(where: { $0.windowID == primaryWindowID }) else {
       throw WindowScreenshotError.invalidImage
     }
 
-    let filter = SCContentFilter(display: display, including: windows)
+    let filter: SCContentFilter
+    let sourceRect: CGRect?
+    if additionalWindowIDs.isEmpty {
+      filter = SCContentFilter(desktopIndependentWindow: primaryWindow)
+      sourceRect = nil
+    } else {
+      guard windows.count > 1,
+        let display = content.displays.first(where: { $0.frame.contains(screenFrame.center) })
+      else {
+        throw WindowScreenshotError.invalidImage
+      }
+      filter = SCContentFilter(display: display, including: windows)
+      sourceRect = CGRect(
+        x: screenFrame.minX - display.frame.minX,
+        y: screenFrame.minY - display.frame.minY,
+        width: screenFrame.width,
+        height: screenFrame.height
+      )
+    }
     let scale = max(1, CGFloat(filter.pointPixelScale))
     let configuration = SCStreamConfiguration()
     configuration.width = max(1, Int(ceil(screenFrame.width * scale)))
     configuration.height = max(1, Int(ceil(screenFrame.height * scale)))
-    configuration.sourceRect = CGRect(
-      x: screenFrame.minX - display.frame.minX,
-      y: screenFrame.minY - display.frame.minY,
-      width: screenFrame.width,
-      height: screenFrame.height
-    )
+    if let sourceRect { configuration.sourceRect = sourceRect }
     configuration.showsCursor = false
     configuration.scalesToFit = false
     configuration.ignoreShadowsDisplay = true
+    configuration.ignoreShadowsSingleWindow = true
     let backgroundColor = CGColor(gray: 1, alpha: 1)
     configuration.backgroundColor = backgroundColor
 

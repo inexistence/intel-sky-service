@@ -100,10 +100,12 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   `SCContentFilter.initWithDesktopIndependentWindow` and `initWithDisplay:includingWindows:`.
   `CONFIRMED_STATIC_BINARY`. Intel now preserves the primary window's screenshot frame and Retina
   dimensions while adding visible, intersecting non-normal-layer windows from the same process via
-  `SCScreenshotManager`; a five-second local timeout or any transient lookup/capture failure falls
-  back to the primary-window screenshot. An attended TextEdit secondary-action smoke showed the
-  context menu in both the AX tree and the 1322×866 screenshot, whereas the previous implementation
-  omitted it; the no-menu screenshot retained the same dimensions. `CONFIRMED_INTEL_RUNTIME`.
+  `SCScreenshotManager`. Ordinary windows use the official binary's
+  `desktopIndependentWindow` filter shape; macOS 13, a five-second local timeout, or any
+  ScreenCaptureKit lookup/capture failure falls back to the prior `/usr/sbin/screencapture` path.
+  An attended TextEdit secondary-action smoke showed the context menu in both the AX tree and the
+  1322×866 screenshot, whereas the previous implementation omitted it; the ScreenCaptureKit
+  no-menu screenshot retained the same dimensions and visual content. `CONFIRMED_INTEL_RUNTIME`.
 
 ## Scroll
 
