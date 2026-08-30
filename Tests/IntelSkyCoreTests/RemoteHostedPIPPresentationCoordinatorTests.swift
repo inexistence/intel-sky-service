@@ -261,6 +261,104 @@ import UniformTypeIdentifiers
   #expect(!capture.stopped)
 }
 
+@Test func unavailableHostDefersPresentationUntilReconnect() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller(connected: false)
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+
+  #expect(host.presentationID == nil)
+  #expect(!capture.started)
+  host.connected = true
+  coordinator.hostDidReconnect()
+
+  let presentationID = try #require(host.presentationID)
+  #expect(host.events.prefix(2) == ["publish:\(presentationID):thread:turn:2x2", "source:123"])
+  #expect(capture.started)
+  #expect(capture.refreshCount == 0)
+}
+
+@Test func deferredPresentationUsesReplacementProcessWhenHostReconnects() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller(connected: false)
+  let captures = RecordingPIPCaptureFactory()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { pid, _, _ in captures.make(processIdentifier: pid) }
+  )
+  func update(pid: Int32) {
+    coordinator.observe(
+      requestType: "ComputerUseIPCAppGetSkyshotRequest",
+      request: ["app": "com.example.fixture"],
+      codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+      result: [
+        "app": ["bundleIdentifier": "com.example.fixture", "pid": pid],
+        "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      ]
+    )
+  }
+
+  update(pid: 123)
+  update(pid: 456)
+  #expect(host.presentationID == nil)
+  #expect(captures.capture(for: 123)?.started == false)
+  #expect(captures.capture(for: 456)?.started == false)
+
+  host.connected = true
+  coordinator.hostDidReconnect()
+
+  #expect(host.events.contains("source:456"))
+  #expect(!host.events.contains("source:123"))
+  #expect(captures.capture(for: 123)?.started == false)
+  #expect(captures.capture(for: 456)?.started == true)
+}
+
+@Test func disconnectBetweenConnectionCheckAndPublishKeepsPresentationPending() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  host.failNextPublishAsUnavailable()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  #expect(!capture.started)
+
+  coordinator.hostDidReconnect()
+
+  let presentationID = try #require(host.presentationID)
+  #expect(
+    host.events.filter { $0 == "publish:\(presentationID):thread:turn:2x2" }.count == 2
+  )
+  #expect(capture.started)
+}
+
 @Test func turnEndRacingHostReconnectCannotRepublishAnEndedPresentation() throws {
   let imageURL = try makePIPTestImage()
   defer { try? FileManager.default.removeItem(at: imageURL) }
@@ -291,6 +389,39 @@ import UniformTypeIdentifiers
   #expect(host.events.contains("invalidate:\(presentationID)"))
   #expect(capture.stopped)
   #expect(capture.refreshCount == 0)
+}
+
+@Test func turnEndRacingInitialPublishInvalidatesHostPresentation() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+  let turn = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+  )
+  host.setPublishHandler { coordinator.handle(.ended(turn)) }
+
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+
+  let presentationID = try #require(host.presentationID)
+  #expect(host.events.contains("invalidate:\(presentationID)"))
+  #expect(!capture.started)
+  coordinator.hostDidReconnect()
+  #expect(
+    host.events.filter { $0 == "publish:\(presentationID):thread:turn:2x2" }.count == 1
+  )
 }
 
 private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
@@ -338,11 +469,26 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
   private var storedEvents: [String] = []
   private var storedPresentationID: String?
   private var publishHandler: (() -> Void)?
+  private var storedConnected: Bool
+  private var publishUnavailableCount = 0
   var events: [String] { lock.withLock { storedEvents } }
   var presentationID: String? { lock.withLock { storedPresentationID } }
+  var isConnected: Bool { lock.withLock { storedConnected } }
+  var connected: Bool {
+    get { isConnected }
+    set { lock.withLock { storedConnected = newValue } }
+  }
+
+  init(connected: Bool = true) {
+    storedConnected = connected
+  }
 
   func setPublishHandler(_ handler: @escaping () -> Void) {
     lock.withLock { publishHandler = handler }
+  }
+
+  func failNextPublishAsUnavailable() {
+    lock.withLock { publishUnavailableCount += 1 }
   }
 
   func publishPresentation(
@@ -352,12 +498,15 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
     contextID: UInt32,
     size: CGSize
   ) throws {
-    let handler = lock.withLock { () -> (() -> Void)? in
+    let (handler, unavailable) = lock.withLock { () -> ((() -> Void)?, Bool) in
       storedPresentationID = id
       storedEvents.append(
         "publish:\(id):\(threadID):\(turnID):\(Int(size.width))x\(Int(size.height))")
-      return publishHandler
+      let unavailable = publishUnavailableCount > 0
+      if unavailable { publishUnavailableCount -= 1 }
+      return (publishHandler, unavailable)
     }
+    if unavailable { throw RemoteHostedPIPHostCallError.unavailable }
     handler?()
   }
 

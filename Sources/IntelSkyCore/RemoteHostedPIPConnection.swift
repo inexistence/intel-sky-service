@@ -16,6 +16,7 @@ enum RemoteHostedPIPHostCallError: Error, CustomStringConvertible {
 }
 
 protocol RemoteHostedPIPHostCalling: Sendable {
+  var isConnected: Bool { get }
   func publishPresentation(
     id: String,
     threadID: String,
@@ -181,7 +182,7 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
   }
 
   var endpoint: NSXPCListenerEndpoint { listener.endpoint }
-  var isHostConnected: Bool { producer.isConnected }
+  var isConnected: Bool { producer.isConnected }
 
   func setActionHandler(_ handler: @escaping @Sendable (String, String) throws -> Void) {
     producer.setActionHandler(handler)

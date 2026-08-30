@@ -234,7 +234,7 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       "processing bootstrap request from host pid=\(request.senderProcessIdentifier, privacy: .public)"
     )
     try runtime.hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
-    guard !runtime.connectionController.isHostConnected else {
+    guard !runtime.connectionController.isConnected else {
       // ChatGPT can repeat bootstrap for another window or worker after its
       // process-wide native host is already connected. Sending another
       // request/reply transaction to that stale reply port can wait forever

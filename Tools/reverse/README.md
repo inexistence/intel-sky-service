@@ -22,3 +22,16 @@ node --test Tools/reverse/softlink-symbol-hash.test.mjs
 The hash is SipHash-2-4 over UTF-8 `symbol + salt` with the fixed key recovered from the bundled
 implementation. A hash match proves the requested spelling; it does not by itself prove that the
 symbol exists on the running macOS release or that calling it is safe.
+
+`asar-search.mjs` searches packed files in an Electron ASAR without extracting or changing the
+installed application. The query and optional file filter are case-insensitive regular
+expressions; context and result count are bounded.
+
+```sh
+node Tools/reverse/asar-search.mjs /Applications/ChatGPT.app/Contents/Resources/app.asar \
+  'setServiceProcessIdentifier|onServiceAvailable' 800 '\.vite/build/main-.*\.js$' 20
+node --test Tools/reverse/asar-search.test.mjs
+```
+
+Unpacked entries are listed by the parser but skipped by the search because their bytes live next
+to, rather than inside, the ASAR archive.

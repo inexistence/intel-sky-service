@@ -31,11 +31,19 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   }
 
   private struct Presentation {
+    enum PublicationState {
+      case pending
+      case publishing
+      case published
+    }
+
     let id: String
     let processIdentifier: pid_t
     let surface: RemoteHostedPIPSurface
     let capture: any RemoteHostedPIPWindowCapturing
     var nextOperationID: UInt64
+    var publicationState: PublicationState
+    var captureStarted: Bool
     var ending: Bool
   }
 
@@ -87,40 +95,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   }
 
   func hostDidReconnect() {
-    let current = lock.withLock {
-      presentations.compactMap { key, presentation in
-        presentation.ending ? nil : (key, presentation)
-      }
+    let keys = lock.withLock {
+      presentations.compactMap { key, presentation in presentation.ending ? nil : key }
     }
-    for (key, presentation) in current {
-      do {
-        try host.publishPresentation(
-          id: presentation.id,
-          threadID: key.threadID,
-          turnID: key.turnID,
-          contextID: presentation.surface.contextID,
-          size: presentation.surface.size
-        )
-        try host.setSourceProcessIdentifier(
-          presentation.processIdentifier,
-          presentationID: presentation.id
-        )
-        let isStillLive = lock.withLock {
-          guard let current = presentations[key] else { return false }
-          return current.id == presentation.id && !current.ending
-        }
-        guard isStillLive else {
-          invalidate(presentationID: presentation.id)
-          continue
-        }
-        presentation.capture.refresh(outputSize: presentation.surface.captureOutputSize)
-      } catch {
-        RemoteHostedPIPDiagnostics.logger.error(
-          "presentation republish failed id=\(presentation.id, privacy: .public): \(String(describing: error), privacy: .public)"
-        )
-        invalidate(presentationID: presentation.id)
-      }
-    }
+    for key in keys { publishPresentation(for: key, allowRepublish: true) }
   }
 
   @discardableResult
@@ -146,6 +124,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     }
     for (key, presentation) in current {
       guard presentation.surface.setMaximumDisplayDimension(maximumDimension) else { continue }
+      guard presentation.publicationState == .published else { continue }
       do {
         let fencePort = try presentation.surface.createFencePort()
         defer { mach_port_deallocate(remoteHostedPIPTaskPort(), fencePort) }
@@ -239,15 +218,32 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         "refreshing presentation id=\(existing.id, privacy: .public) app=\(bundleIdentifier, privacy: .public)"
       )
       if existing.processIdentifier != processIdentifier {
-        replaceContext(
-          for: key,
-          existing: existing,
-          processIdentifier: processIdentifier,
-          imageURL: imageURL
-        )
+        switch existing.publicationState {
+        case .pending:
+          replacePendingContext(
+            for: key,
+            existing: existing,
+            processIdentifier: processIdentifier,
+            imageURL: imageURL
+          )
+        case .publishing:
+          // A later state refresh will retry replacement after this publication attempt settles.
+          break
+        case .published:
+          replaceContext(
+            for: key,
+            existing: existing,
+            processIdentifier: processIdentifier,
+            imageURL: imageURL
+          )
+        }
         return
       }
       guard let resized = try? existing.surface.update(imageURL: imageURL) else { return }
+      guard existing.publicationState == .published else {
+        if host.isConnected { publishPresentation(for: key, allowRepublish: false) }
+        return
+      }
       if resized {
         do {
           let fencePort = try existing.surface.createFencePort()
@@ -286,22 +282,6 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       RemoteHostedPIPDiagnostics.logger.notice(
         "publishing presentation id=\(presentationID, privacy: .public) app=\(bundleIdentifier, privacy: .public) pid=\(processIdentifier, privacy: .public) size=\(surface.size.width, privacy: .public)x\(surface.size.height, privacy: .public)"
       )
-      try host.publishPresentation(
-        id: presentationID,
-        threadID: threadID,
-        turnID: turnID,
-        contextID: surface.contextID,
-        size: surface.size
-      )
-      do {
-        try host.setSourceProcessIdentifier(
-          processIdentifier,
-          presentationID: presentationID
-        )
-      } catch {
-        try? host.invalidatePresentation(id: presentationID)
-        throw error
-      }
       let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
       lock.withLock {
         presentations[key] = Presentation(
@@ -310,13 +290,18 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           surface: surface,
           capture: capture,
           nextOperationID: 1,
+          publicationState: .pending,
+          captureStarted: false,
           ending: false
         )
       }
-      capture.start()
-      RemoteHostedPIPDiagnostics.logger.notice(
-        "presentation capture requested id=\(presentationID, privacy: .public)"
-      )
+      if host.isConnected {
+        publishPresentation(for: key, allowRepublish: false)
+      } else {
+        RemoteHostedPIPDiagnostics.logger.notice(
+          "presentation deferred until native host connects id=\(presentationID, privacy: .public)"
+        )
+      }
     } catch {
       RemoteHostedPIPDiagnostics.logger.error(
         "presentation publish failed app=\(bundleIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -359,6 +344,8 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           surface: surface,
           capture: capture,
           nextOperationID: existing.nextOperationID + 1,
+          publicationState: .published,
+          captureStarted: true,
           ending: false
         )
         return true
@@ -378,6 +365,46 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         "presentation context replacement failed id=\(existing.id, privacy: .public): \(String(describing: error), privacy: .public)"
       )
       invalidate(presentationID: existing.id)
+    }
+  }
+
+  private func replacePendingContext(
+    for key: Key,
+    existing: Presentation,
+    processIdentifier: pid_t,
+    imageURL: URL
+  ) {
+    do {
+      let surface = try surfaceFactory(imageURL)
+      surface.setMaximumDisplayDimension(lock.withLock { maximumDisplayDimension })
+      let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
+      let didReplace = lock.withLock { () -> Bool in
+        guard let current = presentations[key], current.id == existing.id,
+          current.processIdentifier == existing.processIdentifier, !current.ending,
+          current.publicationState == .pending
+        else { return false }
+        presentations[key] = Presentation(
+          id: existing.id,
+          processIdentifier: processIdentifier,
+          surface: surface,
+          capture: capture,
+          nextOperationID: existing.nextOperationID,
+          publicationState: .pending,
+          captureStarted: false,
+          ending: false
+        )
+        return true
+      }
+      guard didReplace else {
+        capture.stop()
+        return
+      }
+      if existing.captureStarted { existing.capture.stop() }
+      if host.isConnected { publishPresentation(for: key, allowRepublish: false) }
+    } catch {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "pending presentation context replacement failed id=\(existing.id, privacy: .public): \(String(describing: error), privacy: .public)"
+      )
     }
   }
 
@@ -423,6 +450,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       return selected
     }
     for presentation in ending {
+      guard presentation.publicationState == .published || presentation.captureStarted else {
+        invalidate(presentationID: presentation.id)
+        continue
+      }
       do {
         try host.willEndStream(presentationID: presentation.id)
         scheduleFallbackInvalidation(presentationID: presentation.id)
@@ -447,19 +478,99 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     }
   }
 
-  private func invalidate(presentationID: String) {
+  private func invalidate(presentationID: String, notifyHost: Bool = true) {
     let removed = lock.withLock { () -> Presentation? in
       guard let key = presentations.first(where: { $0.value.id == presentationID })?.key else {
         return nil
       }
       return presentations.removeValue(forKey: key)
     }
-    removed?.capture.stop()
-    if removed != nil {
+    if let removed {
+      if removed.captureStarted { removed.capture.stop() }
       RemoteHostedPIPDiagnostics.logger.notice(
         "invalidating presentation id=\(presentationID, privacy: .public)"
       )
-      try? host.invalidatePresentation(id: presentationID)
+      if notifyHost && (removed.publicationState == .published || removed.captureStarted) {
+        try? host.invalidatePresentation(id: presentationID)
+      }
+    }
+  }
+
+  private func publishPresentation(for key: Key, allowRepublish: Bool) {
+    let attempt = lock.withLock { () -> (Presentation, Bool)? in
+      guard var presentation = presentations[key], !presentation.ending,
+        presentation.publicationState != .publishing,
+        allowRepublish || presentation.publicationState == .pending
+      else { return nil }
+      let captureWasStarted = presentation.captureStarted
+      presentation.publicationState = .publishing
+      presentations[key] = presentation
+      return (presentation, captureWasStarted)
+    }
+    guard let (presentation, captureWasStarted) = attempt else { return }
+
+    var hostAcceptedPresentation = false
+    do {
+      try host.publishPresentation(
+        id: presentation.id,
+        threadID: key.threadID,
+        turnID: key.turnID,
+        contextID: presentation.surface.contextID,
+        size: presentation.surface.size
+      )
+      hostAcceptedPresentation = true
+      try host.setSourceProcessIdentifier(
+        presentation.processIdentifier,
+        presentationID: presentation.id
+      )
+      let shouldStartCapture = lock.withLock { () -> Bool? in
+        guard var current = presentations[key], current.id == presentation.id,
+          !current.ending
+        else { return nil }
+        current.publicationState = .published
+        let shouldStart = !current.captureStarted
+        current.captureStarted = true
+        presentations[key] = current
+        return shouldStart
+      }
+      guard let shouldStartCapture else {
+        try? host.invalidatePresentation(id: presentation.id)
+        invalidate(presentationID: presentation.id, notifyHost: false)
+        return
+      }
+      if shouldStartCapture {
+        presentation.capture.start()
+        RemoteHostedPIPDiagnostics.logger.notice(
+          "presentation capture requested id=\(presentation.id, privacy: .public)"
+        )
+      } else if captureWasStarted {
+        presentation.capture.refresh(outputSize: presentation.surface.captureOutputSize)
+      }
+    } catch {
+      let isUnavailable: Bool
+      if let hostError = error as? RemoteHostedPIPHostCallError,
+        case .unavailable = hostError
+      {
+        isUnavailable = true
+      } else {
+        isUnavailable = false
+      }
+      if isUnavailable {
+        lock.withLock {
+          guard var current = presentations[key], current.id == presentation.id else { return }
+          current.publicationState = .pending
+          presentations[key] = current
+        }
+        RemoteHostedPIPDiagnostics.logger.notice(
+          "presentation deferred after host disconnect id=\(presentation.id, privacy: .public)"
+        )
+        return
+      }
+      if hostAcceptedPresentation { try? host.invalidatePresentation(id: presentation.id) }
+      RemoteHostedPIPDiagnostics.logger.error(
+        "presentation publish failed id=\(presentation.id, privacy: .public): \(String(describing: error), privacy: .public)"
+      )
+      invalidate(presentationID: presentation.id)
     }
   }
 

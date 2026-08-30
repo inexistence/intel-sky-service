@@ -725,6 +725,29 @@ smokes. Dynamic managed-host initial/live frames, fitted geometry, and internal 
 are now confirmed. Resize, PID replacement, host reconnect, turn end, and long-running recovery
 stress remain pending attended verification.
 
+Direct inspection of the installed production ASAR narrows reconnect behavior further. The
+remote-hosted-PIP controller clears only its cached PID when the native host reports connection
+loss. The managed-service controller revalidates or respawns the canonical executable only when an
+enabled feature next calls `ensureServicePid`; each successful spawn invokes
+`setServiceProcessIdentifier`, which calls the native addon's
+`connectRemoteHostedPIPContentHost`. The internal build additionally exposes that ensure operation
+through `NODE_REPL_HOST_SERVICES_PIPE_PATH`, but the production build does not create the pipe.
+Production `@oai/sky` therefore falls back to LaunchServices when the Unix socket is absent. That
+can start the canonical App with parent PID 1 without informing an already-running ChatGPT process
+of its new PID. `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_INTEL_RUNTIME` (production node_repl had no
+host-services pipe; a LaunchServices-restarted service answered a full Notes state in 841 ms while
+its PIP publish reported no active native host).
+
+Intel now retains a presentation as pending when that native host is absent or disconnects between
+the connection check and publish. It delays ScreenCaptureKit startup, accepts subsequent image/PID
+replacement into the pending entry, and publishes the newest context automatically if ChatGPT later
+reconnects. Turn end still removes the pending entry, and a reconnect/turn-end race now stops the
+local capture immediately. This prevents a transient host gap from discarding the presentation or
+running an invisible capture. It cannot itself make an already-running, unmodified production
+ChatGPT learn a PID that was launched outside ChatGPT; exact automatic recovery from that
+caller-side case remains a `KNOWN_DIFFERENCE` unless ChatGPT invokes its managed ensure path or is
+restarted.
+
 A subsequent ChatGPT restart exposed a managed-lifecycle defect: the prior service survived its
 launching ChatGPT process, was reparented to PID 1, retained the Unix socket, and caused the next
 managed service to exit before the host's bootstrap Apple Event. Intel now installs a process-exit
@@ -793,7 +816,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, and ViewBridge coverage brought that checkpoint to 173
-  tests; the current complete suite contains 214 tests.
+  tests; the current complete suite contains 235 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
