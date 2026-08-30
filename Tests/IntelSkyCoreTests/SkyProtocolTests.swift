@@ -68,6 +68,30 @@ private struct StubActionPerformer: AppActionPerforming {
   }
 }
 
+private final class StubAppLifecycleProvider: AppLifecycleProviding, @unchecked Sendable {
+  private(set) var frontmostRequests: [[String: Any]] = []
+  private(set) var modifyRequests: [[String: Any]] = []
+
+  func frontmostWindow(request: [String: Any]) throws -> Any {
+    frontmostRequests.append(request)
+    return [
+      "bundleIdentifier": "com.apple.finder",
+      "name": "Finder",
+      "windowTitle": "Downloads",
+    ]
+  }
+
+  func modifyApp(request: [String: Any]) throws -> [String: Any] {
+    modifyRequests.append(request)
+    return [
+      "active": request["modification"] as? String == "activate",
+      "currentApp": request["modification"] as? String == "activate"
+        ? ["pid": 123, "bundleIdentifier": "com.apple.finder"]
+        : NSNull(),
+    ]
+  }
+}
+
 private struct LockedActionPerformer: AppActionPerforming {
   func performAction(request: [String: Any]) throws -> [String: Any] {
     throw SkySafetyError.screenLocked
@@ -346,6 +370,61 @@ private func requestPayload(id: Int, type: String, request: [String: Any]) throw
   #expect(provider.startRequests[0]["app"] as? String == "com.example.fixture")
   #expect(app["bundleIdentifier"] as? String == "com.example.fixture")
   #expect(skyshot["text"] as? String == "[0] AXWindow title=\"Started\"")
+}
+
+@Test func frontmostWindowUsesConfirmedMetadataOnlyRequestAndResultShape() throws {
+  let provider = StubAppLifecycleProvider()
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appLifecycleProvider: provider
+  )
+
+  let response = try decode(
+    router.handle(
+      try requestPayload(
+        id: 25,
+        type: "ComputerUseIPCFrontmostWindowRequest",
+        request: [:]
+      )))
+  let result = try #require(response["result"] as? [String: Any])
+
+  #expect(provider.frontmostRequests.count == 1)
+  #expect(result["bundleIdentifier"] as? String == "com.apple.finder")
+  #expect(result["name"] as? String == "Finder")
+  #expect(result["windowTitle"] as? String == "Downloads")
+}
+
+@Test func appModifyRoutesConfirmedActivateAndDeactivateSchema() throws {
+  let provider = StubAppLifecycleProvider()
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appLifecycleProvider: provider
+  )
+
+  for (index, modification) in ["activate", "deactivate"].enumerated() {
+    let response = try decode(
+      router.handle(
+        try requestPayload(
+          id: 26 + index,
+          type: "ComputerUseIPCAppModifyRequest",
+          request: [
+            "app": "com.apple.finder",
+            "modification": modification,
+          ]
+        )))
+    let result = try #require(response["result"] as? [String: Any])
+    #expect(result["active"] as? Bool == (modification == "activate"))
+    if modification == "activate" {
+      let currentApp = try #require(result["currentApp"] as? [String: Any])
+      #expect(currentApp["bundleIdentifier"] as? String == "com.apple.finder")
+    } else {
+      #expect(result["currentApp"] is NSNull)
+    }
+  }
+
+  #expect(provider.modifyRequests.count == 2)
+  #expect(provider.modifyRequests[0]["modification"] as? String == "activate")
+  #expect(provider.modifyRequests[1]["modification"] as? String == "deactivate")
 }
 
 @Test func defaultStartAppForcesFullInitialState() throws {

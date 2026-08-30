@@ -87,6 +87,7 @@ public struct SkyRequestRouter: Sendable {
   private let appStateProvider: (any AppStateProviding)?
   private let appActionPerformer: (any AppActionPerforming)?
   private let appCaptureProvider: (any AppCaptureProviding)?
+  private let appLifecycleProvider: (any AppLifecycleProviding)?
   private let executionGate: SkyRequestExecutionGate
   private let turnLifecycle: any ComputerUseTurnLifecycleHandling
   private let requestObserver: (any SkyRequestResultObserving)?
@@ -97,6 +98,7 @@ public struct SkyRequestRouter: Sendable {
     appStateProvider: (any AppStateProviding)? = nil,
     appActionPerformer: (any AppActionPerforming)? = nil,
     appCaptureProvider: (any AppCaptureProviding)? = nil,
+    appLifecycleProvider: (any AppLifecycleProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil
   ) {
     self.init(
@@ -104,6 +106,7 @@ public struct SkyRequestRouter: Sendable {
       appStateProvider: appStateProvider,
       appActionPerformer: appActionPerformer,
       appCaptureProvider: appCaptureProvider,
+      appLifecycleProvider: appLifecycleProvider,
       requestObserver: requestObserver,
       turnLifecycle: ComputerUseTurnCoordinator(),
       sessionCoordinator: ComputerUseSessionCoordinator.shared
@@ -115,6 +118,7 @@ public struct SkyRequestRouter: Sendable {
     appStateProvider: (any AppStateProviding)?,
     appActionPerformer: (any AppActionPerforming)?,
     appCaptureProvider: (any AppCaptureProviding)? = nil,
+    appLifecycleProvider: (any AppLifecycleProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil,
     turnLifecycle: any ComputerUseTurnLifecycleHandling,
     sessionCoordinator: any ComputerUseSessionCoordinating = NoopComputerUseSessionCoordinator()
@@ -123,6 +127,7 @@ public struct SkyRequestRouter: Sendable {
     self.appStateProvider = appStateProvider
     self.appActionPerformer = appActionPerformer
     self.appCaptureProvider = appCaptureProvider
+    self.appLifecycleProvider = appLifecycleProvider
     self.requestObserver = requestObserver
     self.executionGate = SkyRequestExecutionGate()
     self.turnLifecycle = turnLifecycle
@@ -219,6 +224,16 @@ public struct SkyRequestRouter: Sendable {
             throw SkyRPCError.unsupportedRequestType(requestType)
           }
           result = try appStateProvider.startApp(request: request)
+        case "ComputerUseIPCFrontmostWindowRequest":
+          guard let appLifecycleProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appLifecycleProvider.frontmostWindow(request: request)
+        case "ComputerUseIPCAppModifyRequest":
+          guard let appLifecycleProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try appLifecycleProvider.modifyApp(request: request)
         case "ComputerUseIPCAppStopRequest":
           result = try sessionCoordinator.stopApplication(request: request)
         case "ComputerUseIPCCodexStatusItemMenuStateRequest":
@@ -318,6 +333,8 @@ public struct SkyRequestRouter: Sendable {
       return SkyServerErrorCode.invalidApp.rawValue
     case MacAppResolutionError.noWindow:
       return SkyServerErrorCode.accessibilityError.rawValue
+    case MacAppLifecycleError.invalidModification:
+      return SkyServerErrorCode.couldNotGetRequestData.rawValue
     case MacAppActionError.invalidAction:
       return SkyServerErrorCode.couldNotGetRequestData.rawValue
     case MacAppActionError.unsupportedAction:

@@ -17,6 +17,8 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
   active AX invalidation monitoring, and conservative semantic/path refetch after window, layout,
   or element invalidation
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
+- `ComputerUseIPCFrontmostWindowRequest` and app-instance
+  `ComputerUseIPCAppModifyRequest` activate/deactivate transitions
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
 - snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input
 - snapshot-bound vertical and horizontal scrolling, with AX page actions and bounded pixel fallback

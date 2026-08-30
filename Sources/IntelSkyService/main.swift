@@ -71,6 +71,7 @@ let server = SkyUnixServer(
       interactionTracker: interactionTracker
     ),
     appCaptureProvider: appCaptureProvider,
+    appLifecycleProvider: MacAppLifecycleProvider(resolver: resolver),
     requestObserver: pipBootstrapController
   )
 )

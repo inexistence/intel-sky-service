@@ -10,11 +10,15 @@ replace when stronger evidence appears.
 - `CONFIRMED_CLIENT_SOURCE`: directly encoded by the bundled `@oai/sky` JavaScript or types.
 - `CONFIRMED_STATIC_BINARY`: present in the official ARM64 service's symbols, strings, metadata,
   linked frameworks, or disassembly.
+- `CONFIRMED_ARM_RUNTIME`: exercised against the unmodified service on Apple Silicon.
 - `CONFIRMED_INTEL_RUNTIME`: exercised through the unmodified client against this service.
 - `HIGH_CONFIDENCE`: multiple indirect sources agree, but the official behavior was not run.
-- `LOW_CONFIDENCE`: provisional implementation chosen for safety and replaceability.
+- `PARTIAL`: implemented or evidenced incompletely, with material lifecycle/schema differences left.
 - `NEEDS_ARM_ORACLE`: a prepared differential case still needs an Apple Silicon run.
+- `BLOCKED_BY_ENTITLEMENT`: a reproducible platform authorization or signing requirement prevents
+  a compatible implementation without impersonation or weakening security.
 - `KNOWN_DIFFERENCE`: current Intel behavior is observably or provably different.
+- `OUT_OF_SCOPE`: catalogued for protocol completeness but intentionally excluded from this phase.
 
 ## Package baseline
 
@@ -363,16 +367,35 @@ Intel ChatGPT's main-process bundle independently contains a `computer-use-start
 It sends a worker `start` request with an animation target, bundle identifier, permission request
 ID, and request ID, then forwards asynchronous `computer-use-capture-updated` events to the
 renderer. Its remote-hosted-PIP task manager associates presentations with task/thread visibility
-and completes them at turn boundaries. `CONFIRMED_INTEL_CLIENT_SOURCE`.
+and completes them at turn boundaries. `CONFIRMED_CLIENT_SOURCE` (installed Intel caller).
 
 The same installed Intel ChatGPT status-item path requests
 `ComputerUseIPCCodexStatusItemMenuStateRequest`. Its validated response contains
 `computerUse.activeApplications` descriptors (`id`, `name`, nullable `bundleIdentifier` and
 `bundleURL`) plus Computer History state. Selecting `computer-use/stop-application` sends an
 authenticated `SkCu`/`SndR` Apple Event with `ComputerUseIPCAppStopRequest { app }` and expects an
-empty response. `CONFIRMED_INTEL_CLIENT_SOURCE`. No current ChatGPT caller was found for the ARM
-metadata-only `FrontmostWindow` or `AppModify` requests, so they remain lower-priority hidden
-surfaces rather than assumed requirements.
+empty response. `CONFIRMED_CLIENT_SOURCE` (installed Intel caller). No current ChatGPT caller was found for the ARM
+`FrontmostWindow` or `AppModify` requests, but both hidden socket surfaces are now implemented
+because the complete runtime requires them.
+
+ARM field metadata confirms that `ComputerUseIPCFrontmostWindowRequest` is empty and returns an
+optional `ComputerUseIPCFrontmostWindow { bundleIdentifier, name, windowTitle? }`. Its exported
+handler signature independently confirms the optional response. Intel queries the actual
+frontmost `NSRunningApplication`, reads the AX focused-window title when available, and returns
+JSON `null` when no bundle-backed frontmost App is available. `CONFIRMED_STATIC_BINARY` /
+`HIGH_CONFIDENCE`; exact filtering and title selection remain `NEEDS_ARM_ORACLE`.
+
+ARM field metadata confirms `ComputerUseIPCAppModifyRequest { app, modification }`, where
+`modification` is exactly `activate | deactivate`, and the exported handler returns
+`ComputerUseIPCAppState { active, currentApp? }`. Disassembly confirms that the handler resolves
+an `ApplicationTarget`, rejects forbidden Computer Use targets, obtains a
+`ComputerUseAppInstance`, and calls its `ComputerUseAppController.activate()` or `deactivate()`;
+this is a Computer Use session transition, not an attempt to deactivate another macOS foreground
+process. Intel now performs the same policy gate, preserves the user-stop latch, activates or
+deactivates the app-session registry, returns the confirmed app-state envelope, and invalidates
+app-scoped presentation state on deactivation without setting the user-stop latch.
+`CONFIRMED_STATIC_BINARY` / `HIGH_CONFIDENCE`; launch timing and idempotence remain
+`NEEDS_ARM_ORACLE`.
 
 The exact Intel Appshot transport is now confirmed. ChatGPT sends synchronous Apple Events with
 class/ID `SkCu`/`SndR`, parameters `RspT` (request type), `ReqD` (UTF-8 JSON data), and `ClVn`
@@ -381,7 +404,7 @@ uses `app`, `requestId`, `permissionRequestId`, `animationTarget`, and numeric `
 Responses return JSON in the direct-object `tdta` descriptor; errors use `errn`/`errs`. The update
 union is `metadata`, `axText`, `screenshot`, `completed`, or `failed`. ChatGPT accepts screenshot
 files only beneath the real path of `$TMPDIR/com.openai.sky.CUAService`, limits them to 25 MiB, and
-allows PNG/JPEG. `CONFIRMED_INTEL_CLIENT_SOURCE`.
+allows PNG/JPEG. `CONFIRMED_CLIENT_SOURCE` (installed Intel caller).
 
 Intel implements this bridge with OpenAI-host signature validation, exact event constants, version
 and schema checks, and a capture queue that emits metadata, AX text, screenshot, and completion
@@ -424,7 +447,7 @@ looking up the public Unix socket. At startup it resolves an optional
 addon confirms that its executable path matches the canonical path; the accepted PID is then sent
 to `connectRemoteHostedPIPContentHost`. The internal node_repl host-services pipe merely asks this
 same controller to ensure the service and does not carry the App path itself.
-`CONFIRMED_INTEL_CLIENT_SOURCE`.
+`CONFIRMED_CLIENT_SOURCE` (installed Intel caller).
 
 An attended Intel smoke while the compatibility service was running solely through its per-user
 LaunchAgent showed no native Computer Use status item in the macOS menu bar. After ChatGPT was
@@ -452,7 +475,7 @@ and an XPC dictionary containing a Mach send right named `fence`, followed by
 `completeOperationWithPresentationID:operationID:withReply:`. Its own attachment path constructs
 CAContext with `contextWithCGSConnection:options:`. On this Intel system that factory, unlike
 `localContextWithOptions:`, produces a context implementing `createFencePort`.
-`CONFIRMED_INTEL_STATIC_AND_LOCAL_RUNTIME`.
+`CONFIRMED_STATIC_BINARY` / `CONFIRMED_INTEL_RUNTIME`.
 
 ARM imports ScreenCaptureKit and AVFoundation, and its `RemoteHostedPIPWindowRenderer` metadata
 contains `SCStream`, `SCContentFilter`, `SCShareableContent`, `AVSampleBufferDisplayLayer`, separate
@@ -567,7 +590,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   `KNOWN_DIFFERENCE`; exact classifier membership remains `NEEDS_ARM_ORACLE`.
 - Intel now fails `get_app_state` and actions with `screenLocked` (`-10020`) when the GUI session is
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
-  enabled. The secure-input error mapping remains `LOW_CONFIDENCE`.
+  enabled. The secure-input error mapping remains `PARTIAL`.
 - ARM metadata for `ComputerUseAppInstanceManager` includes `userInteractionMonitor`,
   `userInterruptedControlledApp`, `interventionReasonByTargetIdentifier`, per-target debounce tasks,
   and a `requiresRequery` state. This shows that interruption is associated with a controlled target

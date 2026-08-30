@@ -69,6 +69,30 @@ import Testing
   }
 }
 
+@Test func appModificationTransitionsReturnConfirmedAppStateShape() throws {
+  let coordinator = ComputerUseSessionCoordinator()
+  let app = sessionTestApp(bundleIdentifier: "com.example.fixture", name: "Fixture")
+
+  let activeState = try coordinator.activateApplication(app)
+  let currentApp = try #require(activeState["currentApp"] as? [String: Any])
+  #expect(activeState["active"] as? Bool == true)
+  #expect(currentApp["pid"] as? Int == Int(app.processIdentifier))
+  #expect(currentApp["bundleIdentifier"] as? String == app.bundleIdentifier)
+  #expect(currentApp["appPath"] as? String == app.appPath)
+  try coordinator.requireActionAllowed(ResolvedMacApplication(app))
+
+  let inactiveState = try coordinator.deactivateApplication(app)
+  #expect(inactiveState["active"] as? Bool == false)
+  #expect(inactiveState["currentApp"] is NSNull)
+  #expect(throws: ComputerUseSessionError.self) {
+    try coordinator.requireActionAllowed(ResolvedMacApplication(app))
+  }
+
+  // A normal deactivation is not the user-stop latch and can be reactivated in the same turn.
+  _ = try coordinator.activateApplication(app)
+  try coordinator.requireNotStopped(ResolvedMacApplication(app))
+}
+
 @Test func userStopCancelsAnInFlightOperationCheckpoint() throws {
   let coordinator = ComputerUseSessionCoordinator()
   let app = sessionTestApp(bundleIdentifier: "com.example.fixture", name: "Fixture")

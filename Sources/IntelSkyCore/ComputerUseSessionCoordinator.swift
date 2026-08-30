@@ -18,6 +18,8 @@ protocol ComputerUseSessionCoordinating: Sendable {
   func requireNotStopped(_ app: ResolvedMacApplication) throws
   func requireActionAllowed(_ app: ResolvedMacApplication) throws
   func recordActive(_ app: ResolvedMacApp)
+  func activateApplication(_ app: ResolvedMacApp) throws -> [String: Any]
+  func deactivateApplication(_ app: ResolvedMacApp) throws -> [String: Any]
   func stopApplication(request: [String: Any]) throws -> [String: Any]
   func statusItemMenuState() -> [String: Any]
 }
@@ -26,10 +28,24 @@ struct NoopComputerUseSessionCoordinator: ComputerUseSessionCoordinating {
   func requireNotStopped(_ app: ResolvedMacApplication) throws {}
   func requireActionAllowed(_ app: ResolvedMacApplication) throws {}
   func recordActive(_ app: ResolvedMacApp) {}
+  func activateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
+    ["active": true, "currentApp": Self.appDescriptor(app)]
+  }
+  func deactivateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
+    ["active": false, "currentApp": NSNull()]
+  }
   func stopApplication(request: [String: Any]) throws -> [String: Any] {
     throw ComputerUseSessionError.noActiveSession(String(describing: request["app"]))
   }
   func statusItemMenuState() -> [String: Any] { [:] }
+
+  private static func appDescriptor(_ app: ResolvedMacApp) -> [String: Any] {
+    [
+      "pid": Int(app.processIdentifier),
+      "bundleIdentifier": app.bundleIdentifier,
+      "appPath": app.appPath.isEmpty ? NSNull() : app.appPath,
+    ]
+  }
 }
 
 enum ComputerUseSessionOperationContext {
@@ -148,6 +164,30 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
     }
   }
 
+  func activateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
+    try requireNotStopped(
+      ResolvedMacApplication(
+        bundleIdentifier: app.bundleIdentifier,
+        displayName: app.displayName,
+        appPath: app.appPath
+      ))
+    lock.withLock {
+      activeApplications[app.bundleIdentifier] = ActiveApplication(app)
+    }
+    return ["active": true, "currentApp": Self.appDescriptor(app)]
+  }
+
+  func deactivateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
+    let handler: (@Sendable (String) -> Void)? = try lock.withLock {
+      guard activeApplications.removeValue(forKey: app.bundleIdentifier) != nil else {
+        throw ComputerUseSessionError.noActiveSession(app.bundleIdentifier)
+      }
+      return stopHandler
+    }
+    handler?(app.bundleIdentifier)
+    return ["active": false, "currentApp": NSNull()]
+  }
+
   func stopApplication(request: [String: Any]) throws -> [String: Any] {
     guard let rawIdentifier = request["app"] as? String else {
       throw ComputerUseSessionError.invalidStopRequest
@@ -203,5 +243,13 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
 
   func setStopHandler(_ handler: (@Sendable (String) -> Void)?) {
     lock.withLock { stopHandler = handler }
+  }
+
+  private static func appDescriptor(_ app: ResolvedMacApp) -> [String: Any] {
+    [
+      "pid": Int(app.processIdentifier),
+      "bundleIdentifier": app.bundleIdentifier,
+      "appPath": app.appPath.isEmpty ? NSNull() : app.appPath,
+    ]
   }
 }
