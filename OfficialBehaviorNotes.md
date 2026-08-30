@@ -515,6 +515,13 @@ request/reply endpoint transfer against the stale Mach reply port, which would o
 Apple Event main thread and starve Appshot and direct state requests. A disconnected host remains
 eligible for a fresh endpoint transfer. `CONFIRMED_RUNTIME_INTEL` / `HIGH_CONFIDENCE`.
 
+The managed service now follows the lifetime of its authenticated ChatGPT clients and native PIP
+host. A service that has not obtained the PIP host exits after its final authenticated socket client
+disconnects, and a service with an established host exits when that XPC host invalidates. This
+prevents a stale helper from surviving a ChatGPT restart, rejecting the newly launched helper at the
+shared socket, and consuming the new process's one-shot PIP bootstrap event. `CONFIRMED_RUNTIME_INTEL`
+/ `HIGH_CONFIDENCE`.
+
 Intel batches the core AX attributes for each snapshot element with
 `AXUIElementCopyMultipleAttributeValues`, while retaining per-element action descriptions and
 settable checks. This preserves the public tree and action semantics but removes repeated

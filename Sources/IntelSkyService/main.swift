@@ -124,7 +124,21 @@ let screenLockMonitor = ComputerUseScreenLockMonitor {
   router.screenDidLock()
 }
 screenLockMonitor.start()
-let server = SkyUnixServer(socketPath: socketPath, router: router)
+let server = SkyUnixServer(
+  socketPath: socketPath,
+  router: router,
+  shutdownAfterLastAuthenticatedClientDelay: 1,
+  shouldShutdownWhenIdle: {
+    // A managed instance that never obtained the native PIP host must not outlive its last
+    // ChatGPT client. Otherwise it blocks the replacement instance launched during the next
+    // ChatGPT startup and consumes that process's one-shot bootstrap event.
+    !(pipBootstrapController?.isHostConnected ?? false)
+  }
+)
+pipBootstrapController?.setHostInvalidationHandler { [weak server] in
+  fputs("native PIP host disconnected; shutting down managed service\n", stderr)
+  server?.shutdown()
+}
 let processIdentifier = ProcessInfo.processInfo.processIdentifier
 let launchParentProcessIdentifier = getppid()
 let cleanupRuntimeStatus: @Sendable () -> Void = {

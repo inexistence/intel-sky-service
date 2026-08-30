@@ -28,6 +28,8 @@ public final class SkyUnixServer: @unchecked Sendable {
   private let socketPath: String
   private let router: SkyRequestRouter
   private let authorizer: any PeerAuthorizing
+  private let shutdownAfterLastAuthenticatedClientDelay: TimeInterval?
+  private let shouldShutdownWhenIdle: @Sendable () -> Bool
   private let connectionQueue = DispatchQueue(
     label: "dev.huangjianbin.intel-sky-service.connections",
     qos: .userInitiated,
@@ -38,15 +40,22 @@ public final class SkyUnixServer: @unchecked Sendable {
   private var listener: Int32 = -1
   private var ownedSocketIdentity: UnixSocketFilePreparer.UnixSocketIdentity?
   private var shuttingDown = false
+  private var authenticatedClientCount = 0
+  private var clientLifecycleGeneration: UInt64 = 0
 
   public init(
     socketPath: String,
     router: SkyRequestRouter,
-    authorizer: any PeerAuthorizing = OpenAIPeerAuthorizer()
+    authorizer: any PeerAuthorizing = OpenAIPeerAuthorizer(),
+    shutdownAfterLastAuthenticatedClientDelay: TimeInterval? = nil,
+    shouldShutdownWhenIdle: @escaping @Sendable () -> Bool = { false }
   ) {
     self.socketPath = socketPath
     self.router = router
     self.authorizer = authorizer
+    self.shutdownAfterLastAuthenticatedClientDelay =
+      shutdownAfterLastAuthenticatedClientDelay.map { max(0, $0) }
+    self.shouldShutdownWhenIdle = shouldShutdownWhenIdle
   }
 
   deinit {
@@ -146,7 +155,11 @@ public final class SkyUnixServer: @unchecked Sendable {
 
   private func serve(_ client: Int32) throws {
     let clientIdentifier = "socket:\(UUID().uuidString)"
-    defer { router.clientDisconnected(clientIdentifier) }
+    var authenticated = false
+    defer {
+      router.clientDisconnected(clientIdentifier)
+      if authenticated { authenticatedClientDidDisconnect() }
+    }
     var decoder = SkyFrameDecoder()
     var didReplyToPing = false
     var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -167,11 +180,41 @@ public final class SkyUnixServer: @unchecked Sendable {
         try writeFrame(response, to: client)
 
         if !didReplyToPing {
-          didReplyToPing = true
           let peer = try PeerIdentity(socket: client)
           try authorizer.authorize(peer)
+          didReplyToPing = true
+          authenticated = true
+          authenticatedClientDidConnect()
           try setReceiveTimeout(milliseconds: 0, on: client)
         }
+      }
+    }
+  }
+
+  private func authenticatedClientDidConnect() {
+    stateLock.withLock {
+      authenticatedClientCount += 1
+      clientLifecycleGeneration &+= 1
+    }
+  }
+
+  private func authenticatedClientDidDisconnect() {
+    guard let delay = shutdownAfterLastAuthenticatedClientDelay else { return }
+    let generation = stateLock.withLock { () -> UInt64? in
+      authenticatedClientCount = max(0, authenticatedClientCount - 1)
+      clientLifecycleGeneration &+= 1
+      guard authenticatedClientCount == 0, !shuttingDown else { return nil }
+      return clientLifecycleGeneration
+    }
+    guard let generation else { return }
+    connectionQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      let remainsIdle = self.stateLock.withLock {
+        self.authenticatedClientCount == 0 && self.clientLifecycleGeneration == generation
+          && !self.shuttingDown
+      }
+      if remainsIdle, self.shouldShutdownWhenIdle() {
+        self.shutdown()
       }
     }
   }
@@ -292,6 +335,14 @@ public final class SkyUnixClient {
         return object
       }
     }
+  }
+
+  public func disconnect() {
+    guard descriptor >= 0 else { return }
+    _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+    close(descriptor)
+    descriptor = -1
+    decoder = SkyFrameDecoder()
   }
 }
 

@@ -159,6 +159,7 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
   private let producer: RemoteHostedPIPContentProducer
   private let hostAuthorizer: any ProcessAuthorizing
   private var activeConnection: NSXPCConnection?
+  private var hostInvalidationHandler: (@Sendable () -> Void)?
 
   init(
     producer: RemoteHostedPIPContentProducer = RemoteHostedPIPContentProducer(),
@@ -198,6 +199,10 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
 
   func setMaximumDisplaySizeHandler(_ handler: @escaping @Sendable (Double) -> Void) {
     producer.setMaximumDisplaySizeHandler(handler)
+  }
+
+  func setHostInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
+    lock.withLock { hostInvalidationHandler = handler }
   }
 
   func publishPresentation(
@@ -367,12 +372,14 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
   }
 
   private func connectionDidInvalidate(_ connection: NSXPCConnection) {
-    let wasActive = lock.withLock { () -> Bool in
-      guard activeConnection === connection else { return false }
+    let state = lock.withLock { () -> (Bool, (@Sendable () -> Void)?) in
+      guard activeConnection === connection else { return (false, nil) }
       activeConnection = nil
-      return true
+      return (true, hostInvalidationHandler)
     }
-    if wasActive { producer.connectionDidInvalidate() }
+    guard state.0 else { return }
+    producer.connectionDidInvalidate()
+    state.1?()
   }
 
   private func connectionDidInterrupt(_ connection: NSXPCConnection) {

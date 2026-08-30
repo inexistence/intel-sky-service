@@ -110,6 +110,12 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
 
   var hasInitializedRuntime: Bool { runtimeLock.withLock { storedRuntime != nil } }
 
+  public var isHostConnected: Bool { runtime().connectionController.isConnected }
+
+  public func setHostInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
+    runtime().connectionController.setHostInvalidationHandler(handler)
+  }
+
   deinit {
     if started {
       AERemoveEventHandler(

@@ -96,6 +96,36 @@ private nonisolated(unsafe) func pipTestTaskPort() -> mach_port_t {
   )
 }
 
+@Test func pipHostInvalidationRequestsManagedServiceShutdown() throws {
+  let controller = RemoteHostedPIPConnectionController(
+    hostAuthorizer: AllowAnyProcessAuthorizer(),
+    enforceConnectionCodeSigningRequirement: false
+  )
+  let invalidated = DispatchSemaphore(value: 0)
+  controller.setHostInvalidationHandler { invalidated.signal() }
+
+  let client = NSXPCConnection(listenerEndpoint: controller.endpoint)
+  client.remoteObjectInterface = NSXPCInterface(
+    with: RemoteHostedPIPContentProducerXPCProtocol.self
+  )
+  let hostInterface = NSXPCInterface(with: RemoteHostedPIPContentHostXPCProtocol.self)
+  RemoteHostedPIPConnectionController.configureFencePayload(on: hostInterface)
+  client.exportedInterface = hostInterface
+  client.exportedObject = RecordingPIPHost()
+  client.activate()
+
+  let connected = DispatchSemaphore(value: 0)
+  let proxy = try #require(
+    client.remoteObjectProxyWithErrorHandler { _ in connected.signal() }
+      as? RemoteHostedPIPContentProducerXPCProtocol
+  )
+  proxy.connect { _ in connected.signal() }
+  #expect(connected.wait(timeout: .now() + 2) == .success)
+  client.invalidate()
+
+  #expect(invalidated.wait(timeout: .now() + 2) == .success)
+}
+
 @Test func pipProducerRejectsInvalidSizeAndUnavailablePresentation() {
   let producer = RemoteHostedPIPContentProducer()
   var sizeError: NSError?
