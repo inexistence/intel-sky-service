@@ -9,6 +9,12 @@ protocol RemoteHostedPIPWindowCapturing: Sendable {
   func stop()
 }
 
+enum RemoteHostedPIPCaptureRefreshPlan: Equatable {
+  case noChange
+  case updateConfiguration
+  case reconcileWindow
+}
+
 final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturing,
   SCStreamOutput, SCStreamDelegate, @unchecked Sendable
 {
@@ -42,8 +48,57 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     guard outputSize.width.isFinite, outputSize.height.isFinite,
       outputSize.width > 0, outputSize.height > 0
     else { return }
-    lock.withLock { desiredOutputSize = outputSize }
-    requestRefresh()
+    let frontWindow = Self.frontWindowDescriptor(processIdentifier: processIdentifier)
+    if let frontWindow { surface.updateTargetBounds(frontWindow.frame) }
+    let action = lock.withLock {
+      () -> (RemoteHostedPIPCaptureRefreshPlan, SCStream?, CGWindowID?) in
+      guard !stopped else { return (.noChange, nil, nil) }
+      desiredOutputSize = outputSize
+      guard !reconciling else {
+        refreshPending = true
+        return (.noChange, nil, nil)
+      }
+      let plan = Self.refreshPlan(
+        capturedWindowID: capturedWindowID,
+        configuredOutputSize: configuredOutputSize,
+        currentWindowID: frontWindow?.windowID,
+        desiredOutputSize: outputSize
+      )
+      guard plan != .noChange else { return (plan, nil, nil) }
+      guard plan == .updateConfiguration, let stream, let capturedWindowID else {
+        return (.reconcileWindow, nil, nil)
+      }
+      reconciling = true
+      return (plan, stream, capturedWindowID)
+    }
+    switch action.0 {
+    case .noChange:
+      break
+    case .updateConfiguration:
+      guard let stream = action.1, let windowID = action.2 else { return }
+      updateExistingCapture(
+        stream,
+        filter: nil,
+        windowID: windowID,
+        outputSize: outputSize,
+        updateFilter: false,
+        updateConfiguration: true
+      )
+    case .reconcileWindow:
+      requestRefresh()
+    }
+  }
+
+  static func refreshPlan(
+    capturedWindowID: CGWindowID?,
+    configuredOutputSize: CGSize?,
+    currentWindowID: CGWindowID?,
+    desiredOutputSize: CGSize
+  ) -> RemoteHostedPIPCaptureRefreshPlan {
+    guard let capturedWindowID, let currentWindowID, capturedWindowID == currentWindowID else {
+      return .reconcileWindow
+    }
+    return configuredOutputSize == desiredOutputSize ? .noChange : .updateConfiguration
   }
 
   private func requestRefresh() {
@@ -141,7 +196,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
 
   private func updateExistingCapture(
     _ stream: SCStream,
-    filter: SCContentFilter,
+    filter: SCContentFilter?,
     windowID: CGWindowID,
     outputSize: CGSize,
     updateFilter: Bool,
@@ -165,6 +220,10 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     }
     guard updateFilter else {
       applyConfiguration()
+      return
+    }
+    guard let filter else {
+      reconciliationFailed(stream: stream)
       return
     }
     stream.updateContentFilter(filter) { [weak self, weak stream] error in
@@ -352,5 +411,33 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
           && ($0.isOnScreen || $0.isActive) && $0.frame.width > 1 && $0.frame.height > 1
       }
       .min { (rank[$0.windowID] ?? Int.max) < (rank[$1.windowID] ?? Int.max) }
+  }
+
+  private struct FrontWindowDescriptor {
+    let windowID: CGWindowID
+    let frame: CGRect
+  }
+
+  private static func frontWindowDescriptor(processIdentifier: pid_t) -> FrontWindowDescriptor? {
+    let windows =
+      CGWindowListCopyWindowInfo(
+        [.optionOnScreenOnly, .excludeDesktopElements],
+        kCGNullWindowID
+      ) as? [[CFString: Any]] ?? []
+    for window in windows {
+      guard (window[kCGWindowOwnerPID] as? NSNumber)?.int32Value == processIdentifier,
+        (window[kCGWindowLayer] as? NSNumber)?.intValue == 0,
+        let identifier = window[kCGWindowNumber] as? NSNumber,
+        let rawBounds = window[kCGWindowBounds] as? [CFString: Any],
+        let frame = CGRect(dictionaryRepresentation: rawBounds as CFDictionary),
+        frame.width > 1,
+        frame.height > 1
+      else { continue }
+      return FrontWindowDescriptor(
+        windowID: CGWindowID(identifier.uint32Value),
+        frame: frame
+      )
+    }
+    return nil
   }
 }

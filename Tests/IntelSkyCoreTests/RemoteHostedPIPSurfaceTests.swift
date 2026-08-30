@@ -116,6 +116,33 @@ import UniformTypeIdentifiers
   #expect(Array(UnsafeBufferPointer(start: bytes + stride, count: 4)) == [255, 0, 0, 255])
 }
 
+@Test func pipCaptureRefreshPlanSkipsSteadyWindowEnumeration() {
+  #expect(
+    RemoteHostedPIPWindowCapture.refreshPlan(
+      capturedWindowID: 42,
+      configuredOutputSize: CGSize(width: 400, height: 200),
+      currentWindowID: 42,
+      desiredOutputSize: CGSize(width: 400, height: 200)
+    ) == .noChange
+  )
+  #expect(
+    RemoteHostedPIPWindowCapture.refreshPlan(
+      capturedWindowID: 42,
+      configuredOutputSize: CGSize(width: 400, height: 200),
+      currentWindowID: 42,
+      desiredOutputSize: CGSize(width: 400, height: 180)
+    ) == .updateConfiguration
+  )
+  #expect(
+    RemoteHostedPIPWindowCapture.refreshPlan(
+      capturedWindowID: 42,
+      configuredOutputSize: CGSize(width: 400, height: 200),
+      currentWindowID: 43,
+      desiredOutputSize: CGSize(width: 400, height: 200)
+    ) == .reconcileWindow
+  )
+}
+
 @Test func pipSurfaceEnqueuesShareableVideoAndRestoresFallbackVisibility() throws {
   let surface = try RemoteHostedPIPSurface(size: CGSize(width: 8, height: 6))
   var pixelBuffer: CVPixelBuffer?

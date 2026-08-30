@@ -751,8 +751,15 @@ enabled for argument-free managed launches; `--disable-pip` is the explicit roll
 old `--experimental-pip` flag is a compatibility alias. PIP failure remains isolated from the
 Computer Use response. `HIGH_CONFIDENCE` for the implemented protocol and local/cross-signature
 smokes. Dynamic managed-host initial/live frames, fitted geometry, and internal cursor composition
-are now confirmed. Resize, PID replacement, host reconnect, turn end, and long-running recovery
-stress remain pending attended verification.
+are now confirmed. An attended Finder sequence changed the active capture from the normal window
+(`window=6974`, `400x190`) to its 400x662-point Info window (`window=8994`, `242x400`) and back while
+retaining the same published presentation. This confirms the live window-replacement and host-resize
+path on Intel. The run also exposed that even a steady `SCShareableContent` re-enumeration can stop
+the current Intel stream with ScreenCaptureKit error `-3815`; the finite recovery restarted it, but
+added visible-risk and latency. Capture refresh now compares the front CGWindow ID first, skips
+ScreenCaptureKit entirely for an unchanged window and size, and updates only the stream configuration
+when the same window changes size. A decision regression locks those three branches. PID replacement,
+host reconnect, turn end, and long-running recovery stress remain pending attended verification.
 
 Direct inspection of the installed production ASAR narrows reconnect behavior further. The
 remote-hosted-PIP controller clears only its cached PID when the native host reports connection
@@ -850,7 +857,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, ViewBridge, organization-policy, capture, and managed-host
-  coverage brought that checkpoint to 173 tests; the current complete suite contains 257 tests.
+  coverage brought that checkpoint to 173 tests; the current complete suite contains 258 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
@@ -932,7 +939,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 257 Swift tests and 13 Node protocol/reverse/oracle tests,
+- The current runtime checkpoint passes 258 Swift tests and 13 Node protocol/reverse/oracle tests,
   including the protocol-catalog verifier and soft-link hash coverage. It also passes the
   12-selector Intel PIP-host audit and an x86_64 release build compiled with warnings as errors.
 
