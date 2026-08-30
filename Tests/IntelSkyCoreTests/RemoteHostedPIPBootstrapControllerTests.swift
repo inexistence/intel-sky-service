@@ -14,6 +14,7 @@ import Testing
 
 @Test func pipBootstrapControllerAuthorizesBeforeSendingEndpoint() throws {
   let sender = RecordingEndpointSender()
+  let authorizedHosts = RecordingAuthorizedHosts()
   let controller = RemoteHostedPIPBootstrapController(
     connectionController: RemoteHostedPIPConnectionController(
       hostAuthorizer: AllowBootstrapHost(),
@@ -22,15 +23,18 @@ import Testing
     endpointSender: sender,
     hostAuthorizer: AllowBootstrapHost()
   )
+  controller.setAuthorizedHostHandler { authorizedHosts.record($0) }
   let request = try bootstrapRequest(pid: 42, port: 99)
 
   try controller.process(request)
 
   #expect(sender.sentPorts == [99])
+  #expect(authorizedHosts.processIdentifiers == [42])
 }
 
 @Test func pipBootstrapControllerDoesNotSendEndpointAfterAuthorizationFailure() throws {
   let sender = RecordingEndpointSender()
+  let authorizedHosts = RecordingAuthorizedHosts()
   let controller = RemoteHostedPIPBootstrapController(
     connectionController: RemoteHostedPIPConnectionController(
       hostAuthorizer: AllowBootstrapHost(),
@@ -39,12 +43,14 @@ import Testing
     endpointSender: sender,
     hostAuthorizer: DenyBootstrapHost()
   )
+  controller.setAuthorizedHostHandler { authorizedHosts.record($0) }
   let request = try bootstrapRequest(pid: 42, port: 99)
 
   #expect(throws: BootstrapAuthorizationFailure.self) {
     try controller.process(request)
   }
   #expect(sender.sentPorts.isEmpty)
+  #expect(authorizedHosts.processIdentifiers.isEmpty)
 }
 
 @Test func pipBootstrapControllerRetriesTransientEndpointEIO() throws {
@@ -114,6 +120,16 @@ private final class RecordingEndpointSender: RemoteHostedPIPEndpointSending, @un
       return true
     }
     if shouldFail { throw RemoteHostedPIPEndpointTransportError.routineFailed(EIO) }
+  }
+}
+
+private final class RecordingAuthorizedHosts: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedProcessIdentifiers: [pid_t] = []
+  var processIdentifiers: [pid_t] { lock.withLock { storedProcessIdentifiers } }
+
+  func record(_ processIdentifier: pid_t) {
+    lock.withLock { storedProcessIdentifiers.append(processIdentifier) }
   }
 }
 

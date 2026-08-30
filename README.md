@@ -10,7 +10,7 @@ external model service.
 
 ## Verified compatibility
 
-The following combination was verified on an Intel Mac on 2026-08-30:
+The following combination was verified on an Intel Mac on 2026-08-31:
 
 | Component | Verified value |
 | --- | --- |
@@ -141,6 +141,8 @@ The installer:
   `Codex Computer Use.app.backup-YYYYMMDD-HHMMSS`;
 - preserves a legacy LaunchAgent as a timestamped disabled plist;
 - prepares `node_repl` capability discovery without overwriting an incompatible user entry;
+- lets ChatGPT's existing managed-service controller respawn and reconnect PIP after an unexpected
+  service exit; the socketless watchdog is active only after ChatGPT authenticates the PIP host;
 - never starts or quits ChatGPT.
 
 Do not run the legacy LaunchAgent and ChatGPT-managed service together. Both use the same Unix

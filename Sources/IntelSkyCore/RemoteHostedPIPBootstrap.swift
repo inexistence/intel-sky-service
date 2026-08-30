@@ -76,6 +76,7 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   private let endpointMaximumAttempts: Int
   private var started = false
   private var storedRuntime: Runtime?
+  private var authorizedHostHandler: (@Sendable (pid_t) -> Void)?
 
   public override init() {
     injectedConnectionController = nil
@@ -114,6 +115,10 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
 
   public func setHostInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
     runtime().connectionController.setHostInvalidationHandler(handler)
+  }
+
+  public func setAuthorizedHostHandler(_ handler: @escaping @Sendable (pid_t) -> Void) {
+    lock.withLock { authorizedHostHandler = handler }
   }
 
   deinit {
@@ -240,6 +245,7 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       "processing bootstrap request from host pid=\(request.senderProcessIdentifier, privacy: .public)"
     )
     try runtime.hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
+    lock.withLock { authorizedHostHandler }?(request.senderProcessIdentifier)
     guard !runtime.connectionController.isConnected else {
       // ChatGPT can repeat bootstrap for another window or worker after its
       // process-wide native host is already connected. Sending another

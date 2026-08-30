@@ -785,15 +785,30 @@ of its new PID. `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_INTEL_RUNTIME` (productio
 host-services pipe; a LaunchServices-restarted service answered a full Notes state in 841 ms while
 its PIP publish reported no active native host).
 
+Static inspection of `sky.node` and the production ASAR recovered ChatGPT's distributed recovery
+envelope: notification `com.openai.codex.computer-use.status-item-state-changed` with
+`processIdentifier`, `computerUseActive`, and `computerHistoryState`. ChatGPT accepts the event only
+for its cached managed PID; refreshing the status menu then runs the existing managed
+`ensureServicePid` path and reconnects the native PIP host. Intel starts a same-signed, same-binary
+watchdog only after an authenticated PIP bootstrap. The watchdog owns no socket or UI and, if the
+service exits while that ChatGPT PID remains alive, publishes the official stopped-state envelope
+for the old PID. A simultaneous LaunchServices fallback yields socket binding for one second so the
+ChatGPT-managed child wins, while retaining socket-only recovery if the manager is unavailable.
+After deployment, terminating managed PID 19396 caused ChatGPT PID 17004 to start child PID 19430;
+the persistent official client returned a full 21,783-character Notes state and screenshot in
+1,137 ms. Logs then showed endpoint transfer on attempt 1, XPC connection, the 200-point maximum,
+and a new complete Notes presentation. Exactly one service owned the mode-0600 socket; its watchdog
+owned none. `CONFIRMED_STATIC_BINARY` / `CONFIRMED_CLIENT_SOURCE` /
+`CONFIRMED_INTEL_RUNTIME`.
+
 Intel now retains a presentation as pending when that native host is absent or disconnects between
 the connection check and publish. It delays ScreenCaptureKit startup, accepts subsequent image/PID
 replacement into the pending entry, and publishes the newest context automatically if ChatGPT later
 reconnects. Turn end still removes the pending entry, and a reconnect/turn-end race now stops the
 local capture immediately. This prevents a transient host gap from discarding the presentation or
-running an invisible capture. It cannot itself make an already-running, unmodified production
-ChatGPT learn a PID that was launched outside ChatGPT; exact automatic recovery from that
-caller-side case remains a `KNOWN_DIFFERENCE` unless ChatGPT invokes its managed ensure path or is
-restarted.
+running an invisible capture. The authenticated watchdog described above now makes the unmodified
+production ChatGPT invoke its own managed ensure path after an unexpected service exit, so
+automatic socket and PIP recovery is confirmed on Intel.
 
 A subsequent ChatGPT restart exposed a managed-lifecycle defect: the prior service survived its
 launching ChatGPT process, was reparented to PID 1, retained the Unix socket, and caused the next

@@ -4,6 +4,14 @@ import Foundation
 import IntelSkyCore
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+if let watchdog = ManagedServiceReconnectWatchdogMode.parse(arguments: arguments) {
+  exit(
+    ManagedServiceReconnectWatchdogMode.run(
+      servicePID: watchdog.servicePID,
+      hostPID: watchdog.hostPID
+    )
+  )
+}
 if arguments == ["--help"] || arguments == ["-h"] {
   print(
     "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] [--disable-pip] | --check-permissions | --prepare-capability | --register-capability"
@@ -57,6 +65,15 @@ do {
   exit(64)
 }
 let socketPath = configuration.socketPath
+let processIdentifier = ProcessInfo.processInfo.processIdentifier
+let launchParentProcessIdentifier = getppid()
+let socketBindDelay = ManagedServiceLaunchPolicy.socketBindDelay(
+  arguments: arguments,
+  parentProcessIdentifier: launchParentProcessIdentifier
+)
+let reconnectWatchdogLauncher = Bundle.main.executableURL.map {
+  ManagedServiceReconnectWatchdogLauncher(executableURL: $0)
+}
 
 // ChatGPT starts its PIP host and the managed service concurrently, then sends the bootstrap Apple
 // Event on a short deadline. Register that handler before constructing NSApplication or warming any
@@ -64,6 +81,21 @@ let socketPath = configuration.socketPath
 let pipBootstrapController: RemoteHostedPIPBootstrapController?
 if configuration.remoteHostedPIPEnabled {
   let controller = RemoteHostedPIPBootstrapController()
+  controller.setAuthorizedHostHandler { hostProcessIdentifier in
+    guard
+      reconnectWatchdogLauncher?.start(
+        servicePID: processIdentifier,
+        hostPID: hostProcessIdentifier
+      ) == true
+    else {
+      fputs("warning: could not start managed-service reconnect watchdog\n", stderr)
+      return
+    }
+    fputs(
+      "managed-service reconnect watchdog started for host pid=\(hostProcessIdentifier)\n",
+      stderr
+    )
+  }
   controller.start()
   pipBootstrapController = controller
   fputs("remote-hosted PIP bootstrap enabled\n", stderr)
@@ -139,8 +171,6 @@ pipBootstrapController?.setHostInvalidationHandler { [weak server] in
   fputs("native PIP host disconnected; shutting down managed service\n", stderr)
   server?.shutdown()
 }
-let processIdentifier = ProcessInfo.processInfo.processIdentifier
-let launchParentProcessIdentifier = getppid()
 let cleanupRuntimeStatus: @Sendable () -> Void = {
   screenLockMonitor.stop()
   do {
@@ -183,6 +213,13 @@ let managedParentExitSource: DispatchSourceProcess? = {
 
 fputs("intel-sky-service starting at \(socketPath)\n", stderr)
 DispatchQueue.global(qos: .userInitiated).async {
+  if socketBindDelay > 0 {
+    fputs(
+      "LaunchServices fallback delaying socket bind by \(socketBindDelay) seconds\n",
+      stderr
+    )
+    Thread.sleep(forTimeInterval: socketBindDelay)
+  }
   do {
     try server.run {
       let permissions = ServicePermissionDiagnostics().currentStatus()
