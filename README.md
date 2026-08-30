@@ -27,7 +27,8 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input
 - snapshot-bound vertical and horizontal scrolling, with AX page actions and bounded pixel fallback
 - all eleven public APIs: `list_apps`, `get_app_state`, `click`, `drag`, `paste`, `perform_secondary_action`, `press_key`, `scroll`, `select_text`, `set_value`, and `type_text`
-- signed x86_64 App bundle and per-user LaunchAgent installer
+- signed x86_64 App bundle, recommended ChatGPT-managed installer, and legacy standalone
+  LaunchAgent installer
 
 The eleven public `@oai/sky` APIs are implemented, including target-scoped physical-input interruption with requery latching, lock/secure-input checks, loading-aware settling, PID/window-targeted synthetic input, release-before-suppress protection against direct background focus theft, an input-transparent software cursor, turn tracking, and conservative focus restoration. The hidden Appshot Apple Event bridge and native Codex PIP path are also implemented: the service can rendezvous with Intel `sky.node`, publish a real CAContext, continuously feed the target window through ScreenCaptureKit and `AVSampleBufferDisplayLayer`, follow target-window resize and process replacement through fenced host operations, republish live presentations after a host reconnect, recover from bounded capture failures, retain state snapshots as a fallback, forward cursor state, and end capture with its turn. Exact ARM ViewBridge focus/capture lifetimes and long-run resilience remain active compatibility work. See [`ProtocolCatalog.md`](ProtocolCatalog.md) for the request-by-request coverage matrix and `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
@@ -62,7 +63,7 @@ In another terminal, the smoke client verifies framing and `ping`:
 
 The smoke client is unsigned, so the service returns `ping` and then rejects its `listApps` request during peer validation. That is expected.
 
-## App bundle and launch agent
+## App bundle and installation
 
 Build an x86_64 background App bundle:
 
@@ -70,17 +71,50 @@ Build an x86_64 background App bundle:
 Scripts/build-app.sh
 ```
 
-The script prefers `Apple Development: 510229374@qq.com (YP98F3PUMT)` and falls back to ad-hoc signing only when that identity is unavailable. A certificate without its matching private key is not a valid signing identity. Set `CODESIGN_IDENTITY` to select another installed identity.
+The script prefers `Apple Development: 510229374@qq.com (YP98F3PUMT)` and falls back to ad-hoc
+signing only when that identity is unavailable. A certificate without its matching private key is
+not a valid signing identity. Set `CODESIGN_IDENTITY` to select another installed identity. For
+distribution outside a trusted development environment, use a Developer ID Application signature
+and notarization so Gatekeeper can validate the downloaded App.
 
-After reviewing the generated App at `dist/Intel Sky Service.app`, install it for the current GUI user:
+### Recommended: ChatGPT-managed service with native PIP
+
+For a source checkout, the one-command installer builds the App when needed, audits the installed
+Intel ChatGPT PIP host, verifies the App signature and x86_64 architecture, backs up an existing
+managed App, disables the legacy LaunchAgent if present, and installs to ChatGPT's canonical path:
 
 ```sh
-Scripts/install-launch-agent.sh
+Scripts/install-managed-service.sh
 ```
 
-The installer copies the App to `~/Applications` and creates the per-user LaunchAgent `dev.huangjianbin.intel-sky-service`. The service uses its own bundle identity; it does not impersonate OpenAI's `com.openai.sky.CUAService` or request OpenAI's application-group entitlement.
+To install a reviewed prebuilt bundle instead:
 
-After a ChatGPT update, run the read-only native-host compatibility audit before using native PIP:
+```sh
+Scripts/install-managed-service.sh "/path/to/Intel Sky Service.app"
+```
+
+The installed path and executable basename are exact requirements:
+
+```text
+~/.codex/computer-use/Codex Computer Use.app
+~/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService
+```
+
+If ChatGPT uses a custom `CODEX_HOME`, run the installer with that same environment value; it then
+installs to `$CODEX_HOME/computer-use/Codex Computer Use.app`. The installer never starts or quits
+ChatGPT and cannot grant macOS privacy consent. After it completes, grant the final installed App
+the permissions listed below, completely quit ChatGPT, and open ChatGPT again. ChatGPT then owns the
+service lifecycle, supplies the managed PID to the native host, and enables the authenticated
+Remote Hosted PIP path.
+
+The installer retains an existing canonical App as a timestamped sibling named
+`Codex Computer Use.app.backup-YYYYMMDD-HHMMSS`. It also preserves a detected legacy LaunchAgent as
+a timestamped disabled plist rather than deleting it. Do not run the legacy LaunchAgent and the
+ChatGPT-managed service together: both use the same Unix socket, while only the managed PID can
+rendezvous with the native PIP host.
+
+After a ChatGPT update, rerun the read-only compatibility audit before reinstalling or using native
+PIP:
 
 ```sh
 Scripts/audit-pip-host.sh
@@ -88,6 +122,20 @@ Scripts/audit-pip-host.sh
 
 It fails closed when the Intel host architecture, OpenAI signing team, or required XPC selectors
 change.
+
+### Legacy: standalone socket service
+
+For development or socket-only compatibility without native PIP, install the per-user LaunchAgent:
+
+```sh
+Scripts/install-launch-agent.sh
+```
+
+This installer copies the App to `~/Applications` and creates the per-user LaunchAgent
+`dev.huangjianbin.intel-sky-service`. It is not the recommended full Computer Use installation and
+does not provide the native status item or Remote Hosted PIP. The service uses its own bundle
+identity; it does not impersonate OpenAI's `com.openai.sky.CUAService` or request OpenAI's
+application-group entitlement.
 
 The App bundle intentionally installs its executable as `Contents/MacOS/SkyComputerUseService`.
 The current ChatGPT managed-service host requires that exact basename. ChatGPT also supports a
@@ -101,8 +149,9 @@ Authenticated PIP rendezvous is enabled for the argument-free managed-service la
 regresses the presentation path; the older `--experimental-pip` spelling remains accepted as a
 compatibility alias. The service still treats PIP as an optional presentation layer, so failure to
 publish never changes the underlying Computer Use request result. Local static, video-layer, and
-controlled cross-signature CAContext smokes render correctly; the full managed ChatGPT continuous-
-frame, resize, replacement, reconnect, and end sequence remains an attended release gate.
+controlled cross-signature CAContext smokes render correctly. Managed ChatGPT runtime verification
+has confirmed live fitted frames, four-corner clipping, internal IOSurface cursor composition, and
+clean parent-owned restart. Extended resize/replacement/reconnect/end stress remains a release gate.
 
 During protocol development, the unmodified bundled `@oai/sky` client from ChatGPT `26.825.41651` successfully completed the IPC-5 handshake, returned the local app list, and captured Finder state on x86_64. The production peer policy additionally requires the real `node_repl → codex → com.openai.codex` process chain; launching ChatGPT's signed Node binary from a shell is intentionally rejected.
 
@@ -110,17 +159,31 @@ During protocol development, the unmodified bundled `@oai/sky` client from ChatG
 
 `getAppState` requires Accessibility permission. A screenshot is included only when Screen Recording permission is already available. The service deliberately avoids calling the APIs that trigger permission prompts; grant access manually to the final signed app or executable used to run the service.
 
-For the LaunchAgent installation, add `~/Applications/Intel Sky Service.app` in System Settings → Privacy & Security → Accessibility and Screen & System Audio Recording. Record & Replay additionally requires Input Monitoring. Restart the agent after changing permissions, then open a new Codex task so Computer Use is discovered against the running socket. Rebuilding an ad-hoc-signed App changes its code identity and may require granting permissions again; a stable Apple Development signature avoids that churn.
+For the recommended managed installation, add
+`~/.codex/computer-use/Codex Computer Use.app` in System Settings → Privacy & Security and enable:
+
+- Accessibility
+- Screen & System Audio Recording
+- Input Monitoring
+
+Input Monitoring is required for physical-intervention protection and Record & Replay. Completely
+quit and reopen ChatGPT after changing permissions. For the legacy LaunchAgent installation, grant
+the same permissions to `~/Applications/Intel Sky Service.app`, restart that agent, and use only the
+socket-only mode. Rebuilding an ad-hoc-signed App changes its code identity and may require granting
+permissions again; a stable signing identity avoids that churn.
 
 When launched as an App, the service asks macOS for either permission if it is missing. Permission prompts are issued by the service process itself so macOS records the correct responsible application identity.
 
 Check permissions for a direct invocation:
 
 ```sh
-~/Applications/Intel\ Sky\ Service.app/Contents/MacOS/SkyComputerUseService --check-permissions
+~/.codex/computer-use/Codex\ Computer\ Use.app/Contents/MacOS/SkyComputerUseService --check-permissions
 ```
 
-The command returns exit status 0 only when both permissions are granted; otherwise it returns 77 and prints the individual states as JSON. Because macOS can attribute TCC checks to a process's responsible parent, this direct check is not authoritative for a LaunchAgent.
+The command returns exit status 0 only when Accessibility and Screen Recording are granted;
+otherwise it returns 77 and prints the individual states as JSON. Because macOS can attribute TCC
+checks to a process's responsible parent, the running status file is authoritative for the managed
+launch.
 
 The running service writes its own authoritative startup state to:
 
@@ -128,7 +191,8 @@ The running service writes its own authoritative startup state to:
 ~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/service-status.json
 ```
 
-Restart the LaunchAgent after changing privacy settings, then verify that both permission fields in this owner-only file are `true`.
+After restarting ChatGPT, verify that `accessibility`, `screenRecording`,
+`physicalInputMonitoring`, and `focusStealProtection` are all `true` in this owner-only file.
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 
