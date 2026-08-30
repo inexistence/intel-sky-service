@@ -60,3 +60,42 @@ import Testing
 
   #expect(result == [20, 21])
 }
+
+@Test func primaryScreenshotWindowMustStillBelongToResolvedProcess() {
+  let windows = [
+    WindowCaptureCandidate(
+      windowID: 10,
+      processIdentifier: 42,
+      layer: 0,
+      frame: CGRect(x: 100, y: 100, width: 500, height: 400)
+    ),
+    WindowCaptureCandidate(
+      windowID: 11,
+      processIdentifier: 99,
+      layer: 0,
+      frame: CGRect(x: 100, y: 100, width: 500, height: 400)
+    ),
+  ]
+
+  #expect(
+    WindowScreenshotter.primaryWindowBelongsToTarget(
+      in: windows,
+      primaryWindowID: 10,
+      processIdentifier: 42
+    )
+  )
+  #expect(
+    !WindowScreenshotter.primaryWindowBelongsToTarget(
+      in: windows,
+      primaryWindowID: 10,
+      processIdentifier: 99
+    )
+  )
+  #expect(
+    !WindowScreenshotter.primaryWindowBelongsToTarget(
+      in: windows,
+      primaryWindowID: 12,
+      processIdentifier: 42
+    )
+  )
+}

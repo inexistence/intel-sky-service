@@ -176,6 +176,13 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   `SCScreenshotManager`. Ordinary windows use the official binary's
   `desktopIndependentWindow` filter shape; macOS 13, a five-second local timeout, or any
   ScreenCaptureKit lookup/capture failure falls back to the prior `/usr/sbin/screencapture` path.
+  Intel now reuses a validated `SCShareableContent` snapshot for at most five seconds instead of
+  enumerating the complete shareable-window catalog for every Skyshot. Every cached lookup requires
+  the primary and all transient window IDs to still belong to the resolved target PID; a miss or
+  capture failure invalidates the cache and retries once with fresh content. A fresh
+  `CGWindowListCopyWindowInfo` owner check also runs before either ScreenCaptureKit or the fallback,
+  so window-ID reuse cannot capture another process. `HIGH_CONFIDENCE`; post-restart attended
+  latency and replacement smokes remain pending.
   An attended TextEdit secondary-action smoke showed the context menu in both the AX tree and the
   1322×866 screenshot, whereas the previous implementation omitted it; the ScreenCaptureKit
   no-menu screenshot retained the same dimensions and visual content. `CONFIRMED_INTEL_RUNTIME`.
@@ -823,7 +830,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, and ViewBridge coverage brought that checkpoint to 173
-  tests; the current complete suite contains 239 tests.
+  tests; the current complete suite contains 245 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 

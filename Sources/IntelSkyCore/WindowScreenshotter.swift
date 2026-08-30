@@ -53,16 +53,26 @@ public struct WindowScreenshotter: Sendable {
 
     let output = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
     if let processIdentifier, let screenFrame {
-      let additionalWindowIDs =
-        additionalWindowIDs(
+      guard let windows = captureCandidates(),
+        Self.primaryWindowBelongsToTarget(
+          in: windows,
           primaryWindowID: windowID,
-          processIdentifier: processIdentifier,
-          primaryFrame: screenFrame
-        ) ?? []
+          processIdentifier: processIdentifier
+        )
+      else {
+        throw WindowScreenshotError.invalidImage
+      }
+      let additionalWindowIDs = Self.additionalWindowIDs(
+        in: windows,
+        primaryWindowID: windowID,
+        processIdentifier: processIdentifier,
+        primaryFrame: screenFrame
+      )
       do {
         return try captureWithScreenCaptureKit(
           primaryWindowID: windowID,
           additionalWindowIDs: additionalWindowIDs,
+          processIdentifier: processIdentifier,
           screenFrame: screenFrame,
           output: output
         )
@@ -117,6 +127,7 @@ public struct WindowScreenshotter: Sendable {
   private func captureWithScreenCaptureKit(
     primaryWindowID: CGWindowID,
     additionalWindowIDs: [CGWindowID],
+    processIdentifier: pid_t,
     screenFrame: CGRect,
     output: URL
   ) throws -> CapturedWindowScreenshot {
@@ -124,6 +135,7 @@ public struct WindowScreenshotter: Sendable {
     let image = try ScreenCaptureKitScreenshot.capture(
       primaryWindowID: primaryWindowID,
       additionalWindowIDs: additionalWindowIDs,
+      processIdentifier: processIdentifier,
       screenFrame: screenFrame
     )
     return try write(image: image, to: output)
@@ -152,11 +164,7 @@ public struct WindowScreenshotter: Sendable {
     )
   }
 
-  private func additionalWindowIDs(
-    primaryWindowID: CGWindowID,
-    processIdentifier: pid_t,
-    primaryFrame: CGRect
-  ) -> [CGWindowID]? {
+  private func captureCandidates() -> [WindowCaptureCandidate]? {
     guard
       let rawWindows = CGWindowListCopyWindowInfo(
         [.optionOnScreenOnly, .excludeDesktopElements],
@@ -165,12 +173,17 @@ public struct WindowScreenshotter: Sendable {
     else {
       return nil
     }
-    return Self.additionalWindowIDs(
-      in: rawWindows.compactMap(WindowCaptureCandidate.init),
-      primaryWindowID: primaryWindowID,
-      processIdentifier: processIdentifier,
-      primaryFrame: primaryFrame
-    )
+    return rawWindows.compactMap(WindowCaptureCandidate.init)
+  }
+
+  static func primaryWindowBelongsToTarget(
+    in windows: [WindowCaptureCandidate],
+    primaryWindowID: CGWindowID,
+    processIdentifier: pid_t
+  ) -> Bool {
+    windows.contains {
+      $0.windowID == primaryWindowID && $0.processIdentifier == processIdentifier
+    }
   }
 
   static func additionalWindowIDs(
@@ -223,11 +236,41 @@ public struct WindowScreenshotter: Sendable {
 
 @available(macOS 14.0, *)
 private enum ScreenCaptureKitScreenshot {
+  private static let contentCache = ScreenCaptureShareableContentCache(maxAge: 5)
+
   static func capture(
     primaryWindowID: CGWindowID,
     additionalWindowIDs: [CGWindowID],
+    processIdentifier: pid_t,
     screenFrame: CGRect
   ) throws -> CGImage {
+    if let cachedContent = contentCache.current() {
+      do {
+        return try capture(
+          content: cachedContent,
+          primaryWindowID: primaryWindowID,
+          additionalWindowIDs: additionalWindowIDs,
+          processIdentifier: processIdentifier,
+          screenFrame: screenFrame
+        )
+      } catch {
+        try RequestDeadlineContext.check()
+        contentCache.invalidate(cachedContent)
+      }
+    }
+
+    let content = try loadShareableContent()
+    contentCache.store(content)
+    return try capture(
+      content: content,
+      primaryWindowID: primaryWindowID,
+      additionalWindowIDs: additionalWindowIDs,
+      processIdentifier: processIdentifier,
+      screenFrame: screenFrame
+    )
+  }
+
+  private static func loadShareableContent() throws -> SCShareableContent {
     let contentBox = SendableResultBox<SCShareableContent>()
     SCShareableContent.getExcludingDesktopWindows(
       true,
@@ -235,9 +278,24 @@ private enum ScreenCaptureKitScreenshot {
     ) { content, error in
       contentBox.finish(value: content, error: error)
     }
-    let content = try contentBox.wait()
+    return try contentBox.wait()
+  }
+
+  private static func capture(
+    content: SCShareableContent,
+    primaryWindowID: CGWindowID,
+    additionalWindowIDs: [CGWindowID],
+    processIdentifier: pid_t,
+    screenFrame: CGRect
+  ) throws -> CGImage {
     let requestedIDs = Set(additionalWindowIDs + [primaryWindowID])
-    let windows = content.windows.filter { requestedIDs.contains($0.windowID) }
+    let windows = content.windows.filter {
+      requestedIDs.contains($0.windowID)
+        && $0.owningApplication?.processID == processIdentifier
+    }
+    guard Set(windows.map(\.windowID)) == requestedIDs else {
+      throw WindowScreenshotError.invalidImage
+    }
     guard let primaryWindow = windows.first(where: { $0.windowID == primaryWindowID }) else {
       throw WindowScreenshotError.invalidImage
     }
@@ -281,6 +339,40 @@ private enum ScreenCaptureKitScreenshot {
       imageBox.finish(value: image, error: error)
     }
     return try imageBox.wait()
+  }
+}
+
+@available(macOS 14.0, *)
+private final class ScreenCaptureShareableContentCache: @unchecked Sendable {
+  private struct Entry {
+    let content: SCShareableContent
+    let capturedAt: Date
+  }
+
+  private let lock = NSLock()
+  private let maxAge: TimeInterval
+  private var entry: Entry?
+
+  init(maxAge: TimeInterval) {
+    self.maxAge = max(0, maxAge)
+  }
+
+  func current(at date: Date = Date()) -> SCShareableContent? {
+    lock.withLock {
+      guard let entry, date.timeIntervalSince(entry.capturedAt) <= maxAge else { return nil }
+      return entry.content
+    }
+  }
+
+  func store(_ content: SCShareableContent, at date: Date = Date()) {
+    lock.withLock { entry = Entry(content: content, capturedAt: date) }
+  }
+
+  func invalidate(_ content: SCShareableContent) {
+    lock.withLock {
+      guard entry?.content === content else { return }
+      entry = nil
+    }
   }
 }
 
