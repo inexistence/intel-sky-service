@@ -175,6 +175,18 @@ Targeted ARM symbol and disassembly analysis adds the following details:
   This establishes an important fail-safe: a theft event
   must not be hidden when key focus could not first be released. The remaining exact ViewBridge,
   typing-focus, and lost/gained callback transitions are still under analysis.
+- The general subject mapper returns ordinary App PIDs unchanged. For an
+  `NSRunningApplication` with activation policy `.prohibited (2)`, it creates that process's AX
+  Application, reads `AXFocusedUIElement`, and uses the focused AX element's own PID as a host
+  candidate. A separate specialized helper handles the currently discovered process named
+  `ViewBridgeAuxiliary` and appears to combine two AX-derived candidates; its exact fallback order
+  remains under analysis. `CONFIRMED_STATIC_BINARY`.
+- The `KeyFocusTaken/Returned` helper passes the original event unless its tracked current-focus
+  state is in the expected case and its stored PID equals raw field `40`. Only in that matched state
+  does it return nil and set the adjacent `lastViewBridgeFocusStealWasSuppressed` state byte. It
+  does not call the focus-release SPI itself. The writers and meaning of every focus-state enum case
+  are not all recovered yet, so Intel continues to pass these subtypes through rather than emulate
+  a partial state machine. `CONFIRMED_STATIC_BINARY` / `NEEDS_ARM_ORACLE`.
 - `RemoteHostedPIPContentStream` stores `threadID`, `turnID`, `focusRestoreTarget`, associated window
   IDs, and a stream-end timeout; its lifecycle exposes `willEndStream`, `noteInteraction`, and
   `invalidate`.
@@ -242,8 +254,9 @@ target PID. A direct protected subject in `NewFront` or `KeyFocusChanged` is pas
 resolved `CPSReleaseKeyFocusWithID`; the notification is suppressed only after `noErr`. Missing or
 invalid fields, unavailable input monitoring/SPI, release failure, unrelated Apps, unsupported CPS
 subtypes, and any physical user input all pass through. The first implementation deliberately does
-not guess the official ViewBridge host mapping or the separate `KeyFocusTaken/Returned` bookkeeping
-branch. Raw-field decoding, subtype classification, scoped registration, user-intervention
+implements the confirmed generic prohibited-process `AXFocusedUIElement.pid` host mapping, but does
+not guess the specialized current-ViewBridge fallback or the separate `KeyFocusTaken/Returned`
+bookkeeping branch. Raw-field decoding, subtype classification, scoped registration, user-intervention
 fail-open behavior, and release-before-drop semantics have deterministic Intel coverage.
 `HIGH_CONFIDENCE` for the direct-PID safety path; ViewBridge and exact stream-scoped lifetime remain
 `NEEDS_ARM_ORACLE` / `KNOWN_DIFFERENCE`.

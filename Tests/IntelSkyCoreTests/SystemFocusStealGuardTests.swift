@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Testing
@@ -19,6 +20,14 @@ private final class RecordingKeyFocusReleaser: KeyFocusReleasing, @unchecked Sen
   func releaseKeyFocus(with identifier: UInt32) -> Bool {
     identifiers.append(identifier)
     return result
+  }
+}
+
+private struct MappingFocusSubjectResolver: FocusSubjectResolving {
+  let mappings: [pid_t: pid_t]
+
+  func hostProcessIdentifier(for subjectProcessIdentifier: pid_t) -> pid_t {
+    mappings[subjectProcessIdentifier] ?? subjectProcessIdentifier
   }
 }
 
@@ -130,6 +139,36 @@ private func focusNotification(
   #expect(releaser.identifiers.isEmpty)
 }
 
+@Test func focusGuardProtectsHostAppWhenViewBridgeSubjectResolvesToIt() {
+  let monitor = FocusGuardInterventionMonitor()
+  let releaser = RecordingKeyFocusReleaser()
+  let guardInstance = SystemFocusStealGuard(
+    interventionMonitor: monitor,
+    keyFocusReleaser: releaser,
+    subjectResolver: MappingFocusSubjectResolver(mappings: [4_200: 42]),
+    startMonitoring: false
+  )
+  _ = guardInstance.beginProtecting(processIdentifier: 42)
+
+  #expect(guardInstance.handle(focusNotification(subjectPID: 4_200)))
+  #expect(releaser.identifiers == [7])
+}
+
+@Test func focusGuardPassesViewBridgeSubjectResolvedToUnprotectedHost() {
+  let monitor = FocusGuardInterventionMonitor()
+  let releaser = RecordingKeyFocusReleaser()
+  let guardInstance = SystemFocusStealGuard(
+    interventionMonitor: monitor,
+    keyFocusReleaser: releaser,
+    subjectResolver: MappingFocusSubjectResolver(mappings: [4_200: 84]),
+    startMonitoring: false
+  )
+  _ = guardInstance.beginProtecting(processIdentifier: 42)
+
+  #expect(!guardInstance.handle(focusNotification(subjectPID: 4_200)))
+  #expect(releaser.identifiers.isEmpty)
+}
+
 @Test func focusGuardFailsOpenWithoutPhysicalInputMonitoring() {
   let monitor = FocusGuardInterventionMonitor()
   monitor.isAvailable = false
@@ -203,4 +242,17 @@ private func focusNotification(
         && $0.focusTheftIdentifier == 1234
     }
   )
+}
+
+@Test func attendedViewBridgeResolverReportsCurrentHostCandidates() {
+  guard ProcessInfo.processInfo.environment["INTEL_SKY_VIEWBRIDGE_SMOKE"] == "1" else { return }
+  let resolver = ViewBridgeFocusSubjectResolver()
+  let candidates = NSWorkspace.shared.runningApplications.compactMap { application -> String? in
+    guard application.executableURL?.lastPathComponent == "ViewBridgeAuxiliary" else { return nil }
+    let subject = application.processIdentifier
+    let host = resolver.hostProcessIdentifier(for: subject)
+    return "subject=\(subject) host=\(host) policy=\(application.activationPolicy.rawValue)"
+  }
+  print("ViewBridge host candidates: \(candidates)")
+  #expect(!candidates.isEmpty)
 }

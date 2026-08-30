@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Darwin
 import Foundation
@@ -60,6 +61,44 @@ protocol KeyFocusReleasing: Sendable {
   func releaseKeyFocus(with identifier: UInt32) -> Bool
 }
 
+protocol FocusSubjectResolving: Sendable {
+  func hostProcessIdentifier(for subjectProcessIdentifier: pid_t) -> pid_t
+}
+
+struct ViewBridgeFocusSubjectResolver: FocusSubjectResolving {
+  func hostProcessIdentifier(for subjectProcessIdentifier: pid_t) -> pid_t {
+    guard subjectProcessIdentifier > 0,
+      let application = NSRunningApplication(processIdentifier: subjectProcessIdentifier),
+      application.activationPolicy == .prohibited
+    else {
+      return subjectProcessIdentifier
+    }
+
+    let applicationElement = AXUIElementCreateApplication(subjectProcessIdentifier)
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      applicationElement,
+      kAXFocusedUIElementAttribute as CFString,
+      &value
+    ) == .success,
+      let value,
+      CFGetTypeID(value) == AXUIElementGetTypeID()
+    else {
+      return subjectProcessIdentifier
+    }
+
+    let focusedElement = unsafeDowncast(value, to: AXUIElement.self)
+    var hostProcessIdentifier: pid_t = 0
+    guard AXUIElementGetPid(focusedElement, &hostProcessIdentifier) == .success,
+      hostProcessIdentifier > 0,
+      hostProcessIdentifier != subjectProcessIdentifier
+    else {
+      return subjectProcessIdentifier
+    }
+    return hostProcessIdentifier
+  }
+}
+
 struct CPSKeyFocusReleaser: KeyFocusReleasing, @unchecked Sendable {
   private typealias ReleaseKeyFocusWithIDFunction = @convention(c) (UInt32) -> Int32
 
@@ -104,6 +143,7 @@ final class SystemFocusStealGuard: @unchecked Sendable {
   private let lock = NSLock()
   private let interventionMonitor: any UserInterventionMonitoring
   private let keyFocusReleaser: any KeyFocusReleasing
+  private let subjectResolver: any FocusSubjectResolving
   private var protectedTargets: [UUID: ProtectedTarget] = [:]
   private var tap: CFMachPort?
   private var runLoopSource: CFRunLoopSource?
@@ -123,10 +163,12 @@ final class SystemFocusStealGuard: @unchecked Sendable {
   init(
     interventionMonitor: any UserInterventionMonitoring = PhysicalInputMonitor.shared,
     keyFocusReleaser: any KeyFocusReleasing = CPSKeyFocusReleaser(),
+    subjectResolver: any FocusSubjectResolving = ViewBridgeFocusSubjectResolver(),
     startMonitoring: Bool = true
   ) {
     self.interventionMonitor = interventionMonitor
     self.keyFocusReleaser = keyFocusReleaser
+    self.subjectResolver = subjectResolver
     if startMonitoring {
       Thread.detachNewThread { [weak self] in self?.runEventTap() }
     }
@@ -157,9 +199,18 @@ final class SystemFocusStealGuard: @unchecked Sendable {
   }
 
   func handle(_ notification: FocusStealProcessNotification) -> Bool {
+    let resolvedSubjectProcessIdentifier = subjectResolver.hostProcessIdentifier(
+      for: notification.subjectProcessIdentifier
+    )
+    let resolvedNotification = FocusStealProcessNotification(
+      subtype: notification.subtype,
+      targetProcessIdentifier: notification.targetProcessIdentifier,
+      subjectProcessIdentifier: resolvedSubjectProcessIdentifier,
+      focusTheftIdentifier: notification.focusTheftIdentifier
+    )
     let state = lock.withLock { () -> (Set<pid_t>, Bool) in
       let matchingTargets = protectedTargets.values.filter {
-        $0.processIdentifier == notification.subjectProcessIdentifier
+        $0.processIdentifier == resolvedSubjectProcessIdentifier
       }
       guard !matchingTargets.isEmpty, interventionMonitor.isAvailable else {
         return ([], false)
@@ -176,7 +227,7 @@ final class SystemFocusStealGuard: @unchecked Sendable {
     }
 
     switch FocusStealPolicy.disposition(
-      for: notification,
+      for: resolvedNotification,
       protectedProcessIdentifiers: state.0,
       userIntervened: state.1
     ) {
