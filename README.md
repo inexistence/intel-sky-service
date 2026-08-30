@@ -14,7 +14,8 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - `ComputerUseIPCListAppsRequest` backed by running `NSWorkspace` apps plus the official Spotlight recent-usage query (`lastUsedDate` and `useCount`)
 - `ComputerUseIPCAppGetSkyshotRequest` with app auto-launch, stable Accessibility element IDs, bounded tree diffs, and focused-window PNG
 - latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL, 16-app limit,
-  and conservative semantic/path refetch after macOS reports a destroyed AX element
+  active AX invalidation monitoring, and conservative semantic/path refetch after window, layout,
+  or element invalidation
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
 - snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input

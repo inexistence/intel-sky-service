@@ -208,6 +208,116 @@ import Testing
   }
 }
 
+@Test func destroyedNotificationRefetchesBeforeAXProbeReportsInvalid() throws {
+  let original = AXUIElementCreateApplication(10)
+  let replacement = AXUIElementCreateApplication(11)
+  let locator = testLocator(path: [0, 2], title: "Save")
+  let monitor = FixedInvalidationMonitor(destroyedElement: original)
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.valid),
+    refetcher: FixedSnapshotRefetcher(
+      testSnapshot(["91": replacement], locators: ["91": locator])
+    )
+  )
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(
+      ["7": original],
+      locators: ["7": locator],
+      invalidationMonitor: monitor
+    ),
+    for: app
+  )
+
+  #expect(CFEqual(try cache.actionElement(id: "7", for: app), replacement))
+}
+
+@Test func focusedWindowChangeInvalidatesElementAndCoordinateTargets() throws {
+  let cache = ElementSnapshotCache()
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(
+      ["7": AXUIElementCreateApplication(10)],
+      invalidationMonitor: FixedInvalidationMonitor(focusedWindowChanged: true)
+    ),
+    for: app,
+    coordinateSpace: WindowCoordinateSpace(
+      windowID: 77,
+      screenFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+      screenshotPixelSize: CGSize(width: 100, height: 100)
+    )
+  )
+
+  #expect(throws: ElementSnapshotCacheError.focusedWindowChanged(app.bundleIdentifier)) {
+    try cache.element(id: "7", for: app)
+  }
+  #expect(throws: ElementSnapshotCacheError.focusedWindowChanged(app.bundleIdentifier)) {
+    try cache.screenPoint(for: CGPoint(x: 10, y: 10), in: app)
+  }
+}
+
+@Test func layoutChangeRefetchesElementsButRejectsCoordinateTargets() throws {
+  let original = AXUIElementCreateApplication(10)
+  let replacement = AXUIElementCreateApplication(11)
+  let locator = testLocator(path: [0, 2], title: "Save")
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.valid),
+    refetcher: FixedSnapshotRefetcher(
+      testSnapshot(["91": replacement], locators: ["91": locator])
+    )
+  )
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(
+      ["7": original],
+      locators: ["7": locator],
+      invalidationMonitor: FixedInvalidationMonitor(layoutChanged: true)
+    ),
+    for: app,
+    coordinateSpace: WindowCoordinateSpace(
+      windowID: 77,
+      screenFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+      screenshotPixelSize: CGSize(width: 100, height: 100)
+    )
+  )
+
+  #expect(CFEqual(try cache.actionElement(id: "7", for: app), replacement))
+
+  cache.store(
+    testSnapshot(
+      ["7": original],
+      invalidationMonitor: FixedInvalidationMonitor(layoutChanged: true)
+    ),
+    for: app,
+    coordinateSpace: WindowCoordinateSpace(
+      windowID: 77,
+      screenFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+      screenshotPixelSize: CGSize(width: 100, height: 100)
+    )
+  )
+  #expect(throws: ElementSnapshotCacheError.layoutChanged(app.bundleIdentifier)) {
+    try cache.screenPoint(for: CGPoint(x: 10, y: 10), in: app)
+  }
+}
+
+@Test func ephemeralElementRequiresFreshTreeMembershipEvenWhenAXReferenceIsValid() throws {
+  let original = AXUIElementCreateApplication(10)
+  let locator = testLocator(path: [0, 2], title: "Show Info", role: "AXMenuItem")
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.valid),
+    refetcher: FixedSnapshotRefetcher(testSnapshot([:]))
+  )
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(["7": original], locators: ["7": locator]),
+    for: app
+  )
+
+  #expect(throws: ElementSnapshotCacheError.elementNoLongerValidAfterRefetch) {
+    try cache.actionElement(id: "7", for: app)
+  }
+}
+
 private func testApp(bundleIdentifier: String = "example.app", pid: pid_t) -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: pid,
@@ -219,20 +329,27 @@ private func testApp(bundleIdentifier: String = "example.app", pid: pid_t) -> Re
 
 private func testSnapshot(
   _ elements: [String: AXUIElement],
-  locators: [String: AccessibilityElementLocator] = [:]
+  locators: [String: AccessibilityElementLocator] = [:],
+  invalidationMonitor: (any AccessibilitySnapshotInvalidationMonitoring)? = nil
 ) -> CapturedAccessibilitySnapshot {
-  CapturedAccessibilitySnapshot(text: "test", elementsByID: elements, locatorsByID: locators)
+  CapturedAccessibilitySnapshot(
+    text: "test",
+    elementsByID: elements,
+    locatorsByID: locators,
+    invalidationMonitor: invalidationMonitor
+  )
 }
 
 private func testLocator(
   path: [Int],
   title: String?,
-  frame: CGRect = CGRect(x: 10, y: 20, width: 50, height: 20)
+  frame: CGRect = CGRect(x: 10, y: 20, width: 50, height: 20),
+  role: String = "AXButton"
 ) -> AccessibilityElementLocator {
   AccessibilityElementLocator(
     path: path,
-    rolePath: ["AXWindow", "AXButton"],
-    role: "AXButton",
+    rolePath: ["AXWindow", role],
+    role: role,
     subrole: nil,
     identifier: nil,
     title: title,
@@ -255,4 +372,16 @@ private struct FixedSnapshotRefetcher: AccessibilitySnapshotRefetching {
   init(_ snapshot: CapturedAccessibilitySnapshot) { self.snapshot = snapshot }
 
   func capture(app: ResolvedMacApp) throws -> CapturedAccessibilitySnapshot { snapshot }
+}
+
+private struct FixedInvalidationMonitor: @unchecked Sendable,
+  AccessibilitySnapshotInvalidationMonitoring
+{
+  var focusedWindowChanged = false
+  var layoutChanged = false
+  var destroyedElement: AXUIElement?
+
+  func wasDestroyed(_ element: AXUIElement) -> Bool {
+    destroyedElement.map { CFEqual($0, element) } ?? false
+  }
 }

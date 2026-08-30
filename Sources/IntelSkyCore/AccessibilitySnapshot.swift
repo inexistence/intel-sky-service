@@ -50,10 +50,17 @@ public struct AccessibilitySnapshotter: Sendable {
     if state.wasTruncated {
       lines.append("… snapshot truncated at \(maximumElements) elements")
     }
+    let invalidationMonitor = try? NativeAccessibilityInvalidationMonitor(
+      processIdentifier: app.processIdentifier,
+      application: application,
+      window: window,
+      actionableElements: state.actionableElements
+    )
     return CapturedAccessibilitySnapshot(
       text: lines.joined(separator: "\n"),
       elementsByID: state.elementsByID,
       locatorsByID: state.locatorsByID,
+      invalidationMonitor: invalidationMonitor,
       windowActivationPoint: geometry.point(
         of: window,
         attribute: "AXActivationPoint" as CFString
@@ -112,6 +119,9 @@ public struct AccessibilitySnapshotter: Sendable {
     let actions = actionDescriptions(element)
     if !actions.isEmpty {
       fields.append("actions=\(quoted(actions.joined(separator: ", ")))")
+    }
+    if !actions.isEmpty || isValueSettable(element) {
+      state.actionableElements.append(element)
     }
     lines.append(String(repeating: "  ", count: depth) + fields.joined(separator: " "))
 
@@ -213,6 +223,12 @@ public struct AccessibilitySnapshotter: Sendable {
       return rawDescription as String
     }
   }
+
+  private func isValueSettable(_ element: AXUIElement) -> Bool {
+    var settable = DarwinBoolean(false)
+    return AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+      == .success && settable.boolValue
+  }
 }
 
 private struct TraversalState {
@@ -221,6 +237,7 @@ private struct TraversalState {
   var wasTruncated = false
   var elementsByID: [String: AXUIElement] = [:]
   var locatorsByID: [String: AccessibilityElementLocator] = [:]
+  var actionableElements: [AXUIElement] = []
 }
 
 struct AccessibilityElementLocator: Sendable, Equatable {
@@ -325,17 +342,20 @@ struct CapturedAccessibilitySnapshot: @unchecked Sendable {
   let text: String
   let elementsByID: [String: AXUIElement]
   let locatorsByID: [String: AccessibilityElementLocator]
+  let invalidationMonitor: (any AccessibilitySnapshotInvalidationMonitoring)?
   let windowActivationPoint: CGPoint?
 
   init(
     text: String,
     elementsByID: [String: AXUIElement],
     locatorsByID: [String: AccessibilityElementLocator] = [:],
+    invalidationMonitor: (any AccessibilitySnapshotInvalidationMonitoring)? = nil,
     windowActivationPoint: CGPoint? = nil
   ) {
     self.text = text
     self.elementsByID = elementsByID
     self.locatorsByID = locatorsByID
+    self.invalidationMonitor = invalidationMonitor
     self.windowActivationPoint = windowActivationPoint
   }
 }

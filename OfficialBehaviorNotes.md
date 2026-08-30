@@ -394,16 +394,32 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   before/after refetch, and no-longer-valid before/after refetch. Exact matching control flow is
   still `NEEDS_ARM_ORACLE`, but blind title-only rebinding is ruled out. `CONFIRMED_STATIC_BINARY`.
 - Intel snapshots now retain each element's child-index path, ancestor role path, role/subrole,
-  identifier, title, description, and frame. An action first probes the original AX reference and
-  refetches only after macOS explicitly returns `kAXErrorInvalidUIElement`. Same-path candidates
+  identifier, title, description, and frame. An action normally probes the original AX reference;
+  confirmed destruction, layout invalidation, ephemeral roles, or an explicit
+  `kAXErrorInvalidUIElement` trigger a refetch. Same-path candidates
   must preserve the semantic identity; moved elements require one uniquely labeled semantic match;
   unlabeled elements additionally require unchanged path, role ancestry, and geometry. Missing or
   ambiguous candidates fail closed with the official error text and `accessibilityError`. A real
   unmodified-client smoke closed a Finder window, opened a replacement, then used the old Search
   element ID: the service uniquely rebound it and the rebuilt window exposed a focused search text
-  field. Four dedicated stale/ambiguous/geometry tests bring the suite to 141 tests.
-  `CONFIRMED_INTEL_RUNTIME`. Proactive AXObserver invalidation and the official pre-refetch
-  ambiguity criterion remain `KNOWN_DIFFERENCE` / `NEEDS_ARM_ORACLE`.
+  field. `CONFIRMED_INTEL_RUNTIME`.
+- Targeted ARM disassembly shows the Accessibility observer subsystem calling
+  `AXObserverCreateWithInfoCallback`, adding its run-loop source, and dynamically adding/removing
+  notifications. The binary embeds `AXUIElementDestroyed`, `AXFocusedWindowChanged`, and
+  `AXSelectedChildrenChanged`; these agree with the recovered `destroyedElements/layoutChanged`
+  state. `CONFIRMED_STATIC_BINARY`.
+- Intel now creates one observer per cached snapshot, tracks focused-window changes, layout/selection
+  changes, and destroyed actionable elements, and removes the run-loop source with the snapshot.
+  A focused-window change invalidates every old target; a layout change refetches element targets
+  but rejects screenshot-coordinate and untargeted keyboard/text operations until requery.
+  Ephemeral `AXMenu`, `AXMenuItem`, `AXPopover`, and `AXSheet` targets always prove live tree
+  membership before acting because Finder can keep a dismissed menu item's AX reference callable
+  without emitting destruction on that item. Real unmodified-client tests confirmed a new Finder
+  window rejects an old-window element and that a dismissed “显示简介” menu item now fails with the
+  official no-longer-valid message instead of reporting false success. Five repeated Finder captures
+  with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions bring
+  the suite to 147 tests. `CONFIRMED_INTEL_RUNTIME`. The official pre-refetch ambiguity criterion
+  remains `NEEDS_ARM_ORACLE`.
 
 ## Safety and lifecycle
 

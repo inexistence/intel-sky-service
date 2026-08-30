@@ -304,6 +304,8 @@ public struct SkyRequestRouter: Sendable {
       ElementSnapshotCacheError.elementAmbiguousAfterRefetch,
       ElementSnapshotCacheError.elementNoLongerValid,
       ElementSnapshotCacheError.elementNoLongerValidAfterRefetch,
+      ElementSnapshotCacheError.focusedWindowChanged,
+      ElementSnapshotCacheError.layoutChanged,
       ElementSnapshotCacheError.missingCoordinateSpace,
       ElementSnapshotCacheError.coordinateOutsideScreenshot:
       return SkyServerErrorCode.accessibilityError.rawValue

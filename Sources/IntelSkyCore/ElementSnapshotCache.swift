@@ -9,6 +9,8 @@ public enum ElementSnapshotCacheError: Error, CustomStringConvertible, Equatable
   case elementAmbiguousAfterRefetch
   case elementNoLongerValid
   case elementNoLongerValidAfterRefetch
+  case focusedWindowChanged(String)
+  case layoutChanged(String)
   case missingCoordinateSpace(String)
   case coordinateOutsideScreenshot(CGPoint, size: CGSize)
 
@@ -26,6 +28,10 @@ public enum ElementSnapshotCacheError: Error, CustomStringConvertible, Equatable
       return "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be finished because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
     case .elementNoLongerValid, .elementNoLongerValidAfterRefetch:
       return "The element ID is no longer valid. Try to get the on-screen content again and see if that resolves the issue."
+    case .focusedWindowChanged(let app):
+      return "The focused window for \(app) changed; get the on-screen content again before acting"
+    case .layoutChanged(let app):
+      return "The on-screen content for \(app) changed; get the on-screen content again before acting"
     case .missingCoordinateSpace(let app):
       return "The latest state for \(app) has no screenshot coordinate space"
     case .coordinateOutsideScreenshot(let point, let size):
@@ -128,6 +134,7 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     let createdAt: Date
     let elementsByID: [String: AXUIElement]
     let locatorsByID: [String: AccessibilityElementLocator]
+    let invalidationMonitor: (any AccessibilitySnapshotInvalidationMonitoring)?
     let coordinateSpace: WindowCoordinateSpace?
   }
 
@@ -179,6 +186,7 @@ public final class ElementSnapshotCache: @unchecked Sendable {
       createdAt: date,
       elementsByID: snapshot.elementsByID,
       locatorsByID: snapshot.locatorsByID,
+      invalidationMonitor: snapshot.invalidationMonitor,
       coordinateSpace: coordinateSpace
     )
 
@@ -196,22 +204,28 @@ public final class ElementSnapshotCache: @unchecked Sendable {
   ) throws -> AXUIElement {
     let original: AXUIElement
     let locator: AccessibilityElementLocator?
+    let monitor: (any AccessibilitySnapshotInvalidationMonitoring)?
     let key = Key(bundleIdentifier: app.bundleIdentifier, processIdentifier: app.processIdentifier)
     lock.lock()
     do {
-      let entry = try validEntry(for: app, at: date)
+      let entry = try validEntry(for: app, at: date, allowLayoutChange: true)
       guard let element = entry.elementsByID[id] else {
         throw ElementSnapshotCacheError.unknownElement(id, app: app.bundleIdentifier)
       }
       original = element
       locator = entry.locatorsByID[id]
+      monitor = entry.invalidationMonitor
       lock.unlock()
     } catch {
       lock.unlock()
       throw error
     }
 
-    guard validityChecker.validity(of: original) == .invalid else { return original }
+    guard monitor?.wasDestroyed(original) == true
+      || monitor?.layoutChanged == true
+      || locator?.requiresLiveTreeMembershipCheck == true
+      || validityChecker.validity(of: original) == .invalid
+    else { return original }
     guard let locator else { throw ElementSnapshotCacheError.elementNoLongerValid }
 
     let fresh = try refetcher.capture(app: app)
@@ -242,6 +256,7 @@ public final class ElementSnapshotCache: @unchecked Sendable {
       createdAt: entry.createdAt,
       elementsByID: elements,
       locatorsByID: locators,
+      invalidationMonitor: fresh.invalidationMonitor,
       coordinateSpace: entry.coordinateSpace
     )
     entries[key] = entry
@@ -300,7 +315,11 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     )
   }
 
-  private func validEntry(for app: ResolvedMacApp, at date: Date) throws -> Entry {
+  private func validEntry(
+    for app: ResolvedMacApp,
+    at date: Date,
+    allowLayoutChange: Bool = false
+  ) throws -> Entry {
     let key = Key(
       bundleIdentifier: app.bundleIdentifier,
       processIdentifier: app.processIdentifier
@@ -312,6 +331,21 @@ public final class ElementSnapshotCache: @unchecked Sendable {
       entries.removeValue(forKey: key)
       throw ElementSnapshotCacheError.expiredSnapshot(app.bundleIdentifier)
     }
+    if entry.invalidationMonitor?.focusedWindowChanged == true {
+      throw ElementSnapshotCacheError.focusedWindowChanged(app.bundleIdentifier)
+    }
+    if !allowLayoutChange, entry.invalidationMonitor?.layoutChanged == true {
+      throw ElementSnapshotCacheError.layoutChanged(app.bundleIdentifier)
+    }
     return entry
+  }
+}
+
+private extension AccessibilityElementLocator {
+  var requiresLiveTreeMembershipCheck: Bool {
+    switch role {
+    case "AXMenu", "AXMenuItem", "AXPopover", "AXSheet": return true
+    default: return false
+    }
   }
 }
