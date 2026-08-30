@@ -5,17 +5,20 @@ public struct ServiceRuntimeStatus: Codable, Equatable, Sendable {
   public let permissions: ServicePermissionStatus
   public let processIdentifier: Int32
   public let physicalInputMonitoring: Bool
+  public let focusStealProtection: Bool?
   public let updatedAt: Date
 
   public init(
     permissions: ServicePermissionStatus,
     processIdentifier: Int32,
     physicalInputMonitoring: Bool = false,
+    focusStealProtection: Bool? = nil,
     updatedAt: Date
   ) {
     self.permissions = permissions
     self.processIdentifier = processIdentifier
     self.physicalInputMonitoring = physicalInputMonitoring
+    self.focusStealProtection = focusStealProtection
     self.updatedAt = updatedAt
   }
 }

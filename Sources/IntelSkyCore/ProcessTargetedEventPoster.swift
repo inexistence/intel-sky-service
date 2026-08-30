@@ -82,23 +82,27 @@ enum ProcessTargetedEventPoster {
       return try $activeSyntheticFocusTarget.withValue(target) { try body() }
     }
 
-    let sequence = syntheticFocusSequence(for: target)
-    for descriptor in sequence.begin { try postDescriptor(descriptor) }
+    return try SystemFocusStealGuard.shared.withProtection(
+      processIdentifier: target.processIdentifier
+    ) {
+      let sequence = syntheticFocusSequence(for: target)
+      for descriptor in sequence.begin { try postDescriptor(descriptor) }
 
-    func deactivateIfStillSynthetic() {
-      // The official deactivate path runs only while the application is still
-      // actually inactive. Preserve a genuine user/system focus change.
-      guard !isApplicationActive() else { return }
-      for descriptor in sequence.end { try? postDescriptor(descriptor) }
-    }
+      func deactivateIfStillSynthetic() {
+        // The official deactivate path runs only while the application is still
+        // actually inactive. Preserve a genuine user/system focus change.
+        guard !isApplicationActive() else { return }
+        for descriptor in sequence.end { try? postDescriptor(descriptor) }
+      }
 
-    do {
-      let result = try $activeSyntheticFocusTarget.withValue(target) { try body() }
-      deactivateIfStillSynthetic()
-      return result
-    } catch {
-      deactivateIfStillSynthetic()
-      throw error
+      do {
+        let result = try $activeSyntheticFocusTarget.withValue(target) { try body() }
+        deactivateIfStillSynthetic()
+        return result
+      } catch {
+        deactivateIfStillSynthetic()
+        throw error
+      }
     }
   }
 

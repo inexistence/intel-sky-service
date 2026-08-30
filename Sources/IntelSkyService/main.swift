@@ -43,6 +43,7 @@ if configuration.experimentalPIPEnabled {
 }
 application.finishLaunching()
 ComputerUseVisualCoordinator.warmUp()
+let focusStealProtectionAvailable = ComputerUseFocusProtection.warmUp()
 ServicePermissionRequester().requestMissingPermissions()
 
 let resolver = MacAppResolver()
@@ -107,6 +108,7 @@ DispatchQueue.global(qos: .userInitiated).async {
             permissions: permissions,
             processIdentifier: processIdentifier,
             physicalInputMonitoring: PhysicalInputMonitor.shared.isAvailable,
+            focusStealProtection: focusStealProtectionAvailable,
             updatedAt: Date()
           ),
           nextToSocketAt: socketPath

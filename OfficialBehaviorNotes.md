@@ -164,7 +164,17 @@ Targeted ARM symbol and disassembly analysis adds the following details:
 - Its lazy singleton owns a session event tap whose mask is exactly `1 << 21` (AppKit process
   notifications) plus a per-target event tap assembled from a CGEventType array. The singleton
   stores each protected PID with lost/gained callbacks, mouse event taps, and a menu-dismissal
-  suppression flag. Exact drop/pass-through rules in the callbacks remain under analysis.
+  suppression flag.
+- The process-notification callback reads raw CGEvent fields `40` (target PID), `64` (CPS subtype),
+  `71` (focus-theft ID), and `73` (subject PID). It maps a ViewBridge auxiliary subject back to its
+  host App before consulting the protected-PID table. `KeyFocusTaken (0x4000)` and
+  `KeyFocusReturned (0x8000)` take a bookkeeping/drop branch, while `NewFront (2)` and
+  `KeyFocusChanged (0xF102)` enter the larger focus-transition state machine.
+- That state machine calls dynamically resolved `CPSReleaseKeyFocusWithID` with field `71`; its
+  helper accepts the full `UInt32` range (including zero) and reports success only for `noErr`.
+  This establishes an important fail-safe: a theft event
+  must not be hidden when key focus could not first be released. The remaining exact ViewBridge,
+  typing-focus, and lost/gained callback transitions are still under analysis.
 - `RemoteHostedPIPContentStream` stores `threadID`, `turnID`, `focusRestoreTarget`, associated window
   IDs, and a stream-end timeout; its lifecycle exposes `willEndStream`, `noteInteraction`, and
   `invalidate`.
@@ -225,6 +235,35 @@ TextEdit smoke proved that background `Super_L+a` now selects the full document 
 restored after both probes. `CONFIRMED_INTEL_RUNTIME`. Earlier probes that replayed only the four
 notifications are retained as negative evidence: the activation-point mouse pair and private
 window-local coordinate are necessary for AppKit menu-key-equivalent dispatch.
+
+Intel now also installs a suppressible session event tap with the official `1 << 21` mask before
+serving requests. While a synthetic-focus action is in flight, it protects only that inactive
+target PID. A direct protected subject in `NewFront` or `KeyFocusChanged` is passed to dynamically
+resolved `CPSReleaseKeyFocusWithID`; the notification is suppressed only after `noErr`. Missing or
+invalid fields, unavailable input monitoring/SPI, release failure, unrelated Apps, unsupported CPS
+subtypes, and any physical user input all pass through. The first implementation deliberately does
+not guess the official ViewBridge host mapping or the separate `KeyFocusTaken/Returned` bookkeeping
+branch. Raw-field decoding, subtype classification, scoped registration, user-intervention
+fail-open behavior, and release-before-drop semantics have deterministic Intel coverage.
+`HIGH_CONFIDENCE` for the direct-PID safety path; ViewBridge and exact stream-scoped lifetime remain
+`NEEDS_ARM_ORACLE` / `KNOWN_DIFFERENCE`.
+
+An attended negative fixture showed that explicit `NSRunningApplication.activate()` performs an
+ordinary Workspace foreground switch and emits no type-21 process notification to this tap. That
+operation is intentionally outside the guard's scope; Intel action paths do not call it. A separate
+session-tap fixture injects the official raw event shape and verifies live callback delivery,
+field decoding, protected-subject matching, and release-before-drop routing without changing the
+desktop focus. CoreGraphics rewrites field `40` to the current session event target during delivery
+while preserving fields `64`, `71`, and `73`, independently confirming that suppression must key on
+the subject rather than the notification target. `CONFIRMED_INTEL_RUNTIME` for tap plumbing; a
+naturally generated CPS theft with a real focus-theft ID remains `NEEDS_ARM_ORACLE`.
+
+The signed x86_64 build was deployed through the standard Codex service path and restarted without
+restarting ChatGPT. Its owner-only status file reported Accessibility, Screen Recording, physical
+input monitoring, and `focusStealProtection` all available. The official high-level
+`sky.js -> nodeRepl.rpc("sky")` path then returned 71 Apps and captured Finder with a screenshot and
+a 26,278-character AX tree in 2.3 seconds; the service remained the sole socket owner.
+`CONFIRMED_INTEL_RUNTIME`.
 
 Intel now tracks scoped turns, handles explicit turn-ended requests, and treats an observed turn-ID
 change as an implicit boundary. Before the first operation that truly foregrounds a target, it

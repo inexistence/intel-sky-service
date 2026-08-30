@@ -13,6 +13,7 @@ import Testing
   let expected = ServiceRuntimeStatus(
     permissions: ServicePermissionStatus(accessibility: true, screenRecording: false),
     processIdentifier: 42,
+    focusStealProtection: true,
     updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
   )
 
