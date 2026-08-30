@@ -34,7 +34,10 @@ public final class SkyUnixServer: @unchecked Sendable {
     attributes: .concurrent
   )
   private let connectionSlots = DispatchSemaphore(value: 8)
+  private let stateLock = NSLock()
   private var listener: Int32 = -1
+  private var ownedSocketIdentity: UnixSocketFilePreparer.UnixSocketIdentity?
+  private var shuttingDown = false
 
   public init(
     socketPath: String,
@@ -47,32 +50,74 @@ public final class SkyUnixServer: @unchecked Sendable {
   }
 
   deinit {
-    if listener >= 0 { close(listener) }
+    shutdown()
   }
 
-  public func run(onReady: () -> Void = {}) throws -> Never {
+  public var isShuttingDown: Bool {
+    stateLock.withLock { shuttingDown }
+  }
+
+  public func shutdown() {
+    let state: (Int32, UnixSocketFilePreparer.UnixSocketIdentity?) = stateLock.withLock {
+      shuttingDown = true
+      let state = (listener, ownedSocketIdentity)
+      listener = -1
+      ownedSocketIdentity = nil
+      return state
+    }
+    if state.0 >= 0 {
+      _ = Darwin.shutdown(state.0, SHUT_RDWR)
+      close(state.0)
+    }
+    if let identity = state.1 {
+      UnixSocketFilePreparer.removeSocketIfOwned(at: socketPath, identity: identity)
+    }
+  }
+
+  public func run(onReady: () -> Void = {}) throws {
     try prepareSocketDirectory()
     try UnixSocketFilePreparer.removeStaleSocketIfSafe(at: socketPath)
     var address = try makeUnixSocketAddress(socketPath)
 
-    listener = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard listener >= 0 else { throw systemError("socket") }
-    try UnixSocketOptions.suppressSIGPIPE(on: listener)
+    let listeningSocket = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard listeningSocket >= 0 else { throw systemError("socket") }
+    let installed = stateLock.withLock {
+      guard !shuttingDown else { return false }
+      listener = listeningSocket
+      return true
+    }
+    guard installed else {
+      close(listeningSocket)
+      return
+    }
+    defer { shutdown() }
+    try UnixSocketOptions.suppressSIGPIPE(on: listeningSocket)
 
     let bindResult = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        Darwin.bind(listener, $0, unixSocketAddressLength(socketPath))
+        Darwin.bind(listeningSocket, $0, unixSocketAddressLength(socketPath))
       }
     }
     guard bindResult == 0 else { throw systemError("bind") }
     guard chmod(socketPath, S_IRUSR | S_IWUSR) == 0 else { throw systemError("chmod") }
-    guard listen(listener, 8) == 0 else { throw systemError("listen") }
+    guard listen(listeningSocket, 8) == 0 else { throw systemError("listen") }
+    let identity = try UnixSocketFilePreparer.identity(ofSocketAt: socketPath)
+    let stillRunning = stateLock.withLock {
+      guard !shuttingDown, listener == listeningSocket else { return false }
+      ownedSocketIdentity = identity
+      return true
+    }
+    guard stillRunning else {
+      UnixSocketFilePreparer.removeSocketIfOwned(at: socketPath, identity: identity)
+      return
+    }
     onReady()
 
     while true {
-      let client = accept(listener, nil, nil)
+      let client = accept(listeningSocket, nil, nil)
       if client < 0 {
         if errno == EINTR { continue }
+        if isShuttingDown, errno == EBADF || errno == EINVAL { return }
         throw systemError("accept")
       }
       do {
@@ -265,6 +310,36 @@ enum UnixSocketOptions {
 }
 
 enum UnixSocketFilePreparer {
+  struct UnixSocketIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    let owner: uid_t
+  }
+
+  static func identity(ofSocketAt path: String, effectiveUID: uid_t = geteuid()) throws
+    -> UnixSocketIdentity
+  {
+    var metadata = stat()
+    guard lstat(path, &metadata) == 0 else {
+      throw UnixSocketError.systemCall("lstat", errno)
+    }
+    guard (metadata.st_mode & S_IFMT) == S_IFSOCK, metadata.st_uid == effectiveUID else {
+      throw UnixSocketError.unsafeExistingPath(path)
+    }
+    return UnixSocketIdentity(
+      device: metadata.st_dev,
+      inode: metadata.st_ino,
+      owner: metadata.st_uid
+    )
+  }
+
+  static func removeSocketIfOwned(at path: String, identity expectedIdentity: UnixSocketIdentity) {
+    guard let current = try? identity(ofSocketAt: path, effectiveUID: expectedIdentity.owner),
+      current == expectedIdentity
+    else { return }
+    _ = unlink(path)
+  }
+
   static func removeStaleSocketIfSafe(at path: String, effectiveUID: uid_t = geteuid()) throws {
     var metadata = stat()
     guard lstat(path, &metadata) == 0 else {

@@ -50,6 +50,27 @@ import Testing
   #expect(try String(contentsOf: file, encoding: .utf8) == "keep")
 }
 
+@Test func removesOnlyTheSocketInstanceOwnedByServer() throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  let path = root.appendingPathComponent("computeruse.sock").path
+  defer { try? FileManager.default.removeItem(at: root) }
+  try SecureDirectoryPreparer.prepare(root)
+  let original = try bindTestSocket(at: path, listenForConnections: false)
+  defer { close(original) }
+  let originalIdentity = try UnixSocketFilePreparer.identity(ofSocketAt: path)
+
+  UnixSocketFilePreparer.removeSocketIfOwned(at: path, identity: originalIdentity)
+  var metadata = stat()
+  #expect(lstat(path, &metadata) == -1)
+  #expect(errno == ENOENT)
+
+  let replacement = try bindTestSocket(at: path, listenForConnections: false)
+  defer { close(replacement) }
+  UnixSocketFilePreparer.removeSocketIfOwned(at: path, identity: originalIdentity)
+  #expect(lstat(path, &metadata) == 0)
+  #expect((metadata.st_mode & S_IFMT) == S_IFSOCK)
+}
+
 private func bindTestSocket(at path: String, listenForConnections: Bool) throws -> Int32 {
   let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
   guard descriptor >= 0 else { throw UnixSocketError.systemCall("socket", errno) }

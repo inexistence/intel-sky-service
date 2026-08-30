@@ -73,6 +73,28 @@ let server = SkyUnixServer(
     requestObserver: pipBootstrapController
   )
 )
+let processIdentifier = ProcessInfo.processInfo.processIdentifier
+let cleanupRuntimeStatus: @Sendable () -> Void = {
+  do {
+    try ServiceRuntimeStatusWriter.removeIfCurrent(
+      processIdentifier: processIdentifier,
+      nextToSocketAt: socketPath
+    )
+  } catch {
+    fputs("warning: could not remove runtime status: \(error)\n", stderr)
+  }
+}
+
+signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+let terminationSources = [SIGTERM, SIGINT].map { signalNumber in
+  let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+  source.setEventHandler {
+    server.shutdown()
+  }
+  source.resume()
+  return source
+}
 
 fputs("intel-sky-service starting at \(socketPath)\n", stderr)
 DispatchQueue.global(qos: .userInitiated).async {
@@ -83,7 +105,7 @@ DispatchQueue.global(qos: .userInitiated).async {
         try ServiceRuntimeStatusWriter.write(
           ServiceRuntimeStatus(
             permissions: permissions,
-            processIdentifier: ProcessInfo.processInfo.processIdentifier,
+            processIdentifier: processIdentifier,
             physicalInputMonitoring: PhysicalInputMonitor.shared.isAvailable,
             updatedAt: Date()
           ),
@@ -97,9 +119,17 @@ DispatchQueue.global(qos: .userInitiated).async {
         stderr
       )
     }
+    cleanupRuntimeStatus()
+    DispatchQueue.main.async {
+      application.terminate(nil)
+    }
   } catch {
+    cleanupRuntimeStatus()
     fputs("fatal: \(error)\n", stderr)
     exit(1)
   }
 }
 application.run()
+for source in terminationSources { source.cancel() }
+server.shutdown()
+cleanupRuntimeStatus()

@@ -219,6 +219,24 @@ lifecycle connection without allowing overlapping desktop actions. The identity 
 turn-ended caller is not yet dynamically confirmed, so the peer allowlist has not been broadened.
 `HIGH_CONFIDENCE` for server concurrency; caller integration remains `NEEDS_ARM_ORACLE`.
 
+The bundled client removes a cached transport whenever it observes `isClosed`, rejects all pending
+requests on pipe error/close, and creates a replacement transport on the next call. Its startup
+sequence is an initial 250 ms connection attempt, host `ensureService("computer-use")` (or
+LaunchServices), then 100 ms connection retries within a five-second budget.
+`CONFIRMED_CLIENT_SOURCE`.
+
+Intel now sets macOS `SO_NOSIGPIPE` on the listener, every accepted peer, and its diagnostic client;
+a peer that closes before a response therefore produces `EPIPE` inside that connection task rather
+than terminating the service. `SIGTERM` and `SIGINT` stop the listener, and shutdown removes only
+the socket device/inode that this instance bound and only a same-PID, owner-only regular runtime
+status file. A replacement instance's files, PID-mismatched status, and symbolic links are
+preserved. A deployed runtime smoke terminated the service while the same unmodified `@oai/sky`
+module retained its cached transport: the next `list_apps` triggered host startup, reconnected in
+773 ms, and returned 71 Apps. Two hundred framed ping connections that closed immediately before
+reading a reply left the service available, after which the same client again returned 71 Apps.
+Direct TERM verification removed both socket and status before an immediate same-path restart.
+`CONFIRMED_INTEL_RUNTIME`.
+
 Intel now renders an independently drawn, non-activating software cursor for click, drag, and
 scroll operations. It is an input-transparent status-level panel that joins all Spaces, does not
 move the physical pointer, animates between positions, shows pressed feedback, and hides after an
@@ -417,9 +435,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   without emitting destruction on that item. Real unmodified-client tests confirmed a new Finder
   window rejects an old-window element and that a dismissed “显示简介” menu item now fails with the
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
-  with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions bring
-  the suite to 147 tests. `CONFIRMED_INTEL_RUNTIME`. The official pre-refetch ambiguity criterion
-  remains `NEEDS_ARM_ORACLE`.
+  with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
+  the later socket/lifecycle coverage bring the suite to 154 tests. `CONFIRMED_INTEL_RUNTIME`.
+  The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
 ## Safety and lifecycle
 

@@ -35,6 +35,76 @@ public enum ServiceRuntimeStatusError: Error, CustomStringConvertible {
 public enum ServiceRuntimeStatusWriter {
   public static let fileName = "service-status.json"
 
+  @discardableResult
+  public static func removeIfCurrent(
+    processIdentifier: Int32,
+    nextToSocketAt socketPath: String,
+    effectiveUID: uid_t = geteuid()
+  ) throws -> Bool {
+    let path = URL(fileURLWithPath: socketPath)
+      .deletingLastPathComponent()
+      .appendingPathComponent(fileName, isDirectory: false)
+      .path
+    var pathMetadata = stat()
+    guard lstat(path, &pathMetadata) == 0 else {
+      if errno == ENOENT { return false }
+      throw ServiceRuntimeStatusError.fileOperationFailed("inspect", path, errno)
+    }
+    guard (pathMetadata.st_mode & S_IFMT) == S_IFREG, pathMetadata.st_uid == effectiveUID else {
+      return false
+    }
+
+    let descriptor = open(path, O_RDONLY | O_NOFOLLOW)
+    guard descriptor >= 0 else {
+      if errno == ENOENT || errno == ELOOP { return false }
+      throw ServiceRuntimeStatusError.fileOperationFailed("open", path, errno)
+    }
+    defer { close(descriptor) }
+    var descriptorMetadata = stat()
+    guard fstat(descriptor, &descriptorMetadata) == 0 else {
+      throw ServiceRuntimeStatusError.fileOperationFailed("inspect", path, errno)
+    }
+    guard descriptorMetadata.st_dev == pathMetadata.st_dev,
+      descriptorMetadata.st_ino == pathMetadata.st_ino,
+      (descriptorMetadata.st_mode & S_IFMT) == S_IFREG,
+      descriptorMetadata.st_uid == effectiveUID
+    else { return false }
+
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+    while true {
+      let count = Darwin.read(descriptor, &buffer, buffer.count)
+      if count < 0 {
+        if errno == EINTR { continue }
+        throw ServiceRuntimeStatusError.fileOperationFailed("read", path, errno)
+      }
+      if count == 0 { break }
+      data.append(contentsOf: buffer.prefix(count))
+    }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    guard
+      try decoder.decode(ServiceRuntimeStatus.self, from: data).processIdentifier
+        == processIdentifier
+    else { return false }
+
+    var currentMetadata = stat()
+    guard lstat(path, &currentMetadata) == 0 else {
+      if errno == ENOENT { return false }
+      throw ServiceRuntimeStatusError.fileOperationFailed("inspect", path, errno)
+    }
+    guard currentMetadata.st_dev == descriptorMetadata.st_dev,
+      currentMetadata.st_ino == descriptorMetadata.st_ino,
+      (currentMetadata.st_mode & S_IFMT) == S_IFREG,
+      currentMetadata.st_uid == effectiveUID
+    else { return false }
+    guard unlink(path) == 0 else {
+      if errno == ENOENT { return false }
+      throw ServiceRuntimeStatusError.fileOperationFailed("remove", path, errno)
+    }
+    return true
+  }
+
   public static func write(
     _ status: ServiceRuntimeStatus,
     nextToSocketAt socketPath: String
