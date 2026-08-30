@@ -100,7 +100,9 @@ enum ComputerUseSessionOperationContext {
   }
 }
 
-final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unchecked Sendable {
+final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
+  ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
+{
   static let shared = ComputerUseSessionCoordinator()
 
   private struct ActiveApplication: Sendable {

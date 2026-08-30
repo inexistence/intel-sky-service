@@ -17,7 +17,9 @@ protocol ComputerUseFocusArbitrating: Sendable {
   func targetWillBeActivated(_ app: ResolvedMacApp)
 }
 
-final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating, @unchecked Sendable {
+final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
+  ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
+{
   static let shared = ComputerUseFocusCoordinator()
 
   private struct ActiveTurn {
@@ -56,6 +58,12 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating, @unchecked
         let ended = activeTurn
         activeTurn = nil
         return ended
+      case .safetyTerminated(let identity, _):
+        guard activeTurn?.identity == identity else { return nil }
+        // Never activate an application while the screen is locked or after the user
+        // has taken control. A subsequent request starts a fresh turn baseline.
+        activeTurn = nil
+        return nil
       }
     }
     if let turnToRestore { restoreIfSafe(turnToRestore) }

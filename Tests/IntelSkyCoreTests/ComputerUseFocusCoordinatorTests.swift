@@ -76,6 +76,23 @@ import Testing
   #expect(environment.restoredProcessIdentifiers == [10, 30])
 }
 
+@Test func safetyTerminationNeverRestoresFocus() throws {
+  let environment = RecordingFocusEnvironment(frontmostPID: 10)
+  let coordinator = ComputerUseFocusCoordinator(
+    environment: environment,
+    interventionMonitor: MutableInterventionMonitor()
+  )
+  let identity = try #require(ComputerUseTurnIdentity(metadata: focusTurnMetadata("turn")))
+  coordinator.handle(.started(identity))
+  coordinator.targetWillBeActivated(focusTestApp(pid: 20))
+  environment.frontmostPID = 20
+
+  coordinator.handle(.safetyTerminated(identity, .screenLocked))
+  coordinator.handle(.ended(identity))
+
+  #expect(environment.restoredProcessIdentifiers.isEmpty)
+}
+
 private final class RecordingFocusEnvironment: ComputerUseFocusEnvironment, @unchecked Sendable {
   private let lock = NSLock()
   private var storedFrontmostPID: pid_t?

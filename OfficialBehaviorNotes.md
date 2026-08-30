@@ -375,8 +375,13 @@ Intel now tracks scoped turns, handles explicit turn-ended requests, and treats 
 change as an implicit boundary. Before the first operation that truly foregrounds a target, it
 captures the user's frontmost app and focused AX window. It restores only at the turn boundary and
 only if the current frontmost process is one controlled during that turn; restoration is suppressed
-after physical input or an independent user focus change. The state machine, routing, and safety
-conditions have regression coverage. A host-style dynamic turn-ended smoke is still
+after physical input or an independent user focus change. Lifecycle delivery is serialized outside
+the state lock, including concurrent and re-entrant observations. At every boundary Intel first
+revokes cursor, intervention baseline, App-session, Capture Stream, Event Stream, and PIP state,
+then performs the conservative focus restore. A lock-screen or user-intervention error is a distinct
+safety termination: it performs the same revocation, clears the current turn so a same-ID retry must
+start fresh, and deliberately does not activate a restore target. `HIGH_CONFIDENCE`; exact official
+component ordering remains `NEEDS_ARM_ORACLE`. A host-style dynamic turn-ended smoke is still
 `NEEDS_ARM_ORACLE`: node_repl's seatbelt correctly denied a direct JavaScript socket connection,
 and the public high-level `sky` surface does not expose the lifecycle request.
 
@@ -410,7 +415,10 @@ move the physical pointer, animates between positions, shows pressed feedback, a
 idle interval. A real Calculator click changed the target value while AppKit recorded the same
 overlay window being ordered in and out five seconds later. The earlier cross-process
 `CGWindowList` probe was a false negative because that diagnostic process lacked Screen Recording
-access. `CONFIRMED_INTEL_RUNTIME`.
+access. Turn start/transition/end and safety termination now synchronously deactivate the remote
+cursor, immediately order out the local overlay, and generation-cancel delayed drag/idle callbacks
+so old-turn cursor state cannot reappear. `CONFIRMED_INTEL_RUNTIME` for the attended cursor smoke;
+`HIGH_CONFIDENCE` for the lifecycle behavior with deterministic regression coverage.
 
 The official cursor's exact artwork, path/spring constants, visibility state machine, menu handling,
 and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel now has the synthetic-focus envelope and
@@ -654,7 +662,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   `KNOWN_DIFFERENCE`; exact classifier membership remains `NEEDS_ARM_ORACLE`.
 - Intel now fails `get_app_state` and actions with `screenLocked` (`-10020`) when the GUI session is
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
-  enabled. The secure-input error mapping remains `PARTIAL`.
+  enabled. A lock rejection now safety-terminates the scoped turn, Capture/Event streams, cursor,
+  PIP, and App/intervention baselines without attempting focus restoration; unlock therefore
+  requires fresh turn and state observation. The secure-input error mapping remains `PARTIAL`.
 - ARM metadata for `ComputerUseAppInstanceManager` includes `userInteractionMonitor`,
   `userInterruptedControlledApp`, `interventionReasonByTargetIdentifier`, per-target debounce tasks,
   and a `requiresRequery` state. This shows that interruption is associated with a controlled target
@@ -673,6 +683,8 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
+- The unified lifecycle checkpoint passes 198 Swift tests, the six-case Node oracle suite, the
+  soft-link hash test, and an x86_64 release build compiled with warnings as errors.
 
 ## Oracle backlog
 

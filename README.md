@@ -150,6 +150,12 @@ fields, security/password apps, ChatGPT/Codex, and this service are excluded fro
 their structural records go to the suppressed log only after text/value/URL fields are removed.
 Both logs also scrub common password/token/API-key forms before bytes are written.
 
+Turn lifecycle is delivered as one ordered state machine. Start, transition, explicit end, lock,
+and user intervention revoke virtual/remote cursor state, stale state-query authorization, App
+session state, Capture Stream, Event Stream, and native PIP before any conservative focus restore.
+Lock/intervention safety termination never activates a restore target, and delayed cursor callbacks
+are generation-cancelled so an old turn cannot redraw after the boundary.
+
 Every action requires a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. If the referenced AX object was destroyed by a window/menu rebuild, the service recaptures the tree and accepts only a unique path-and-semantics match; ambiguous, missing, or weak unlabeled matches fail closed. Screenshot coordinates are mapped through the captured window origin and image scale, including Retina screenshots, and fail closed when stale or outside the image. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll accepts every finite positive page count; element scrolling prefers AX page actions, while unsupported and fractional movement uses bounded pixel-wheel events.
 
 ## Security boundary

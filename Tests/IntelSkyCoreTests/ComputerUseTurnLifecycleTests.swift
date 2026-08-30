@@ -41,6 +41,77 @@ import Testing
   #expect(coordinator.currentIdentity == nil)
 }
 
+@Test func runtimeCoordinatorRevokesTransientStateBeforeFocusRestoration() throws {
+  let recorder = StringRecorder()
+  let runtime = ComputerUseTurnRuntimeCoordinator(
+    preRestoreHandlers: [
+      { _ in recorder.append("visual") },
+      { _ in recorder.append("streams") },
+    ],
+    focusHandler: { _ in recorder.append("focus") }
+  )
+  let identity = try #require(
+    ComputerUseTurnIdentity(metadata: turnMetadata(session: "s", thread: "t", turn: "1"))
+  )
+
+  runtime.handle(.ended(identity))
+
+  #expect(recorder.values == ["visual", "streams", "focus"])
+}
+
+@Test func concurrentTurnEventsAreDeliveredInStateTransitionOrder() {
+  let recorder = TurnEventRecorder()
+  let startedDelivery = DispatchSemaphore(value: 0)
+  let allowStartedDeliveryToFinish = DispatchSemaphore(value: 0)
+  let transitionCallReturned = DispatchSemaphore(value: 0)
+  let coordinator = ComputerUseTurnCoordinator { event in
+    recorder.append(event)
+    if case .started = event {
+      startedDelivery.signal()
+      allowStartedDeliveryToFinish.wait()
+    }
+  }
+
+  DispatchQueue.global().async {
+    coordinator.observe(metadata: turnMetadata(session: "s", thread: "t", turn: "1"))
+  }
+  #expect(startedDelivery.wait(timeout: .now() + 1) == .success)
+  DispatchQueue.global().async {
+    coordinator.observe(metadata: turnMetadata(session: "s", thread: "t", turn: "2"))
+    transitionCallReturned.signal()
+  }
+  #expect(transitionCallReturned.wait(timeout: .now() + 1) == .success)
+  allowStartedDeliveryToFinish.signal()
+
+  let deadline = Date().addingTimeInterval(1)
+  while recorder.events.count < 2, Date() < deadline { Thread.sleep(forTimeInterval: 0.001) }
+  #expect(recorder.events.count == 2)
+  if recorder.events.count == 2 {
+    #expect({ if case .started = recorder.events[0] { true } else { false } }())
+    #expect({ if case .transitioned = recorder.events[1] { true } else { false } }())
+  }
+}
+
+@Test func safetyTerminationRequiresFreshLifecycleEvenForSameMetadata() throws {
+  let recorder = TurnEventRecorder()
+  let coordinator = ComputerUseTurnCoordinator { recorder.append($0) }
+  let metadata = turnMetadata(session: "s", thread: "t", turn: "1")
+  let identity = try #require(ComputerUseTurnIdentity(metadata: metadata))
+
+  coordinator.observe(metadata: metadata)
+  coordinator.terminateForSafety(.screenLocked)
+  #expect(coordinator.currentIdentity == nil)
+  coordinator.observe(metadata: metadata)
+
+  #expect(
+    recorder.events == [
+      .started(identity),
+      .safetyTerminated(identity, .screenLocked),
+      .started(identity),
+    ]
+  )
+}
+
 private final class TurnEventRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var stored: [ComputerUseTurnLifecycleEvent] = []
@@ -50,6 +121,13 @@ private final class TurnEventRecorder: @unchecked Sendable {
   func append(_ event: ComputerUseTurnLifecycleEvent) {
     lock.withLock { stored.append(event) }
   }
+}
+
+private final class StringRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [String] = []
+  var values: [String] { lock.withLock { stored } }
+  func append(_ value: String) { lock.withLock { stored.append(value) } }
 }
 
 private func turnMetadata(session: String, thread: String, turn: String) -> [String: Any] {

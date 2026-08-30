@@ -3,6 +3,13 @@ import Testing
 
 @testable import IntelSkyCore
 
+private final class SafetyLifecycleRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [ComputerUseTurnLifecycleEvent] = []
+  var events: [ComputerUseTurnLifecycleEvent] { lock.withLock { stored } }
+  func append(_ event: ComputerUseTurnLifecycleEvent) { lock.withLock { stored.append(event) } }
+}
+
 private struct StubCatalog: AppCatalog {
   func listApps() throws -> [[String: Any]] {
     [
@@ -224,24 +231,43 @@ private func decode(_ data: Data) throws -> [String: Any] {
 }
 
 @Test func screenLockedUsesOfficialServiceErrorCode() throws {
+  let lifecycleEvents = SafetyLifecycleRecorder()
+  let lifecycle = ComputerUseTurnCoordinator { lifecycleEvents.append($0) }
   let request = try JSONSerialization.data(withJSONObject: [
     "jsonrpc": "2.0",
     "id": 19,
     "method": "request",
     "params": [
       "clientApiVersion": SkyProtocol.apiVersion,
+      "codexTurnMetadata": [
+        "session_id": "session", "thread_id": "thread", "turn_id": "turn",
+      ],
       "requestType": "ComputerUseIPCAppPerformActionRequest",
       "request": ["app": "com.apple.finder", "action": ["pressKey": ["_0": "Escape"]]],
     ],
   ])
   let router = SkyRequestRouter(
     appCatalog: StubCatalog(),
-    appActionPerformer: LockedActionPerformer()
+    appStateProvider: nil,
+    appActionPerformer: LockedActionPerformer(),
+    turnLifecycle: lifecycle
   )
 
   let response = try decode(router.handle(request))
   let error = try #require(response["error"] as? [String: Any])
   #expect(error["code"] as? Int == SkyServerErrorCode.screenLocked.rawValue)
+  #expect(lifecycle.currentIdentity == nil)
+  #expect(lifecycleEvents.events.count == 2)
+  if lifecycleEvents.events.count == 2 {
+    #expect({ if case .started = lifecycleEvents.events[0] { true } else { false } }())
+    #expect(
+      {
+        if case .safetyTerminated(_, .screenLocked) = lifecycleEvents.events[1] { true } else {
+          false
+        }
+      }()
+    )
+  }
 }
 
 @Test func forbiddenTargetUsesOfficialAppNotAllowedErrorCode() throws {

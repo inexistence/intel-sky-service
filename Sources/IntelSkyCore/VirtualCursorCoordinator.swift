@@ -9,14 +9,21 @@ protocol ComputerUseVisualizing: Sendable {
   func showDrag(from start: CGPoint, to end: CGPoint)
 }
 
-public final class ComputerUseVisualCoordinator: ComputerUseVisualizing, @unchecked Sendable {
+public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
+  ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
+{
   public static let shared = ComputerUseVisualCoordinator()
 
   private let lock = NSLock()
   private var remoteCursorHandler: (@Sendable (CGPoint, Bool) -> Void)?
   private var remoteCursorGeneration: UInt64 = 0
+  private var lifecycleGeneration: UInt64 = 0
+  private var lastRemoteCursorPoint: CGPoint?
+  private let rendersLocalOverlay: Bool
 
-  public init() {}
+  public init(renderLocalOverlay: Bool = true) {
+    rendersLocalOverlay = renderLocalOverlay
+  }
 
   @MainActor
   public static func warmUp() {
@@ -25,20 +32,45 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing, @unchec
 
   func moveCursor(to point: CGPoint) {
     notifyRemoteCursor(at: point)
-    performOnMain { VirtualCursorOverlay.shared.move(to: point) }
+    if rendersLocalOverlay {
+      performOnMain { VirtualCursorOverlay.shared.move(to: point) }
+    }
   }
 
   func showClick(at point: CGPoint) {
     notifyRemoteCursor(at: point)
-    performOnMain { VirtualCursorOverlay.shared.click(at: point) }
+    if rendersLocalOverlay {
+      performOnMain { VirtualCursorOverlay.shared.click(at: point) }
+    }
   }
 
   func showDrag(from start: CGPoint, to end: CGPoint) {
+    let turnGeneration = lock.withLock { lifecycleGeneration }
     notifyRemoteCursor(at: start)
     DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.08) { [weak self] in
-      self?.notifyRemoteCursor(at: end)
+      guard let self,
+        lock.withLock({ lifecycleGeneration == turnGeneration })
+      else { return }
+      notifyRemoteCursor(at: end)
     }
-    performOnMain { VirtualCursorOverlay.shared.drag(from: start, to: end) }
+    if rendersLocalOverlay {
+      performOnMain { VirtualCursorOverlay.shared.drag(from: start, to: end) }
+    }
+  }
+
+  func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    let inactive = lock.withLock {
+      () -> (CGPoint?, (@Sendable (CGPoint, Bool) -> Void)?) in
+      lifecycleGeneration &+= 1
+      remoteCursorGeneration &+= 1
+      let point = lastRemoteCursorPoint
+      lastRemoteCursorPoint = nil
+      return (point, remoteCursorHandler)
+    }
+    if let point = inactive.0 { inactive.1?(point, false) }
+    if rendersLocalOverlay {
+      performOnMain { VirtualCursorOverlay.shared.hideImmediately() }
+    }
   }
 
   private func performOnMain(_ operation: @escaping @MainActor @Sendable () -> Void) {
@@ -58,6 +90,7 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing, @unchec
   private func notifyRemoteCursor(at point: CGPoint) {
     let (generation, handler) = lock.withLock { () -> (UInt64, (@Sendable (CGPoint, Bool) -> Void)?) in
       remoteCursorGeneration &+= 1
+      lastRemoteCursorPoint = point
       return (remoteCursorGeneration, remoteCursorHandler)
     }
     handler?(point, true)
@@ -152,6 +185,14 @@ private final class VirtualCursorOverlay {
       move(to: end)
       cursorView.isPressed = false
     }
+  }
+
+  func hideImmediately() {
+    hideGeneration &+= 1
+    currentPoint = nil
+    cursorView.isPressed = false
+    panel.alphaValue = 0
+    panel.orderOut(nil)
   }
 
   private func windowOrigin(for quartzPoint: CGPoint) -> CGPoint {

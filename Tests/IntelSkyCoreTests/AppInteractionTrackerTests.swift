@@ -141,6 +141,24 @@ import Testing
   try coordinator.requireFreshState(for: app)
 }
 
+@Test func freshStateAuthorizationDoesNotCrossTurnBoundary() throws {
+  let monitor = StubUserInterventionMonitor()
+  let coordinator = ComputerUseInterventionCoordinator(monitor: monitor)
+  let app = trackerTestApp(pid: 10)
+  coordinator.recordFreshState(
+    for: app,
+    checkpoint: coordinator.stateRefreshCheckpoint(for: app)
+  )
+  try coordinator.requireFreshState(for: app)
+  let identity = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+  )
+
+  coordinator.handle(.ended(identity))
+
+  #expect(throws: SkySafetyError.self) { try coordinator.requireFreshState(for: app) }
+}
+
 private func trackerTestApp(pid: pid_t) -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: pid,

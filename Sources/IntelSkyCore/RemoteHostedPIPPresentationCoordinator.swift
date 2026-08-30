@@ -17,7 +17,7 @@ public protocol SkyRequestResultObserving: Sendable {
 }
 
 final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
-  @unchecked Sendable
+  ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
 {
   private struct Key: Hashable {
     let threadID: String
@@ -86,6 +86,16 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       }
     }
     for presentationID in presentationIDs { invalidate(presentationID: presentationID) }
+  }
+
+  func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    switch event {
+    case .started:
+      break
+    case .transitioned(let previous, _), .ended(let previous),
+      .safetyTerminated(let previous, _):
+      beginEndingPresentations(threadID: previous.threadID, turnID: previous.turnID)
+    }
   }
 
   func observe(
@@ -233,6 +243,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private func endPresentations(request: [String: Any]) {
     guard let threadID = Self.nonempty(request["threadID"]) else { return }
     let turnID = Self.nonempty(request["turnID"])
+    beginEndingPresentations(threadID: threadID, turnID: turnID)
+  }
+
+  private func beginEndingPresentations(threadID: String, turnID: String?) {
     let ending = lock.withLock { () -> [Presentation] in
       var selected: [Presentation] = []
       for key in presentations.keys

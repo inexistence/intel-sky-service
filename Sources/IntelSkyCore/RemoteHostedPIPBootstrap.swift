@@ -52,7 +52,7 @@ struct RemoteHostedPIPBootstrapRequest: Equatable, Sendable {
 }
 
 public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResultObserving,
-  @unchecked Sendable
+  ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
 {
   private static let errorNumberKeyword: AEKeyword = 0x6572_726E  // errn
   private static let errorStringKeyword: AEKeyword = 0x6572_7273  // errs
@@ -202,5 +202,9 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       codexTurnMetadata: codexTurnMetadata,
       result: result
     )
+  }
+
+  func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    presentationCoordinator.handle(event)
   }
 }

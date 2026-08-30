@@ -113,7 +113,8 @@ public struct SkyRequestRouter: Sendable {
       requestObserver: requestObserver,
       turnLifecycle: ComputerUseTurnCoordinator(
         appCaptureProvider: appCaptureProvider,
-        eventStreamProvider: eventStreamProvider
+        eventStreamProvider: eventStreamProvider,
+        requestObserver: requestObserver
       ),
       sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
@@ -181,6 +182,14 @@ public struct SkyRequestRouter: Sendable {
       let result = try route(object)
       return try encode(["jsonrpc": "2.0", "id": requestID, "result": result])
     } catch {
+      switch error {
+      case SkySafetyError.screenLocked:
+        turnLifecycle.terminateForSafety(.screenLocked)
+      case SkySafetyError.userIntervened:
+        turnLifecycle.terminateForSafety(.userIntervened)
+      default:
+        break
+      }
       return
         (try? encode([
           "jsonrpc": "2.0",

@@ -5,7 +5,7 @@ public protocol AppCaptureProviding: Sendable {
   func nextCaptureUpdate(request: [String: Any]) throws -> [String: Any]
 }
 
-protocol AppCaptureLifecycleHandling: Sendable {
+protocol AppCaptureLifecycleHandling: ComputerUseTurnLifecycleEventHandling {
   func clientDisconnected(_ clientIdentifier: String)
   func handle(_ event: ComputerUseTurnLifecycleEvent)
   func stopApplication(bundleIdentifier: String)
@@ -242,7 +242,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureLife
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
     switch event {
     case .started: return
-    case .transitioned, .ended:
+    case .transitioned, .ended, .safetyTerminated:
       lock.withLock { lifecycleGeneration &+= 1 }
       terminateAllWithCompleted()
     }

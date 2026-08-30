@@ -24,26 +24,86 @@ struct ComputerUseTurnIdentity: Equatable, Sendable {
   }
 }
 
+enum ComputerUseTurnSafetyTerminationReason: Equatable, Sendable {
+  case screenLocked
+  case userIntervened
+}
+
 enum ComputerUseTurnLifecycleEvent: Equatable, Sendable {
   case started(ComputerUseTurnIdentity)
   case transitioned(from: ComputerUseTurnIdentity, to: ComputerUseTurnIdentity)
   case ended(ComputerUseTurnIdentity)
+  case safetyTerminated(ComputerUseTurnIdentity, ComputerUseTurnSafetyTerminationReason)
+}
+
+protocol ComputerUseTurnLifecycleEventHandling: Sendable {
+  func handle(_ event: ComputerUseTurnLifecycleEvent)
+}
+
+/// Fans a turn boundary out in safety order. Transient visual/stream/session state is
+/// revoked first; focus restoration is deliberately last so no old-turn producer can
+/// publish another frame or cursor update after the user's focus has been restored.
+final class ComputerUseTurnRuntimeCoordinator: ComputerUseTurnLifecycleEventHandling,
+  @unchecked Sendable
+{
+  private let preRestoreHandlers: [@Sendable (ComputerUseTurnLifecycleEvent) -> Void]
+  private let focusHandler: @Sendable (ComputerUseTurnLifecycleEvent) -> Void
+
+  init(
+    preRestoreHandlers: [@Sendable (ComputerUseTurnLifecycleEvent) -> Void],
+    focusHandler: @escaping @Sendable (ComputerUseTurnLifecycleEvent) -> Void
+  ) {
+    self.preRestoreHandlers = preRestoreHandlers
+    self.focusHandler = focusHandler
+  }
+
+  convenience init(
+    appCaptureProvider: (any AppCaptureProviding)? = nil,
+    eventStreamProvider: (any EventStreamProviding)? = nil,
+    requestObserver: (any SkyRequestResultObserving)? = nil
+  ) {
+    var handlers: [@Sendable (ComputerUseTurnLifecycleEvent) -> Void] = [
+      { ComputerUseVisualCoordinator.shared.handle($0) },
+      { ComputerUseInterventionCoordinator.shared.handle($0) },
+      { ComputerUseSessionCoordinator.shared.handle($0) },
+    ]
+    if let capture = appCaptureProvider as? any AppCaptureLifecycleHandling {
+      handlers.append { capture.handle($0) }
+    }
+    if let eventStream = eventStreamProvider as? any EventStreamLifecycleHandling {
+      handlers.append { eventStream.handle($0) }
+    }
+    if let observer = requestObserver as? any ComputerUseTurnLifecycleEventHandling {
+      handlers.append { observer.handle($0) }
+    }
+    self.init(
+      preRestoreHandlers: handlers,
+      focusHandler: { ComputerUseFocusCoordinator.shared.handle($0) }
+    )
+  }
+
+  func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    for handler in preRestoreHandlers { handler(event) }
+    focusHandler(event)
+  }
 }
 
 protocol ComputerUseTurnLifecycleHandling: Sendable {
   func observe(metadata: Any?)
   func end(request: [String: Any])
+  func terminateForSafety(_ reason: ComputerUseTurnSafetyTerminationReason)
 }
 
 final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unchecked Sendable {
   private let lock = NSLock()
   private let eventHandler: @Sendable (ComputerUseTurnLifecycleEvent) -> Void
   private var current: ComputerUseTurnIdentity?
+  private var pendingEvents: [ComputerUseTurnLifecycleEvent] = []
+  private var isDeliveringEvents = false
 
   init(
     eventHandler: @escaping @Sendable (ComputerUseTurnLifecycleEvent) -> Void = {
-      ComputerUseFocusCoordinator.shared.handle($0)
-      ComputerUseSessionCoordinator.shared.handle($0)
+      ComputerUseTurnRuntimeCoordinator().handle($0)
     }
   ) {
     self.eventHandler = eventHandler
@@ -51,46 +111,80 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
 
   convenience init(
     appCaptureProvider: (any AppCaptureProviding)?,
-    eventStreamProvider: (any EventStreamProviding)? = nil
+    eventStreamProvider: (any EventStreamProviding)? = nil,
+    requestObserver: (any SkyRequestResultObserving)? = nil
   ) {
-    self.init { event in
-      ComputerUseFocusCoordinator.shared.handle(event)
-      ComputerUseSessionCoordinator.shared.handle(event)
-      (appCaptureProvider as? any AppCaptureLifecycleHandling)?.handle(event)
-      (eventStreamProvider as? any EventStreamLifecycleHandling)?.handle(event)
-    }
+    let runtime = ComputerUseTurnRuntimeCoordinator(
+      appCaptureProvider: appCaptureProvider,
+      eventStreamProvider: eventStreamProvider,
+      requestObserver: requestObserver
+    )
+    self.init { runtime.handle($0) }
   }
 
   var currentIdentity: ComputerUseTurnIdentity? { lock.withLock { current } }
 
   func observe(metadata: Any?) {
     guard let identity = ComputerUseTurnIdentity(metadata: metadata) else { return }
-    let event: ComputerUseTurnLifecycleEvent? = lock.withLock {
-      guard current != identity else { return nil }
+    let shouldDeliver = lock.withLock { () -> Bool in
+      guard current != identity else { return false }
+      let event: ComputerUseTurnLifecycleEvent
       if let previous = current {
         current = identity
-        return .transitioned(from: previous, to: identity)
+        event = .transitioned(from: previous, to: identity)
+      } else {
+        current = identity
+        event = .started(identity)
       }
-      current = identity
-      return .started(identity)
+      return enqueueLocked(event)
     }
-    if let event { eventHandler(event) }
+    if shouldDeliver { deliverPendingEvents() }
   }
 
   func end(request: [String: Any]) {
     let requestedThread = nonempty(request["threadID"])
     let requestedTurn = nonempty(request["turnID"])
-    let ended: ComputerUseTurnIdentity? = lock.withLock {
-      guard let current else { return nil }
+    let shouldDeliver = lock.withLock { () -> Bool in
+      guard let current else { return false }
       guard requestedThread == nil || requestedThread == current.threadID,
         requestedTurn == nil || requestedTurn == current.turnID
       else {
-        return nil
+        return false
       }
       self.current = nil
-      return current
+      return enqueueLocked(.ended(current))
     }
-    if let ended { eventHandler(.ended(ended)) }
+    if shouldDeliver { deliverPendingEvents() }
+  }
+
+  func terminateForSafety(_ reason: ComputerUseTurnSafetyTerminationReason) {
+    let shouldDeliver = lock.withLock { () -> Bool in
+      guard let current else { return false }
+      self.current = nil
+      return enqueueLocked(.safetyTerminated(current, reason))
+    }
+    if shouldDeliver { deliverPendingEvents() }
+  }
+
+  private func enqueueLocked(_ event: ComputerUseTurnLifecycleEvent) -> Bool {
+    pendingEvents.append(event)
+    guard !isDeliveringEvents else { return false }
+    isDeliveringEvents = true
+    return true
+  }
+
+  private func deliverPendingEvents() {
+    while true {
+      let event = lock.withLock { () -> ComputerUseTurnLifecycleEvent? in
+        guard !pendingEvents.isEmpty else {
+          isDeliveringEvents = false
+          return nil
+        }
+        return pendingEvents.removeFirst()
+      }
+      guard let event else { return }
+      eventHandler(event)
+    }
   }
 
   private func nonempty(_ value: Any?) -> String? {

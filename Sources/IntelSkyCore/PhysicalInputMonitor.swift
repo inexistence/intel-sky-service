@@ -235,7 +235,7 @@ protocol ComputerUseInterventionArbitrating: Sendable {
 }
 
 final class ComputerUseInterventionCoordinator: ComputerUseInterventionArbitrating,
-  @unchecked Sendable
+  ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
 {
   static let shared = ComputerUseInterventionCoordinator()
 
@@ -276,6 +276,13 @@ final class ComputerUseInterventionCoordinator: ComputerUseInterventionArbitrati
     guard monitor.checkpoint(for: app.processIdentifier) == baseline.checkpoint else {
       throw SkySafetyError.userIntervened
     }
+  }
+
+  func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    // A state snapshot authorizes actions only within the turn that produced it.
+    // Clearing on start as well as transition/end also fails closed after a service-side
+    // lifecycle reconstruction.
+    lock.withLock { baselineByBundleIdentifier.removeAll() }
   }
 }
 

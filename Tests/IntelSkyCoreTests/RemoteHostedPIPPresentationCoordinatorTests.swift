@@ -98,6 +98,43 @@ import UniformTypeIdentifiers
   #expect(host.events.contains("invalidate:\(presentationID)"))
 }
 
+@Test func turnTransitionEndsPIPWithoutWaitingForExplicitEndRequest() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn-1"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  let first = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn-1"])
+  )
+  let second = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn-2"])
+  )
+  let presentationID = try #require(host.presentationID)
+
+  coordinator.handle(.transitioned(from: first, to: second))
+  coordinator.observe(
+    requestType: "ComputerUseIPCCodexTurnEndedRequest",
+    request: ["threadID": "thread", "turnID": "turn-1"],
+    codexTurnMetadata: nil,
+    result: [:]
+  )
+
+  #expect(host.events.filter { $0 == "will-end:\(presentationID)" }.count == 1)
+}
+
 private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   @unchecked Sendable
 {

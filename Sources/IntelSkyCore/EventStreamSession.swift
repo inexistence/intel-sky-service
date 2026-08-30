@@ -10,7 +10,7 @@ public protocol EventStreamProviding: Sendable {
   func stopEventStream(request: [String: Any]) throws -> [String: Any]
 }
 
-protocol EventStreamLifecycleHandling: Sendable {
+protocol EventStreamLifecycleHandling: ComputerUseTurnLifecycleEventHandling {
   func clientDisconnected(_ clientIdentifier: String)
   func handle(_ event: ComputerUseTurnLifecycleEvent)
   func shutdown()
@@ -221,6 +221,7 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     case .started: return
     case .transitioned(let from, _): endedThreadID = from.threadID
     case .ended(let identity): endedThreadID = identity.threadID
+    case .safetyTerminated(let identity, _): endedThreadID = identity.threadID
     }
     guard lock.withLock({ activeSession?.originatingThreadID == endedThreadID }) else { return }
     _ = stop(reason: "toolStopped")
