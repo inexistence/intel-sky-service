@@ -983,7 +983,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 259 Swift tests and 13 Node protocol/reverse/oracle tests,
+- The current runtime checkpoint passes 263 Swift tests and 13 Node protocol/reverse/oracle tests,
   including the protocol-catalog verifier and soft-link hash coverage. It also passes the
   12-selector Intel PIP-host audit and an x86_64 release build compiled with warnings as errors.
 

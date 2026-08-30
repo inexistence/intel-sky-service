@@ -1,4 +1,12 @@
 import Foundation
+import OSLog
+
+private enum TurnLifecycleDiagnostics {
+  static let logger = Logger(
+    subsystem: "dev.huangjianbin.intel-sky-service",
+    category: "turn-lifecycle"
+  )
+}
 
 public enum SkyProtocol {
   public static let apiVersion = "CodexComputerUseIPC-5"
@@ -292,7 +300,15 @@ public struct SkyRequestRouter: Sendable {
         let result: Any
         switch requestType {
         case "ComputerUseIPCCodexTurnEndedRequest":
+          let threadID = request["threadID"] as? String ?? "<missing>"
+          let turnID = request["turnID"] as? String ?? "<missing>"
+          TurnLifecycleDiagnostics.logger.notice(
+            "received explicit turn-ended thread=\(threadID, privacy: .public) turn=\(turnID, privacy: .public)"
+          )
           turnLifecycle.end(request: request)
+          TurnLifecycleDiagnostics.logger.notice(
+            "applied explicit turn-ended thread=\(threadID, privacy: .public) turn=\(turnID, privacy: .public)"
+          )
           result = [:]
         case "ComputerUseIPCListAppsRequest":
           result = try appCatalog.listApps()

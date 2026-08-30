@@ -270,10 +270,10 @@ For request-by-request coverage, see [ProtocolCatalog.md](ProtocolCatalog.md). F
 behavior, evidence, and known differences, see
 [OfficialBehaviorNotes.md](OfficialBehaviorNotes.md).
 
-Exact ARM ViewBridge focus/capture lifetimes and extended
-resize/replacement/reconnect/end stress remain active compatibility work. PIP is optional: a PIP
-failure must not change the underlying Computer Use request result. Use `--disable-pip` as an
-explicit rollback switch; `--experimental-pip` remains accepted as a compatibility alias.
+Exact ARM ViewBridge focus/capture callback timing and longer-duration recovery stress remain
+active compatibility work. PIP is optional: a PIP failure must not change the underlying Computer
+Use request result. Use `--disable-pip` as an explicit rollback switch; `--experimental-pip`
+remains accepted as a compatibility alias.
 
 ## Runtime and data safety
 
