@@ -386,6 +386,24 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   no-change prefix. The unmodified client received full then no-change Finder state successfully.
   `CONFIRMED_INTEL_RUNTIME`; removed-range compaction and exact ARM identity rules remain
   `NEEDS_ARM_ORACLE`.
+- Direct parsing of the ARM Mach-O Swift metadata recovered `RefetchableSkyshotAXTree` with
+  `systemSelection` and `isAXTreeDiffingEnabled`; `SystemSelection` retains a window revision and
+  `UIElementTreeInvalidationMonitor`. The monitor distinguishes `layoutChanged` from a set of
+  destroyed elements, while the tree revision stores IDs, elements, paths, prior revision, and
+  changes. The official refetch error enum distinguishes invalid ID, missing monitor, ambiguity
+  before/after refetch, and no-longer-valid before/after refetch. Exact matching control flow is
+  still `NEEDS_ARM_ORACLE`, but blind title-only rebinding is ruled out. `CONFIRMED_STATIC_BINARY`.
+- Intel snapshots now retain each element's child-index path, ancestor role path, role/subrole,
+  identifier, title, description, and frame. An action first probes the original AX reference and
+  refetches only after macOS explicitly returns `kAXErrorInvalidUIElement`. Same-path candidates
+  must preserve the semantic identity; moved elements require one uniquely labeled semantic match;
+  unlabeled elements additionally require unchanged path, role ancestry, and geometry. Missing or
+  ambiguous candidates fail closed with the official error text and `accessibilityError`. A real
+  unmodified-client smoke closed a Finder window, opened a replacement, then used the old Search
+  element ID: the service uniquely rebound it and the rebuilt window exposed a focused search text
+  field. Four dedicated stale/ambiguous/geometry tests bring the suite to 141 tests.
+  `CONFIRMED_INTEL_RUNTIME`. Proactive AXObserver invalidation and the official pre-refetch
+  ambiguity criterion remain `KNOWN_DIFFERENCE` / `NEEDS_ARM_ORACLE`.
 
 ## Safety and lifecycle
 

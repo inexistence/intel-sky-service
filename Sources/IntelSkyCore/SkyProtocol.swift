@@ -300,6 +300,10 @@ public struct SkyRequestRouter: Sendable {
       ElementSnapshotCacheError.expiredSnapshot:
       return SkyServerErrorCode.noActiveSession.rawValue
     case ElementSnapshotCacheError.unknownElement,
+      ElementSnapshotCacheError.elementAmbiguousBeforeRefetch,
+      ElementSnapshotCacheError.elementAmbiguousAfterRefetch,
+      ElementSnapshotCacheError.elementNoLongerValid,
+      ElementSnapshotCacheError.elementNoLongerValidAfterRefetch,
       ElementSnapshotCacheError.missingCoordinateSpace,
       ElementSnapshotCacheError.coordinateOutsideScreenshot:
       return SkyServerErrorCode.accessibilityError.rawValue

@@ -46,13 +46,14 @@ public struct AccessibilitySnapshotter: Sendable {
     elementIDs.beginCapture(processIdentifier: app.processIdentifier)
     defer { elementIDs.endCapture(processIdentifier: app.processIdentifier) }
     var state = TraversalState(processIdentifier: app.processIdentifier)
-    append(window, depth: 0, state: &state, lines: &lines)
+    append(window, depth: 0, path: [], rolePath: [], state: &state, lines: &lines)
     if state.wasTruncated {
       lines.append("… snapshot truncated at \(maximumElements) elements")
     }
     return CapturedAccessibilitySnapshot(
       text: lines.joined(separator: "\n"),
       elementsByID: state.elementsByID,
+      locatorsByID: state.locatorsByID,
       windowActivationPoint: geometry.point(
         of: window,
         attribute: "AXActivationPoint" as CFString
@@ -63,6 +64,8 @@ public struct AccessibilitySnapshotter: Sendable {
   private func append(
     _ element: AXUIElement,
     depth: Int,
+    path: [Int],
+    rolePath: [String],
     state: inout TraversalState,
     lines: inout [String]
   ) {
@@ -74,8 +77,21 @@ public struct AccessibilitySnapshotter: Sendable {
     state.count += 1
     state.elementsByID[String(index)] = element
 
+    let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown"
+    let locator = AccessibilityElementLocator(
+      path: path,
+      rolePath: rolePath + [role],
+      role: role,
+      subrole: stringAttribute(element, kAXSubroleAttribute as CFString),
+      identifier: stringAttribute(element, kAXIdentifierAttribute as CFString),
+      title: stringAttribute(element, kAXTitleAttribute as CFString),
+      description: stringAttribute(element, kAXDescriptionAttribute as CFString),
+      frame: geometry.frame(of: element)
+    )
+    state.locatorsByID[String(index)] = locator
+
     var fields = [
-      "[\(index)]", stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown",
+      "[\(index)]", role,
     ]
     appendField("title", stringAttribute(element, kAXTitleAttribute as CFString), to: &fields)
     appendField(
@@ -107,7 +123,14 @@ public struct AccessibilitySnapshotter: Sendable {
     }
     let children = copyElements(element, kAXChildrenAttribute as CFString)
     for (offset, child) in children.enumerated() {
-      append(child, depth: depth + 1, state: &state, lines: &lines)
+      append(
+        child,
+        depth: depth + 1,
+        path: path + [offset],
+        rolePath: locator.rolePath,
+        state: &state,
+        lines: &lines
+      )
       if state.count >= maximumElements {
         if offset < children.count - 1 { state.wasTruncated = true }
         break
@@ -197,6 +220,46 @@ private struct TraversalState {
   var count = 0
   var wasTruncated = false
   var elementsByID: [String: AXUIElement] = [:]
+  var locatorsByID: [String: AccessibilityElementLocator] = [:]
+}
+
+struct AccessibilityElementLocator: Sendable, Equatable {
+  let path: [Int]
+  let rolePath: [String]
+  let role: String
+  let subrole: String?
+  let identifier: String?
+  let title: String?
+  let description: String?
+  let frame: CGRect?
+
+  func semanticallyMatches(_ other: Self) -> Bool {
+    guard role == other.role, subrole == other.subrole else { return false }
+    for (lhs, rhs) in [
+      (identifier, other.identifier),
+      (title, other.title),
+      (description, other.description),
+    ] where !(lhs?.isEmpty ?? true) {
+      guard lhs == rhs else { return false }
+    }
+    return true
+  }
+
+  var hasStableLabel: Bool {
+    [identifier, title, description].contains { !($0?.isEmpty ?? true) }
+  }
+
+  func safelyMatchesAtSamePath(_ other: Self) -> Bool {
+    guard path == other.path, rolePath == other.rolePath, semanticallyMatches(other) else {
+      return false
+    }
+    if hasStableLabel { return true }
+    guard let frame, let otherFrame = other.frame else { return false }
+    return abs(frame.minX - otherFrame.minX) <= 2
+      && abs(frame.minY - otherFrame.minY) <= 2
+      && abs(frame.width - otherFrame.width) <= 2
+      && abs(frame.height - otherFrame.height) <= 2
+  }
 }
 
 final class AccessibilityElementIDRegistry: @unchecked Sendable {
@@ -258,18 +321,21 @@ final class AccessibilityElementIDRegistry: @unchecked Sendable {
   }
 }
 
-struct CapturedAccessibilitySnapshot {
+struct CapturedAccessibilitySnapshot: @unchecked Sendable {
   let text: String
   let elementsByID: [String: AXUIElement]
+  let locatorsByID: [String: AccessibilityElementLocator]
   let windowActivationPoint: CGPoint?
 
   init(
     text: String,
     elementsByID: [String: AXUIElement],
+    locatorsByID: [String: AccessibilityElementLocator] = [:],
     windowActivationPoint: CGPoint? = nil
   ) {
     self.text = text
     self.elementsByID = elementsByID
+    self.locatorsByID = locatorsByID
     self.windowActivationPoint = windowActivationPoint
   }
 }

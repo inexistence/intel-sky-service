@@ -306,7 +306,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
       else {
         throw MacAppActionError.invalidAction("setValue requires elementID and value")
       }
-      let element = try snapshotCache.element(id: elementID, for: app)
+      let element = try snapshotCache.actionElement(id: elementID, for: app)
       try accessibilityActions.setValue(value, on: element)
     case "performSecondaryAction":
       guard let payload = action[actionName] as? [String: Any],
@@ -319,7 +319,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
           "performSecondaryAction requires action and elementID"
         )
       }
-      let element = try snapshotCache.element(id: elementID, for: app)
+      let element = try snapshotCache.actionElement(id: elementID, for: app)
       try accessibilityActions.performSecondaryAction(secondaryAction, on: element)
     case "selectText":
       try performSelectText(action[actionName], app: app)
@@ -376,7 +376,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     else {
       throw MacAppActionError.invalidAction("selectText payload is malformed")
     }
-    let element = try snapshotCache.element(id: elementID, for: app)
+    let element = try snapshotCache.actionElement(id: elementID, for: app)
     try accessibilityActions.selectText(
       text,
       prefix: payload["prefix"] as? String,
@@ -416,7 +416,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     let element: (id: String, value: AXUIElement)?
     switch target {
     case .elementID(let elementID):
-      element = (elementID, try snapshotCache.element(id: elementID, for: app))
+      element = (elementID, try snapshotCache.actionElement(id: elementID, for: app))
     case .coordinate:
       try snapshotCache.validateSnapshot(for: app)
       element = nil
@@ -474,7 +474,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     let element: AXUIElement?
     switch target {
     case .elementID(let elementID):
-      element = try snapshotCache.element(id: elementID, for: app)
+      element = try snapshotCache.actionElement(id: elementID, for: app)
     case .coordinate:
       try snapshotCache.validateSnapshot(for: app)
       element = nil

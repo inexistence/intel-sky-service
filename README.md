@@ -13,7 +13,8 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - peer validation after `ping`: same macOS user and the signed OpenAI chain `node_repl → codex → com.openai.codex`
 - `ComputerUseIPCListAppsRequest` backed by running `NSWorkspace` apps plus the official Spotlight recent-usage query (`lastUsedDate` and `useCount`)
 - `ComputerUseIPCAppGetSkyshotRequest` with app auto-launch, stable Accessibility element IDs, bounded tree diffs, and focused-window PNG
-- latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL and 16-app limit
+- latest-snapshot element cache keyed by bundle ID and PID, with a five-minute TTL, 16-app limit,
+  and conservative semantic/path refetch after macOS reports a destroyed AX element
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
 - snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input
@@ -122,7 +123,7 @@ Restart the LaunchAgent after changing privacy settings, then verify that both p
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 
-Every action requires a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. Screenshot coordinates are mapped through the captured window origin and image scale, including Retina screenshots, and fail closed when stale or outside the image. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll accepts every finite positive page count; element scrolling prefers AX page actions, while unsupported and fractional movement uses bounded pixel-wheel events.
+Every action requires a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. If the referenced AX object was destroyed by a window/menu rebuild, the service recaptures the tree and accepts only a unique path-and-semantics match; ambiguous, missing, or weak unlabeled matches fail closed. Screenshot coordinates are mapped through the captured window origin and image scale, including Retina screenshots, and fail closed when stale or outside the image. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll accepts every finite positive page count; element scrolling prefers AX page actions, while unsupported and fractional movement uses bounded pixel-wheel events.
 
 ## Security boundary
 

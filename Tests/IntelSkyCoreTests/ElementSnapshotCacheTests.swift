@@ -124,6 +124,90 @@ import Testing
   }
 }
 
+@Test func invalidActionElementRefetchesOnlyTheSameSemanticPath() throws {
+  let original = AXUIElementCreateApplication(10)
+  let replacement = AXUIElementCreateApplication(11)
+  let locator = testLocator(path: [0, 2], title: "Save")
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.invalid),
+    refetcher: FixedSnapshotRefetcher(
+      testSnapshot(["91": replacement], locators: ["91": locator])
+    )
+  )
+  let app = testApp(pid: 10)
+  cache.store(testSnapshot(["7": original], locators: ["7": locator]), for: app)
+
+  let resolved = try cache.actionElement(id: "7", for: app)
+  let resolvedAgain = try cache.element(id: "7", for: app)
+
+  #expect(CFEqual(resolved, replacement))
+  #expect(CFEqual(resolvedAgain, replacement))
+}
+
+@Test func invalidActionElementCanFollowOneUniquelyLabeledMovedElement() throws {
+  let replacement = AXUIElementCreateApplication(11)
+  let oldLocator = testLocator(path: [0, 2], title: "Save")
+  let movedLocator = testLocator(path: [1, 4], title: "Save")
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.invalid),
+    refetcher: FixedSnapshotRefetcher(
+      testSnapshot(["91": replacement], locators: ["91": movedLocator])
+    )
+  )
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(["7": AXUIElementCreateApplication(10)], locators: ["7": oldLocator]),
+    for: app
+  )
+
+  #expect(CFEqual(try cache.actionElement(id: "7", for: app), replacement))
+}
+
+@Test func invalidActionElementFailsClosedWhenRefetchIsAmbiguous() throws {
+  let locator = testLocator(path: [0, 2], title: "Save")
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.invalid),
+    refetcher: FixedSnapshotRefetcher(
+      testSnapshot(
+        ["91": AXUIElementCreateApplication(11), "92": AXUIElementCreateApplication(12)],
+        locators: [
+          "91": testLocator(path: [1, 4], title: "Save"),
+          "92": testLocator(path: [1, 5], title: "Save"),
+        ]
+      )
+    )
+  )
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(["7": AXUIElementCreateApplication(10)], locators: ["7": locator]),
+    for: app
+  )
+
+  #expect(throws: ElementSnapshotCacheError.elementAmbiguousAfterRefetch) {
+    try cache.actionElement(id: "7", for: app)
+  }
+}
+
+@Test func invalidUnlabeledElementDoesNotRebindAcrossGeometryChange() throws {
+  let locator = testLocator(path: [0, 2], title: nil, frame: CGRect(x: 0, y: 0, width: 50, height: 20))
+  let moved = testLocator(path: [0, 2], title: nil, frame: CGRect(x: 80, y: 0, width: 50, height: 20))
+  let cache = ElementSnapshotCache(
+    validityChecker: FixedElementValidityChecker(.invalid),
+    refetcher: FixedSnapshotRefetcher(
+      testSnapshot(["91": AXUIElementCreateApplication(11)], locators: ["91": moved])
+    )
+  )
+  let app = testApp(pid: 10)
+  cache.store(
+    testSnapshot(["7": AXUIElementCreateApplication(10)], locators: ["7": locator]),
+    for: app
+  )
+
+  #expect(throws: ElementSnapshotCacheError.elementNoLongerValidAfterRefetch) {
+    try cache.actionElement(id: "7", for: app)
+  }
+}
+
 private func testApp(bundleIdentifier: String = "example.app", pid: pid_t) -> ResolvedMacApp {
   ResolvedMacApp(
     processIdentifier: pid,
@@ -133,6 +217,42 @@ private func testApp(bundleIdentifier: String = "example.app", pid: pid_t) -> Re
   )
 }
 
-private func testSnapshot(_ elements: [String: AXUIElement]) -> CapturedAccessibilitySnapshot {
-  CapturedAccessibilitySnapshot(text: "test", elementsByID: elements)
+private func testSnapshot(
+  _ elements: [String: AXUIElement],
+  locators: [String: AccessibilityElementLocator] = [:]
+) -> CapturedAccessibilitySnapshot {
+  CapturedAccessibilitySnapshot(text: "test", elementsByID: elements, locatorsByID: locators)
+}
+
+private func testLocator(
+  path: [Int],
+  title: String?,
+  frame: CGRect = CGRect(x: 10, y: 20, width: 50, height: 20)
+) -> AccessibilityElementLocator {
+  AccessibilityElementLocator(
+    path: path,
+    rolePath: ["AXWindow", "AXButton"],
+    role: "AXButton",
+    subrole: nil,
+    identifier: nil,
+    title: title,
+    description: nil,
+    frame: frame
+  )
+}
+
+private struct FixedElementValidityChecker: AccessibilityElementValidityChecking {
+  let result: AccessibilityElementValidity
+
+  init(_ result: AccessibilityElementValidity) { self.result = result }
+
+  func validity(of element: AXUIElement) -> AccessibilityElementValidity { result }
+}
+
+private struct FixedSnapshotRefetcher: AccessibilitySnapshotRefetching {
+  let snapshot: CapturedAccessibilitySnapshot
+
+  init(_ snapshot: CapturedAccessibilitySnapshot) { self.snapshot = snapshot }
+
+  func capture(app: ResolvedMacApp) throws -> CapturedAccessibilitySnapshot { snapshot }
 }

@@ -1,10 +1,14 @@
 import ApplicationServices
 import Foundation
 
-public enum ElementSnapshotCacheError: Error, CustomStringConvertible {
+public enum ElementSnapshotCacheError: Error, CustomStringConvertible, Equatable {
   case missingSnapshot(String)
   case expiredSnapshot(String)
   case unknownElement(String, app: String)
+  case elementAmbiguousBeforeRefetch
+  case elementAmbiguousAfterRefetch
+  case elementNoLongerValid
+  case elementNoLongerValidAfterRefetch
   case missingCoordinateSpace(String)
   case coordinateOutsideScreenshot(CGPoint, size: CGSize)
 
@@ -14,8 +18,14 @@ public enum ElementSnapshotCacheError: Error, CustomStringConvertible {
       return "No Accessibility snapshot is cached for \(app); call getAppState first"
     case .expiredSnapshot(let app):
       return "The Accessibility snapshot for \(app) has expired; call getAppState again"
-    case .unknownElement(let elementID, let app):
-      return "Element \(elementID) is not present in the latest Accessibility snapshot for \(app)"
+    case .unknownElement(let elementID, app: _):
+      return "\(elementID) is an invalid element ID"
+    case .elementAmbiguousBeforeRefetch:
+      return "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be started because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
+    case .elementAmbiguousAfterRefetch:
+      return "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be finished because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
+    case .elementNoLongerValid, .elementNoLongerValidAfterRefetch:
+      return "The element ID is no longer valid. Try to get the on-screen content again and see if that resolves the issue."
     case .missingCoordinateSpace(let app):
       return "The latest state for \(app) has no screenshot coordinate space"
     case .coordinateOutsideScreenshot(let point, let size):
@@ -24,6 +34,33 @@ public enum ElementSnapshotCacheError: Error, CustomStringConvertible {
     }
   }
 }
+
+enum AccessibilityElementValidity: Sendable {
+  case valid
+  case invalid
+  case indeterminate
+}
+
+protocol AccessibilityElementValidityChecking: Sendable {
+  func validity(of element: AXUIElement) -> AccessibilityElementValidity
+}
+
+struct NativeAccessibilityElementValidityChecker: AccessibilityElementValidityChecking {
+  func validity(of element: AXUIElement) -> AccessibilityElementValidity {
+    var value: CFTypeRef?
+    switch AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) {
+    case .success: return .valid
+    case .invalidUIElement: return .invalid
+    default: return .indeterminate
+    }
+  }
+}
+
+protocol AccessibilitySnapshotRefetching: Sendable {
+  func capture(app: ResolvedMacApp) throws -> CapturedAccessibilitySnapshot
+}
+
+extension AccessibilitySnapshotter: AccessibilitySnapshotRefetching {}
 
 struct WindowCoordinateSpace: Sendable, Equatable {
   let windowID: CGWindowID
@@ -90,17 +127,36 @@ public final class ElementSnapshotCache: @unchecked Sendable {
   private struct Entry {
     let createdAt: Date
     let elementsByID: [String: AXUIElement]
+    let locatorsByID: [String: AccessibilityElementLocator]
     let coordinateSpace: WindowCoordinateSpace?
   }
 
   private let lock = NSLock()
   private let maximumAge: TimeInterval
   private let maximumEntries: Int
+  private let validityChecker: any AccessibilityElementValidityChecking
+  private let refetcher: any AccessibilitySnapshotRefetching
   private var entries: [Key: Entry] = [:]
 
-  public init(maximumAge: TimeInterval = 5 * 60, maximumEntries: Int = 16) {
+  public convenience init(maximumAge: TimeInterval = 5 * 60, maximumEntries: Int = 16) {
+    self.init(
+      maximumAge: maximumAge,
+      maximumEntries: maximumEntries,
+      validityChecker: NativeAccessibilityElementValidityChecker(),
+      refetcher: AccessibilitySnapshotter()
+    )
+  }
+
+  init(
+    maximumAge: TimeInterval = 5 * 60,
+    maximumEntries: Int = 16,
+    validityChecker: any AccessibilityElementValidityChecking,
+    refetcher: any AccessibilitySnapshotRefetching
+  ) {
     self.maximumAge = max(0, maximumAge)
     self.maximumEntries = max(1, maximumEntries)
+    self.validityChecker = validityChecker
+    self.refetcher = refetcher
   }
 
   func store(
@@ -122,6 +178,7 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     entries[key] = Entry(
       createdAt: date,
       elementsByID: snapshot.elementsByID,
+      locatorsByID: snapshot.locatorsByID,
       coordinateSpace: coordinateSpace
     )
 
@@ -130,6 +187,65 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     {
       entries.removeValue(forKey: oldest)
     }
+  }
+
+  func actionElement(
+    id: String,
+    for app: ResolvedMacApp,
+    at date: Date = Date()
+  ) throws -> AXUIElement {
+    let original: AXUIElement
+    let locator: AccessibilityElementLocator?
+    let key = Key(bundleIdentifier: app.bundleIdentifier, processIdentifier: app.processIdentifier)
+    lock.lock()
+    do {
+      let entry = try validEntry(for: app, at: date)
+      guard let element = entry.elementsByID[id] else {
+        throw ElementSnapshotCacheError.unknownElement(id, app: app.bundleIdentifier)
+      }
+      original = element
+      locator = entry.locatorsByID[id]
+      lock.unlock()
+    } catch {
+      lock.unlock()
+      throw error
+    }
+
+    guard validityChecker.validity(of: original) == .invalid else { return original }
+    guard let locator else { throw ElementSnapshotCacheError.elementNoLongerValid }
+
+    let fresh = try refetcher.capture(app: app)
+    let pathMatches = fresh.locatorsByID.filter { locator.safelyMatchesAtSamePath($0.value) }
+    let semanticMatches = fresh.locatorsByID.filter {
+      locator.hasStableLabel && locator.semanticallyMatches($0.value)
+    }
+    let candidates = pathMatches.isEmpty ? semanticMatches : pathMatches
+    guard candidates.count <= 1 else {
+      throw ElementSnapshotCacheError.elementAmbiguousAfterRefetch
+    }
+    guard let match = candidates.first,
+      let replacement = fresh.elementsByID[match.key]
+    else {
+      throw ElementSnapshotCacheError.elementNoLongerValidAfterRefetch
+    }
+
+    lock.lock()
+    defer { lock.unlock() }
+    guard var entry = entries[key], date.timeIntervalSince(entry.createdAt) <= maximumAge else {
+      throw ElementSnapshotCacheError.expiredSnapshot(app.bundleIdentifier)
+    }
+    var elements = entry.elementsByID
+    var locators = entry.locatorsByID
+    elements[id] = replacement
+    locators[id] = match.value
+    entry = Entry(
+      createdAt: entry.createdAt,
+      elementsByID: elements,
+      locatorsByID: locators,
+      coordinateSpace: entry.coordinateSpace
+    )
+    entries[key] = entry
+    return replacement
   }
 
   func element(
