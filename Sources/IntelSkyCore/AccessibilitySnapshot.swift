@@ -130,11 +130,17 @@ public struct AccessibilitySnapshotter: Sendable {
         "(\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height)))"
       fields.append("frame=\(frameDescription)")
     }
-    let actions = actionDescriptions(element)
+    let actions = Self.shouldQueryActions(
+      role: role,
+      identifier: attributes.identifier,
+      title: attributes.title,
+      description: attributes.description,
+      frame: attributes.frame
+    ) ? actionDescriptions(element) : []
     if !actions.isEmpty {
       fields.append("actions=\(quoted(actions.joined(separator: ", ")))")
     }
-    if !actions.isEmpty || isValueSettable(element) {
+    if !actions.isEmpty || Self.isPotentiallyValueSettable(role: role) {
       state.actionableElements.append(element)
     }
     lines.append(String(repeating: "  ", count: depth) + fields.joined(separator: " "))
@@ -181,6 +187,7 @@ public struct AccessibilitySnapshotter: Sendable {
       kAXPositionAttribute,
       kAXSizeAttribute,
       kAXChildrenAttribute,
+      kAXVisibleChildrenAttribute,
     ] as CFArray
     var rawValues: CFArray?
     guard
@@ -191,7 +198,7 @@ public struct AccessibilitySnapshotter: Sendable {
         &rawValues
       ) == .success,
       let values = rawValues as? [Any],
-      values.count == 12
+      values.count == 13
     else {
       return individuallyCopiedAttributes(element)
     }
@@ -206,7 +213,10 @@ public struct AccessibilitySnapshotter: Sendable {
       enabled: values[7] as? Bool,
       focused: values[8] as? Bool ?? false,
       frame: frame(position: values[9], size: values[10]),
-      children: elements(in: values[11])
+      children: Self.preferredChildren(
+        allChildren: values[11],
+        visibleChildren: values[12]
+      )
     )
   }
 
@@ -226,13 +236,55 @@ public struct AccessibilitySnapshotter: Sendable {
     )
   }
 
-  private func elements(in value: Any) -> [AXUIElement] {
-    guard let values = value as? [Any] else { return [] }
+  static func preferredChildren(
+    allChildren: Any,
+    visibleChildren: Any
+  ) -> [AXUIElement] {
+    if let visible = elementsIfArray(in: visibleChildren) { return visible }
+    return elementsIfArray(in: allChildren) ?? []
+  }
+
+  private static func elementsIfArray(in value: Any) -> [AXUIElement]? {
+    guard let values = value as? [Any] else { return nil }
     return values.compactMap { value in
       let reference = value as CFTypeRef
       guard CFGetTypeID(reference) == AXUIElementGetTypeID() else { return nil }
       return unsafeDowncast(reference, to: AXUIElement.self)
     }
+  }
+
+  static func shouldQueryActions(
+    role: String,
+    identifier: String?,
+    title: String?,
+    description: String?,
+    frame: CGRect?
+  ) -> Bool {
+    if role == (kAXStaticTextRole as String) || role == "AXValueIndicator" {
+      return false
+    }
+    if role == (kAXImageRole as String),
+      [identifier, title, description].allSatisfy({ $0?.isEmpty ?? true }),
+      let frame,
+      frame.width <= 32,
+      frame.height <= 32
+    {
+      return false
+    }
+    return true
+  }
+
+  static func isPotentiallyValueSettable(role: String) -> Bool {
+    [
+      kAXTextFieldRole as String,
+      kAXTextAreaRole as String,
+      kAXComboBoxRole as String,
+      kAXSliderRole as String,
+      kAXIncrementorRole as String,
+      kAXScrollBarRole as String,
+      "AXColorWell",
+      "AXDateField",
+    ].contains(role)
   }
 
   private func frame(position: Any, size: Any) -> CGRect? {
@@ -320,11 +372,6 @@ public struct AccessibilitySnapshotter: Sendable {
     }
   }
 
-  private func isValueSettable(_ element: AXUIElement) -> Bool {
-    var settable = DarwinBoolean(false)
-    return AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
-      == .success && settable.boolValue
-  }
 }
 
 private struct TraversalState {

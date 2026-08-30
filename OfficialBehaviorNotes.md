@@ -507,6 +507,18 @@ loading surface for 86 seconds even though every resulting PNG contained the cor
 equivalent 1,500-element batch traversal including actions and settable checks measured 5.2 seconds
 before deployment. `CONFIRMED_RUNTIME_INTEL` / `HIGH_CONFIDENCE`.
 
+Runtime sampling of a 1,500-element Notes snapshot showed that redundant per-element
+`AXUIElementCopyActionNames` and value-settable IPC dominated the remaining latency. Intel now
+prefers `AXVisibleChildren` when an element exposes it, skips action queries only for known passive
+elements (static text, value indicators, and small unlabeled images), and identifies the standard
+value-editable roles without another cross-process query. Actionable rows, cells, controls, labeled
+images, localized action descriptions, and execution-time action validation remain unchanged.
+Against the same open Notes window through the unmodified official `@oai/sky` client, a full state
+capture fell from 5.5 seconds and 117,865 AX-text characters immediately before deployment to 1.43
+seconds and 21,783 characters after deployment; the screenshot and visible controls, rows, cells,
+text area, buttons, and localized actions remained present. `CONFIRMED_INTEL_RUNTIME` /
+`HIGH_CONFIDENCE`.
+
 Intel now also tracks successfully captured Apps as turn-scoped sessions, returns the current
 ChatGPT status-menu schema (with Computer History truthfully reported unavailable/stopped), and
 handles the authenticated App-stop request. A stop immediately removes the App from status state,
