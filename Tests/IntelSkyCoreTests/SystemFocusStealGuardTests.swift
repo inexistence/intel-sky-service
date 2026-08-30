@@ -31,6 +31,19 @@ private struct MappingFocusSubjectResolver: FocusSubjectResolving {
   }
 }
 
+private struct StubViewBridgeFocusSubjectInspector: ViewBridgeFocusSubjectInspecting {
+  let applications: [pid_t: FocusSubjectApplication]
+  let candidates: [pid_t: [pid_t]]
+
+  func application(processIdentifier: pid_t) -> FocusSubjectApplication? {
+    applications[processIdentifier]
+  }
+
+  func processIdentifierCandidates(for subjectProcessIdentifier: pid_t) -> [pid_t] {
+    candidates[subjectProcessIdentifier] ?? []
+  }
+}
+
 private func focusNotification(
   subtype: UInt16 = FocusStealProcessNotificationSubtype.newFront.rawValue,
   subjectPID: pid_t = 42,
@@ -167,6 +180,57 @@ private func focusNotification(
 
   #expect(!guardInstance.handle(focusNotification(subjectPID: 4_200)))
   #expect(releaser.identifiers.isEmpty)
+}
+
+@Test func viewBridgeResolverReturnsOrdinaryApplicationUnchanged() {
+  let inspector = StubViewBridgeFocusSubjectInspector(
+    applications: [42: FocusSubjectApplication(processIdentifier: 42, activationPolicy: 0)],
+    candidates: [42: [84]]
+  )
+  let resolver = ViewBridgeFocusSubjectResolver(inspector: inspector)
+
+  #expect(resolver.hostProcessIdentifier(for: 42) == 42)
+}
+
+@Test func viewBridgeResolverMapsFocusedCandidateToOrdinaryHost() {
+  let inspector = StubViewBridgeFocusSubjectInspector(
+    applications: [
+      4_200: FocusSubjectApplication(processIdentifier: 4_200, activationPolicy: 2),
+      42: FocusSubjectApplication(processIdentifier: 42, activationPolicy: 0),
+    ],
+    candidates: [4_200: [4_200, 42]]
+  )
+  let resolver = ViewBridgeFocusSubjectResolver(inspector: inspector)
+
+  #expect(resolver.hostProcessIdentifier(for: 4_200) == 42)
+}
+
+@Test func viewBridgeResolverTraversesNestedProhibitedCandidates() {
+  let inspector = StubViewBridgeFocusSubjectInspector(
+    applications: [
+      4_200: FocusSubjectApplication(processIdentifier: 4_200, activationPolicy: 2),
+      4_201: FocusSubjectApplication(processIdentifier: 4_201, activationPolicy: 2),
+      42: FocusSubjectApplication(processIdentifier: 42, activationPolicy: 0),
+    ],
+    candidates: [4_200: [4_201], 4_201: [42]]
+  )
+  let resolver = ViewBridgeFocusSubjectResolver(inspector: inspector)
+
+  #expect(resolver.hostProcessIdentifier(for: 4_200) == 42)
+}
+
+@Test func viewBridgeResolverFailsOpenForCyclesAndUnknownCandidates() {
+  let inspector = StubViewBridgeFocusSubjectInspector(
+    applications: [
+      4_200: FocusSubjectApplication(processIdentifier: 4_200, activationPolicy: 2),
+      4_201: FocusSubjectApplication(processIdentifier: 4_201, activationPolicy: 2),
+    ],
+    candidates: [4_200: [99, 4_201], 4_201: [4_200]]
+  )
+  let resolver = ViewBridgeFocusSubjectResolver(inspector: inspector)
+
+  #expect(resolver.hostProcessIdentifier(for: 4_200) == 4_200)
+  #expect(resolver.hostProcessIdentifier(for: 0) == 0)
 }
 
 @Test func focusGuardFailsOpenWithoutPhysicalInputMonitoring() {

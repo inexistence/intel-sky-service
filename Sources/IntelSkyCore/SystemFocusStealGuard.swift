@@ -65,37 +65,128 @@ protocol FocusSubjectResolving: Sendable {
   func hostProcessIdentifier(for subjectProcessIdentifier: pid_t) -> pid_t
 }
 
-struct ViewBridgeFocusSubjectResolver: FocusSubjectResolving {
-  func hostProcessIdentifier(for subjectProcessIdentifier: pid_t) -> pid_t {
-    guard subjectProcessIdentifier > 0,
-      let application = NSRunningApplication(processIdentifier: subjectProcessIdentifier),
-      application.activationPolicy == .prohibited
+struct FocusSubjectApplication: Equatable, Sendable {
+  let processIdentifier: pid_t
+  let activationPolicy: Int
+}
+
+protocol ViewBridgeFocusSubjectInspecting: Sendable {
+  func application(processIdentifier: pid_t) -> FocusSubjectApplication?
+  func processIdentifierCandidates(for subjectProcessIdentifier: pid_t) -> [pid_t]
+}
+
+struct SystemViewBridgeFocusSubjectInspector: ViewBridgeFocusSubjectInspecting, @unchecked Sendable {
+  private typealias GetActualPIDFunction = @convention(c) (
+    AXUIElement,
+    UnsafeMutablePointer<pid_t>
+  ) -> AXError
+
+  private static let getActualPID: GetActualPIDFunction? = {
+    let path =
+      "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices"
+    guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL),
+      let symbol = dlsym(handle, "_AXUIElementGetActualPid")
     else {
-      return subjectProcessIdentifier
+      return nil
+    }
+    // The official ARM service uses this exact C ABI and keeps the image loaded for its lifetime.
+    return unsafeBitCast(symbol, to: GetActualPIDFunction.self)
+  }()
+
+  func application(processIdentifier: pid_t) -> FocusSubjectApplication? {
+    guard let application = NSRunningApplication(processIdentifier: processIdentifier) else {
+      return nil
+    }
+    return FocusSubjectApplication(
+      processIdentifier: processIdentifier,
+      activationPolicy: application.activationPolicy.rawValue
+    )
+  }
+
+  func processIdentifierCandidates(for subjectProcessIdentifier: pid_t) -> [pid_t] {
+    let applicationElement = AXUIElementCreateApplication(subjectProcessIdentifier)
+    let elements = [
+      copyElementAttribute(kAXFocusedUIElementAttribute as CFString, from: applicationElement),
+      copyElementAttribute(kAXFocusedWindowAttribute as CFString, from: applicationElement),
+      copyElementAttribute(kAXMainWindowAttribute as CFString, from: applicationElement),
+    ].compactMap { $0 }
+
+    var candidates: [pid_t] = []
+    for element in elements {
+      var processIdentifier: pid_t = 0
+      if AXUIElementGetPid(element, &processIdentifier) == .success, processIdentifier > 0 {
+        candidates.append(processIdentifier)
+      }
+      if let getActualPID = Self.getActualPID {
+        var actualProcessIdentifier: pid_t = -1
+        if getActualPID(element, &actualProcessIdentifier) == .success,
+          actualProcessIdentifier > 0
+        {
+          candidates.append(actualProcessIdentifier)
+        }
+      }
     }
 
-    let applicationElement = AXUIElementCreateApplication(subjectProcessIdentifier)
+    var seen: Set<pid_t> = []
+    return candidates.filter { seen.insert($0).inserted }
+  }
+
+  private func copyElementAttribute(
+    _ attribute: CFString,
+    from element: AXUIElement
+  ) -> AXUIElement? {
     var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(
-      applicationElement,
-      kAXFocusedUIElementAttribute as CFString,
-      &value
-    ) == .success,
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
       let value,
       CFGetTypeID(value) == AXUIElementGetTypeID()
     else {
+      return nil
+    }
+    return unsafeDowncast(value, to: AXUIElement.self)
+  }
+}
+
+struct ViewBridgeFocusSubjectResolver: FocusSubjectResolving {
+  private let inspector: any ViewBridgeFocusSubjectInspecting
+
+  init(inspector: any ViewBridgeFocusSubjectInspecting = SystemViewBridgeFocusSubjectInspector()) {
+    self.inspector = inspector
+  }
+
+  func hostProcessIdentifier(for subjectProcessIdentifier: pid_t) -> pid_t {
+    guard subjectProcessIdentifier > 0 else {
       return subjectProcessIdentifier
+    }
+    var visited: Set<pid_t> = []
+    return resolve(processIdentifier: subjectProcessIdentifier, visited: &visited, depth: 0)
+      ?? subjectProcessIdentifier
+  }
+
+  private func resolve(
+    processIdentifier: pid_t,
+    visited: inout Set<pid_t>,
+    depth: Int
+  ) -> pid_t? {
+    guard depth < 3, visited.insert(processIdentifier).inserted,
+      let application = inspector.application(processIdentifier: processIdentifier)
+    else {
+      return nil
+    }
+    guard application.activationPolicy == NSApplication.ActivationPolicy.prohibited.rawValue else {
+      return processIdentifier
     }
 
-    let focusedElement = unsafeDowncast(value, to: AXUIElement.self)
-    var hostProcessIdentifier: pid_t = 0
-    guard AXUIElementGetPid(focusedElement, &hostProcessIdentifier) == .success,
-      hostProcessIdentifier > 0,
-      hostProcessIdentifier != subjectProcessIdentifier
-    else {
-      return subjectProcessIdentifier
+    for candidate in inspector.processIdentifierCandidates(for: processIdentifier) {
+      guard candidate > 0, candidate != processIdentifier else { continue }
+      if let resolved = resolve(
+        processIdentifier: candidate,
+        visited: &visited,
+        depth: depth + 1
+      ) {
+        return resolved
+      }
     }
-    return hostProcessIdentifier
+    return nil
   }
 }
 

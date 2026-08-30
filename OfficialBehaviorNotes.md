@@ -273,13 +273,18 @@ serving requests. While a synthetic-focus action is in flight, it protects only 
 target PID. A direct protected subject in `NewFront` or `KeyFocusChanged` is passed to dynamically
 resolved `CPSReleaseKeyFocusWithID`; the notification is suppressed only after `noErr`. Missing or
 invalid fields, unavailable input monitoring/SPI, release failure, unrelated Apps, unsupported CPS
-subtypes, and any physical user input all pass through. The first implementation deliberately
-implements the confirmed generic prohibited-process `AXFocusedUIElement.pid` host mapping, but does
-not guess the specialized current-ViewBridge fallback or the separate `KeyFocusTaken/Returned`
-bookkeeping branch. Raw-field decoding, subtype classification, scoped registration, user-intervention
-fail-open behavior, and release-before-drop semantics have deterministic Intel coverage.
-`HIGH_CONFIDENCE` for the direct-PID safety path; ViewBridge and exact stream-scoped lifetime remain
-`NEEDS_ARM_ORACLE` / `KNOWN_DIFFERENCE`.
+subtypes, and any physical user input all pass through. Intel resolves prohibited subjects from the
+focused element, focused window, and main window, trying both the public PID and the dynamically
+resolved `_AXUIElementGetActualPid` ABI. It follows at most three nested prohibited candidates,
+rejects cycles and unknown processes, and accepts only a final non-prohibited App. Missing private
+SPI and all unresolved cases preserve the original subject. It deliberately omits the official
+one-second retry, the not-yet-understood frontmost-App gate, and the separate
+`KeyFocusTaken/Returned` bookkeeping branch. Raw-field decoding, subtype classification, scoped
+registration, user-intervention fail-open behavior, and release-before-drop semantics have
+deterministic Intel coverage. A real probe of both currently running ViewBridge helpers safely
+returned their own PIDs because neither exposed focused AX state at that instant.
+`HIGH_CONFIDENCE` for the bounded direct/actual-PID path; exact ViewBridge fallback and
+stream-scoped lifetime remain `NEEDS_ARM_ORACLE` / `KNOWN_DIFFERENCE`.
 
 An attended negative fixture showed that explicit `NSRunningApplication.activate()` performs an
 ordinary Workspace foreground switch and emits no type-21 process notification to this tap. That
@@ -530,7 +535,8 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   window rejects an old-window element and that a dismissed “显示简介” menu item now fails with the
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
-  the later socket/lifecycle coverage bring the suite to 154 tests. `CONFIRMED_INTEL_RUNTIME`.
+  the later socket, lifecycle, PIP, focus, and ViewBridge coverage bring the suite to 173 tests.
+  `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
 ## Safety and lifecycle
