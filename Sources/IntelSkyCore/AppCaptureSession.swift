@@ -88,8 +88,27 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
         ["type": "axText", "app": appMetadata, "text": text],
       ]
       if let screenshot {
-        updates.append(["type": "screenshot", "app": appMetadata, "screenshot": screenshot])
+        updates.append(Self.screenshotUpdate(app: appMetadata, screenshot: screenshot))
       }
+    }
+
+    static func screenshotUpdate(
+      app: [String: Any],
+      screenshot: [String: Any]
+    ) -> [String: Any] {
+      var update: [String: Any] = [
+        "type": "screenshot",
+        "app": app,
+        "screenshot": screenshot,
+      ]
+      // Codex's composer card renders the transition snapshot; the primary
+      // screenshot is retained for the lightbox and the submitted attachment.
+      // Reusing the captured frame gives both consumers the same valid image
+      // without introducing a second capture or a divergent crop.
+      if let url = screenshot["url"] as? String, !url.isEmpty {
+        update["transitionSnapshotURL"] = url
+      }
+      return update
     }
 
     static func screenshotSignature(_ screenshot: [String: Any]?) -> Data? {
@@ -339,7 +358,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       if signature != session.lastScreenshotSignature {
         session.lastScreenshotSignature = signature
         session.lastScreenshotURL = Session.screenshotURL(screenshot)
-        enqueue(["type": "screenshot", "app": appMetadata, "screenshot": screenshot], in: session)
+        enqueue(Session.screenshotUpdate(app: appMetadata, screenshot: screenshot), in: session)
       } else if let unusedURL = Session.screenshotURL(screenshot),
         unusedURL != session.lastScreenshotURL
       {

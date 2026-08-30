@@ -485,6 +485,13 @@ matching Appshot's finite consumer contract; socket capture clients retain the c
 stream until a lifecycle terminal event. It never launches the ARM service. `HIGH_CONFIDENCE`; a
 real Appshot run against an already approved target remains pending.
 
+The installed Codex renderer uses the primary screenshot data URL for the lightbox and submitted
+attachment, but the compact composer card renders only `transitionSnapshotDataURL`. The Intel main
+process derives that data URL from the capture update's `transitionSnapshotURL`, subject to the
+same temporary-directory, file-type, and size checks as the primary screenshot. Intel therefore
+reuses the initial captured frame as the transition snapshot instead of leaving the completed card
+on its black empty surface. `CONFIRMED_CLIENT_SOURCE` / `HIGH_CONFIDENCE`.
+
 The bootstrap is idempotent once ChatGPT's process-wide native host has connected. ChatGPT may send
 another bootstrap event for a later window or worker; Intel authenticates it but does not repeat the
 request/reply endpoint transfer against the stale Mach reply port, which would otherwise block the

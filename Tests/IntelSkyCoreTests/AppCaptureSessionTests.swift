@@ -27,6 +27,9 @@ import Testing
   for _ in 0..<3 {
     let update = try manager.nextCaptureUpdate(request: ["requestId": "capture-1"])
     updateTypes.append(try #require(update["type"] as? String))
+    if update["type"] as? String == "screenshot" {
+      #expect(update["transitionSnapshotURL"] as? String == "file:///tmp/finder.png")
+    }
   }
   let identity = try #require(
     ComputerUseTurnIdentity(metadata: [
@@ -71,6 +74,9 @@ import Testing
     for _ in 0..<4 {
       let update = try manager.nextCaptureUpdate(request: ["requestId": "native-one-shot"])
       updateTypes.append(try #require(update["type"] as? String))
+      if update["type"] as? String == "screenshot" {
+        #expect(update["transitionSnapshotURL"] as? String == "file:///tmp/finder.png")
+      }
     }
     #expect(updateTypes == ["metadata", "axText", "screenshot", "completed"])
     #expect(throws: AppCaptureSessionError.self) {
