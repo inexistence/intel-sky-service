@@ -17,7 +17,6 @@ public enum SkyServiceConfigurationError: Error, CustomStringConvertible {
 
 public struct SkyServiceConfiguration: Equatable, Sendable {
   public static let groupContainerIdentifier = "2DC432GLL2.com.openai.sky.CUAService"
-  public static let experimentalPIPEnvironmentVariable = "INTEL_SKY_EXPERIMENTAL_PIP"
 
   public let socketPath: String
   public let experimentalPIPEnabled: Bool
@@ -28,10 +27,11 @@ public struct SkyServiceConfiguration: Equatable, Sendable {
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) throws {
     var rawPath: String?
-    var experimentalPIPEnabled =
-      environment[Self.experimentalPIPEnvironmentVariable]?.trimmingCharacters(
-        in: .whitespacesAndNewlines
-      ) == "1"
+    // ChatGPT may inject experimental PIP variables into managed services. The
+    // Intel compatibility service must fail closed because remote video layers
+    // can render as an opaque gray surface across signing-team boundaries.
+    // Keep PIP available only for an explicit developer launch.
+    var experimentalPIPEnabled = false
     var experimentalPIPArgumentSeen = false
     var index = 0
     while index < arguments.count {

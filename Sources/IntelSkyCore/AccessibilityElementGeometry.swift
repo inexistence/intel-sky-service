@@ -32,6 +32,20 @@ struct AccessibilityElementGeometry: AccessibilityFrameReading {
     return CGRect(origin: position, size: size)
   }
 
+  func point(of element: AXUIElement, attribute: CFString) -> CGPoint? {
+    guard let value = copyAttribute(element, attribute),
+      CFGetTypeID(value) == AXValueGetTypeID()
+    else {
+      return nil
+    }
+    let axValue = unsafeDowncast(value, to: AXValue.self)
+    var point = CGPoint.zero
+    guard AXValueGetValue(axValue, .cgPoint, &point), point.x.isFinite, point.y.isFinite else {
+      return nil
+    }
+    return point
+  }
+
   private func copyAttribute(_ element: AXUIElement, _ attribute: CFString) -> CFTypeRef? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }

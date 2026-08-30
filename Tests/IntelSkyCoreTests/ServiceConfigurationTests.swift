@@ -28,13 +28,13 @@ import Testing
   #expect(!configuration.experimentalPIPEnabled)
 }
 
-@Test func experimentalPIPCanBeEnabledByManagedServiceEnvironment() throws {
+@Test func managedServiceEnvironmentCannotEnableExperimentalPIP() throws {
   let configuration = try SkyServiceConfiguration(
     arguments: [],
-    environment: [SkyServiceConfiguration.experimentalPIPEnvironmentVariable: " 1\n"]
+    environment: ["INTEL_SKY_EXPERIMENTAL_PIP": "1"]
   )
 
-  #expect(configuration.experimentalPIPEnabled)
+  #expect(!configuration.experimentalPIPEnabled)
 }
 
 @Test func experimentalPIPFlagCanBeCombinedWithSocketInEitherOrder() throws {

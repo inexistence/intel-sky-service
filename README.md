@@ -89,9 +89,10 @@ ChatGPT copies it into its canonical Codex-home location, starts that exact exec
 the resulting PID, and passes the PID to the native PIP host. This variable belongs to the ChatGPT
 main process, not to `node_repl` or the Computer Use MCP environment.
 
-Experimental PIP rendezvous remains off by default. A managed service process can inherit
-`INTEL_SKY_EXPERIMENTAL_PIP=1` from ChatGPT while compatibility is being tested. Do not enable it
-until `Scripts/audit-pip-host.sh` passes for the installed ChatGPT build.
+Experimental PIP rendezvous is disabled for managed-service launches, including when ChatGPT
+injects `INTEL_SKY_EXPERIMENTAL_PIP=1`. Cross-signing-team remote video layers currently render as
+an opaque gray surface on Intel Macs. Developers can still opt in for protocol testing by launching
+the service directly with `--experimental-pip` after `Scripts/audit-pip-host.sh` passes.
 
 During protocol development, the unmodified bundled `@oai/sky` client from ChatGPT `26.825.41651` successfully completed the IPC-5 handshake, returned the local app list, and captured Finder state on x86_64. The production peer policy additionally requires the real `node_repl → codex → com.openai.codex` process chain; launching ChatGPT's signed Node binary from a shell is intentionally rejected.
 

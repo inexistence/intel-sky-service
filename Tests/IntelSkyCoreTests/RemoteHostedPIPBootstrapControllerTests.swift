@@ -39,6 +39,24 @@ import Testing
   #expect(sender.sentPorts.isEmpty)
 }
 
+@Test func pipBootstrapControllerRetriesTransientEndpointEIO() throws {
+  let sender = RecordingEndpointSender(transientFailures: 2)
+  let controller = RemoteHostedPIPBootstrapController(
+    connectionController: RemoteHostedPIPConnectionController(
+      hostAuthorizer: AllowBootstrapHost(),
+      enforceConnectionCodeSigningRequirement: false
+    ),
+    endpointSender: sender,
+    hostAuthorizer: AllowBootstrapHost(),
+    endpointMaximumAttempts: 3,
+    endpointRetrySleeper: { _ in }
+  )
+
+  try controller.process(bootstrapRequest(pid: 42, port: 99))
+
+  #expect(sender.sentPorts == [99, 99, 99])
+}
+
 private struct AllowBootstrapHost: ProcessAuthorizing {
   func authorize(processIdentifier: pid_t) throws {}
 }
@@ -52,10 +70,21 @@ private struct BootstrapAuthorizationFailure: Error {}
 private final class RecordingEndpointSender: RemoteHostedPIPEndpointSending, @unchecked Sendable {
   private let lock = NSLock()
   private var storedPorts: [mach_port_t] = []
+  private var transientFailures: Int
   var sentPorts: [mach_port_t] { lock.withLock { storedPorts } }
 
+  init(transientFailures: Int = 0) {
+    self.transientFailures = transientFailures
+  }
+
   func send(endpoint: NSXPCListenerEndpoint, to replyPort: mach_port_t) throws {
-    lock.withLock { storedPorts.append(replyPort) }
+    let shouldFail = lock.withLock { () -> Bool in
+      storedPorts.append(replyPort)
+      guard transientFailures > 0 else { return false }
+      transientFailures -= 1
+      return true
+    }
+    if shouldFail { throw RemoteHostedPIPEndpointTransportError.routineFailed(EIO) }
   }
 }
 

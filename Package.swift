@@ -9,11 +9,13 @@ let package = Package(
     .library(name: "IntelSkyCore", targets: ["IntelSkyCore"]),
     .executable(name: "intel-sky-service", targets: ["IntelSkyService"]),
     .executable(name: "sky-smoke-client", targets: ["SkySmokeClient"]),
+    .executable(name: "pip-layer-smoke", targets: ["PIPLayerSmoke"]),
   ],
   targets: [
     .target(name: "IntelSkyCore"),
     .executableTarget(name: "IntelSkyService", dependencies: ["IntelSkyCore"]),
     .executableTarget(name: "SkySmokeClient", dependencies: ["IntelSkyCore"]),
+    .executableTarget(name: "PIPLayerSmoke"),
     .testTarget(name: "IntelSkyCoreTests", dependencies: ["IntelSkyCore"]),
   ]
 )

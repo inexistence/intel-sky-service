@@ -27,6 +27,8 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
   private var refreshPending = false
   private var recoveryAttempt = 0
   private var stopped = false
+  private var loggedFirstFrame = false
+  private var sampleDiagnosticCount = 0
 
   init(processIdentifier: pid_t, outputSize: CGSize, surface: RemoteHostedPIPSurface) {
     self.processIdentifier = processIdentifier
@@ -74,10 +76,16 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
   }
 
   private func requestShareableContent() {
+    RemoteHostedPIPDiagnostics.logger.debug(
+      "requesting shareable content pid=\(self.processIdentifier, privacy: .public)"
+    )
     SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) {
       [weak self] content, error in
       guard let self else { return }
       guard error == nil, let content else {
+        RemoteHostedPIPDiagnostics.logger.error(
+          "shareable content failed pid=\(self.processIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
+        )
         self.reconciliationFailed(stream: nil)
         return
       }
@@ -88,6 +96,9 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
   private func reconcile(with content: SCShareableContent) {
     guard let window = Self.bestWindow(in: content.windows, processIdentifier: processIdentifier)
     else {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "no capturable window found pid=\(self.processIdentifier, privacy: .public) candidates=\(content.windows.count, privacy: .public)"
+      )
       reconciliationFailed(stream: nil)
       return
     }
@@ -184,6 +195,9 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     do {
       try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
     } catch {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "adding stream output failed pid=\(self.processIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
+      )
       reconciliationFailed(stream: nil)
       return
     }
@@ -203,9 +217,15 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     stream.startCapture { [weak self, weak stream] error in
       guard let self, let stream else { return }
       guard error == nil else {
+        RemoteHostedPIPDiagnostics.logger.error(
+          "starting capture failed pid=\(self.processIdentifier, privacy: .public) window=\(windowID, privacy: .public): \(String(describing: error), privacy: .public)"
+        )
         self.reconciliationFailed(stream: stream)
         return
       }
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "capture started pid=\(self.processIdentifier, privacy: .public) window=\(windowID, privacy: .public) size=\(outputSize.width, privacy: .public)x\(outputSize.height, privacy: .public)"
+      )
       self.lock.withLock {
         guard !self.stopped, self.stream === stream else { return }
         self.recoveryAttempt = 0
@@ -277,10 +297,38 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     guard outputType == .screen, lock.withLock({ !stopped && self.stream === stream }) else {
       return
     }
-    surface.enqueue(sampleBuffer)
+    let sampleDiagnostics = lock.withLock { () -> (index: Int, shouldLog: Bool) in
+      sampleDiagnosticCount += 1
+      return (sampleDiagnosticCount, sampleDiagnosticCount <= 3)
+    }
+    if sampleDiagnostics.shouldLog {
+      let attachments =
+        CMSampleBufferGetSampleAttachmentsArray(
+          sampleBuffer,
+          createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]]
+      let status = (attachments?.first?[.status] as? NSNumber)?.intValue
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "capture sample #\(sampleDiagnostics.index, privacy: .public) valid=\(CMSampleBufferIsValid(sampleBuffer), privacy: .public) dataReady=\(CMSampleBufferDataIsReady(sampleBuffer), privacy: .public) hasImage=\(CMSampleBufferGetImageBuffer(sampleBuffer) != nil, privacy: .public) status=\(String(describing: status), privacy: .public)"
+      )
+    }
+    guard surface.enqueue(sampleBuffer) else { return }
+    let shouldLogFirstFrame = lock.withLock { () -> Bool in
+      guard !loggedFirstFrame else { return false }
+      loggedFirstFrame = true
+      return true
+    }
+    if shouldLogFirstFrame {
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "enqueued first capture frame pid=\(self.processIdentifier, privacy: .public)"
+      )
+    }
   }
 
   func stream(_ stream: SCStream, didStopWithError error: any Error) {
+    RemoteHostedPIPDiagnostics.logger.error(
+      "capture stopped with error pid=\(self.processIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
+    )
     reconciliationFailed(stream: stream)
   }
 

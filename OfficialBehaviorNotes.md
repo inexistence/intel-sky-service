@@ -165,36 +165,32 @@ Intel uses background AX operations for single-left element click (`AXPress`), c
 scroll, `setValue`, secondary AX actions, and text selection. Physical fallbacks no longer activate
 the target or post through the global HID tap: click, drag, pixel scroll, key chords, Unicode typing,
 and paste are bound to the latest snapshot's PID/window ID and use `CGEvent.postToPid`. Each bundle
-is bracketed by the exact activation/focus-returned and focus-removed/deactivation notifications
-above. Snapshot expiry or a missing window ID fails closed before input. The process-notification
-constants and event routing are `CONFIRMED_STATIC_BINARY`; Intel schema/event-construction tests are
-`HIGH_CONFIDENCE`, with an already-approved Calculator/TextEdit runtime smoke still pending.
+is bracketed by the official activation/focus-returned and focus-removed/deactivation sequence.
+Snapshot expiry or a missing window ID fails closed before input. The process-notification constants
+and event routing are `CONFIRMED_STATIC_BINARY`; Intel schema/event-construction tests are
+`HIGH_CONFIDENCE`.
 
 An attended Intel runtime smoke against the unmodified bundled `@oai/sky` confirmed Finder full
 state and no-change diff capture, Calculator full state and AX element clicks, and TextEdit
 `set_value`, `select_text`, Unicode `type_text`, and control-local `Super_L+Right`. Physical user
 input interrupted an in-flight action with `userIntervened`, and a fresh state query cleared the
-requery latch. `CONFIRMED_INTEL_RUNTIME`. The same smoke exposed one remaining input gap: menu-level
-shortcuts such as `Super_L+a` and `Super_L+v` do not enter AppKit menu-key-equivalent dispatch over
-the current process-targeted event path. Consequently `paste` safely times out, restores the prior
-clipboard, and leaves the document unchanged. Running the pasteboard provider on the main thread
-and delaying the synthetic-focus envelope were both tested and ruled out. TextEdit's background AX
-menu tree is readable and exposes the expected shortcut metadata; however, `AXPress` on the matched
-Select All item returns success while the background-disabled command remains undispatched. Public
-AX menu activation is therefore also ruled out as a substitute for the official focus illusion.
-A targeted ARM disassembly of the virtual-key/menu dispatch path is required before changing this
-behavior.
+requery latch. `CONFIRMED_INTEL_RUNTIME`.
 
-Targeted ARM vtable recovery and disassembly later identified all four events constructed by
-`SyntheticAppFocusEnforcer`. The enter path sends `21/0x8000` before AppKit `13/1`, and the leave
-path sends AppKit `13/2` before `21/0x4000`; every event has `windowNumber == 0`, zero modifier
-flags, and zero `data1`/`data2`, while the target PID is supplied separately to the process-event
-sender. Intel had incorrectly attached the captured window ID to the first `13/1` event and used
-the opposite pair ordering, and now matches the recovered envelope. `CONFIRMED_STATIC_BINARY`.
-An attended TextEdit probe after both corrections still appended text after `Super_L+a` rather
-than replacing the document selection. Replaying the four notifications alone is therefore
-insufficient; the remaining behavior resides in the enforcer's three-bit activation/focus state
-machine and event-tap/tracker coordination. `CONFIRMED_INTEL_RUNTIME`.
+Targeted ARM vtable recovery and disassembly identified the complete activation path constructed by
+`SyntheticAppFocusEnforcer`. The enter path sends `21/0x8000` before AppKit `13/1`; when the target
+window exposes `AXActivationPoint`, the activation event carries the target window ID, activation
+point, and AppKit flags `0xC0000`, followed by process-targeted AppKit left-mouse-down/up events.
+Those mouse events set CoreGraphics fields `3 = 0`, `7 = 3`, and `91/92 = windowID`, and the official
+binary calls private `CGEventSetWindowLocation` with `activationPoint - windowFrame.origin`. The
+leave path sends AppKit `13/2` before `21/0x4000`. `CONFIRMED_STATIC_BINARY`.
+
+Intel now reads `AXActivationPoint`, reproduces the AppKit mouse construction and window-local SPI,
+and omits the activation click when either the point or SPI is unavailable. An attended real-client
+TextEdit smoke proved that background `Super_L+a` now selects the full document and that both
+`type_text` and `paste` replace the selection without taking foreground focus; the fixture was
+restored after both probes. `CONFIRMED_INTEL_RUNTIME`. Earlier probes that replayed only the four
+notifications are retained as negative evidence: the activation-point mouse pair and private
+window-local coordinate are necessary for AppKit menu-key-equivalent dispatch.
 
 Intel now tracks scoped turns, handles explicit turn-ended requests, and treats an observed turn-ID
 change as an implicit boundary. Before the first operation that truly foregrounds a target, it
@@ -302,13 +298,17 @@ same controller to ensure the service and does not carry the App path itself.
 `CONFIRMED_INTEL_CLIENT_SOURCE`.
 
 An attended Intel smoke while the compatibility service was running solely through its per-user
-LaunchAgent showed no native Computer Use status item in the macOS menu bar. At that time neither
-`CODEX_ELECTRON_COMPUTER_USE_APP_PATH` nor `INTEL_SKY_EXPERIMENTAL_PIP` was present in ChatGPT's
-launch environment. This is consistent with the static client path above: socket discovery alone
-does not register a managed service PID with the native status/PIP controller. The status request
-handler is implemented, but its real native UI path remains untested until ChatGPT is deliberately
-restarted in managed-service mode. `CONFIRMED_INTEL_RUNTIME` for the standalone topology;
-`NEEDS_INTEL_MANAGED_RUNTIME` for the native status item.
+LaunchAgent showed no native Computer Use status item in the macOS menu bar. After ChatGPT was
+restarted with the compatibility App on its managed-service path, the native Computer Use status
+item appeared, confirming that socket discovery alone is insufficient and that the host requires
+the managed service PID. `CONFIRMED_INTEL_RUNTIME`.
+
+The same managed-host smoke reached remote PIP presentation but rendered only an opaque gray
+surface (occasionally showing the service-supplied Finder placeholder) rather than live window
+frames. Multiple CAContext, ordinary CALayer, and AVSampleBufferDisplayLayer variants did not cross
+the ChatGPT/service signing-team boundary reliably. PIP is therefore a documented
+`KNOWN_DIFFERENCE` and is disabled for managed launches; the core Computer Use IPC/action path does
+not depend on it. `CONFIRMED_INTEL_RUNTIME`.
 
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
@@ -345,7 +345,9 @@ For stable source-size changes, Intel resizes the CAContext layers, creates a tr
 sends the host's `resize` prepare/complete sequence, and updates the live `SCStream` configuration.
 The Mach-send fence envelope is covered by a real bidirectional XPC test. `HIGH_CONFIDENCE`.
 Dynamic managed-host verification and long-running resize/recovery stress remain pending, so the
-feature stays behind `INTEL_SKY_EXPERIMENTAL_PIP=1`.
+feature is fail-closed for managed launches. ChatGPT's inherited
+`INTEL_SKY_EXPERIMENTAL_PIP=1` is deliberately ignored; direct developer launches may opt in with
+`--experimental-pip` only.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

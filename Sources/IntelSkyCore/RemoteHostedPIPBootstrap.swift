@@ -62,6 +62,8 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   private let endpointSender: any RemoteHostedPIPEndpointSending
   private let hostAuthorizer: any ProcessAuthorizing
   private let presentationCoordinator: RemoteHostedPIPPresentationCoordinator
+  private let endpointRetrySleeper: @Sendable (TimeInterval) -> Void
+  private let endpointMaximumAttempts: Int
   private var started = false
 
   public override convenience init() {
@@ -90,13 +92,19 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
     connectionController: RemoteHostedPIPConnectionController,
     endpointSender: any RemoteHostedPIPEndpointSending,
     hostAuthorizer: any ProcessAuthorizing,
-    presentationCoordinator: RemoteHostedPIPPresentationCoordinator? = nil
+    presentationCoordinator: RemoteHostedPIPPresentationCoordinator? = nil,
+    endpointMaximumAttempts: Int = 3,
+    endpointRetrySleeper: @escaping @Sendable (TimeInterval) -> Void = {
+      Thread.sleep(forTimeInterval: $0)
+    }
   ) {
     self.connectionController = connectionController
     self.endpointSender = endpointSender
     self.hostAuthorizer = hostAuthorizer
     self.presentationCoordinator =
       presentationCoordinator ?? RemoteHostedPIPPresentationCoordinator(host: connectionController)
+    self.endpointMaximumAttempts = max(1, endpointMaximumAttempts)
+    self.endpointRetrySleeper = endpointRetrySleeper
     super.init()
   }
 
@@ -116,6 +124,7 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       return true
     }
     guard shouldStart else { return }
+    RemoteHostedPIPDiagnostics.logger.notice("bootstrap listener started")
     NSAppleEventManager.shared().setEventHandler(
       self,
       andSelector: #selector(handleBootstrapEvent(_:withReplyEvent:)),
@@ -142,6 +151,9 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       )
       try process(request)
     } catch {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "bootstrap rejected: \(String(describing: error), privacy: .public)"
+      )
       replyEvent.setParam(
         NSAppleEventDescriptor(int32: Int32(errAEEventNotHandled)),
         forKeyword: Self.errorNumberKeyword
@@ -154,8 +166,28 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   }
 
   func process(_ request: RemoteHostedPIPBootstrapRequest) throws {
+    RemoteHostedPIPDiagnostics.logger.notice(
+      "processing bootstrap request from host pid=\(request.senderProcessIdentifier, privacy: .public)"
+    )
     try hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
-    try endpointSender.send(endpoint: connectionController.endpoint, to: request.replyPort)
+    var attempt = 1
+    while true {
+      do {
+        try endpointSender.send(endpoint: connectionController.endpoint, to: request.replyPort)
+        RemoteHostedPIPDiagnostics.logger.notice(
+          "bootstrap endpoint sent to host pid=\(request.senderProcessIdentifier, privacy: .public) attempt=\(attempt, privacy: .public)"
+        )
+        return
+      } catch RemoteHostedPIPEndpointTransportError.routineFailed(let status)
+        where status == EIO && attempt < endpointMaximumAttempts
+      {
+        RemoteHostedPIPDiagnostics.logger.warning(
+          "bootstrap endpoint transfer returned transient EIO for host pid=\(request.senderProcessIdentifier, privacy: .public) attempt=\(attempt, privacy: .public)"
+        )
+        endpointRetrySleeper(0.05 * pow(2, Double(attempt - 1)))
+        attempt += 1
+      }
+    }
   }
 
   public func observe(

@@ -127,6 +127,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       bundleIdentifier: bundleIdentifier
     )
     if let existing = lock.withLock({ presentations[key] }), !existing.ending {
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "refreshing presentation id=\(existing.id, privacy: .public) app=\(bundleIdentifier, privacy: .public)"
+      )
       guard let resized = try? existing.surface.update(imageURL: imageURL) else { return }
       if resized {
         do {
@@ -162,6 +165,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     do {
       let surface = try surfaceFactory(imageURL)
       let presentationID = UUID().uuidString
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "publishing presentation id=\(presentationID, privacy: .public) app=\(bundleIdentifier, privacy: .public) pid=\(processIdentifier, privacy: .public) size=\(surface.size.width, privacy: .public)x\(surface.size.height, privacy: .public)"
+      )
       try host.publishPresentation(
         id: presentationID,
         threadID: threadID,
@@ -190,7 +196,13 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         )
       }
       capture.start()
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "presentation capture requested id=\(presentationID, privacy: .public)"
+      )
     } catch {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "presentation publish failed app=\(bundleIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
+      )
       // Presentation is an optional UX layer; public Computer Use must continue if it is absent.
     }
   }
@@ -256,7 +268,12 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       return presentations.removeValue(forKey: key)
     }
     removed?.capture.stop()
-    if removed != nil { try? host.invalidatePresentation(id: presentationID) }
+    if removed != nil {
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "invalidating presentation id=\(presentationID, privacy: .public)"
+      )
+      try? host.invalidatePresentation(id: presentationID)
+    }
   }
 
   private static func nonempty(_ value: Any?) -> String? {

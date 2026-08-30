@@ -52,7 +52,11 @@ public struct AccessibilitySnapshotter: Sendable {
     }
     return CapturedAccessibilitySnapshot(
       text: lines.joined(separator: "\n"),
-      elementsByID: state.elementsByID
+      elementsByID: state.elementsByID,
+      windowActivationPoint: geometry.point(
+        of: window,
+        attribute: "AXActivationPoint" as CFString
+      )
     )
   }
 
@@ -257,4 +261,15 @@ final class AccessibilityElementIDRegistry: @unchecked Sendable {
 struct CapturedAccessibilitySnapshot {
   let text: String
   let elementsByID: [String: AXUIElement]
+  let windowActivationPoint: CGPoint?
+
+  init(
+    text: String,
+    elementsByID: [String: AXUIElement],
+    windowActivationPoint: CGPoint? = nil
+  ) {
+    self.text = text
+    self.elementsByID = elementsByID
+    self.windowActivationPoint = windowActivationPoint
+  }
 }

@@ -52,6 +52,7 @@ final class RemoteHostedPIPContentProducer: NSObject,
 
   func connect(reply: @escaping RemoteHostedPIPReply) {
     lock.withLock { connected = true }
+    RemoteHostedPIPDiagnostics.logger.notice("native host connected")
     reply(nil)
   }
 
@@ -61,6 +62,9 @@ final class RemoteHostedPIPContentProducer: NSObject,
       return
     }
     lock.withLock { maximumDisplaySize = size }
+    RemoteHostedPIPDiagnostics.logger.notice(
+      "native host set maximum display size=\(size, privacy: .public)"
+    )
     reply(nil)
   }
 
@@ -246,6 +250,9 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
     do {
       try hostAuthorizer.authorize(processIdentifier: newConnection.processIdentifier)
     } catch {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "rejected XPC host pid=\(newConnection.processIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
+      )
       return false
     }
 
@@ -272,6 +279,9 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
       return previous
     }
     newConnection.activate()
+    RemoteHostedPIPDiagnostics.logger.notice(
+      "accepted XPC host pid=\(newConnection.processIdentifier, privacy: .public)"
+    )
     previous?.invalidate()
     return true
   }
@@ -309,6 +319,7 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
     ) -> Void
   ) throws {
     guard let connection = lock.withLock({ activeConnection }) else {
+      RemoteHostedPIPDiagnostics.logger.error("host call attempted without an active connection")
       throw RemoteHostedPIPHostCallError.unavailable
     }
     let result = RemoteHostedPIPHostCallResult()
@@ -326,9 +337,13 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
       semaphore.signal()
     }
     guard semaphore.wait(timeout: .now() + 3) == .success else {
+      RemoteHostedPIPDiagnostics.logger.error("native host call timed out")
       throw RemoteHostedPIPHostCallError.timedOut
     }
     if let error = result.error {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "native host call rejected: \(String(describing: error), privacy: .public)"
+      )
       throw RemoteHostedPIPHostCallError.rejected(error)
     }
   }

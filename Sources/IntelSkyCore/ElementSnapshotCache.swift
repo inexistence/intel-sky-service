@@ -29,6 +29,19 @@ struct WindowCoordinateSpace: Sendable, Equatable {
   let windowID: CGWindowID
   let screenFrame: CGRect
   let screenshotPixelSize: CGSize
+  let activationPoint: CGPoint?
+
+  init(
+    windowID: CGWindowID,
+    screenFrame: CGRect,
+    screenshotPixelSize: CGSize,
+    activationPoint: CGPoint? = nil
+  ) {
+    self.windowID = windowID
+    self.screenFrame = screenFrame
+    self.screenshotPixelSize = screenshotPixelSize
+    self.activationPoint = activationPoint
+  }
 
   func screenPoint(for screenshotPoint: CGPoint) throws -> CGPoint {
     guard screenshotPixelSize.width > 0, screenshotPixelSize.height > 0,
@@ -53,6 +66,19 @@ struct ComputerUseEventTarget: Sendable, Equatable {
   let processIdentifier: pid_t
   let windowID: CGWindowID
   let screenFrame: CGRect
+  let activationPoint: CGPoint?
+
+  init(
+    processIdentifier: pid_t,
+    windowID: CGWindowID,
+    screenFrame: CGRect,
+    activationPoint: CGPoint? = nil
+  ) {
+    self.processIdentifier = processIdentifier
+    self.windowID = windowID
+    self.screenFrame = screenFrame
+    self.activationPoint = activationPoint
+  }
 }
 
 public final class ElementSnapshotCache: @unchecked Sendable {
@@ -153,7 +179,8 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     return ComputerUseEventTarget(
       processIdentifier: app.processIdentifier,
       windowID: coordinateSpace.windowID,
-      screenFrame: coordinateSpace.screenFrame
+      screenFrame: coordinateSpace.screenFrame,
+      activationPoint: coordinateSpace.activationPoint
     )
   }
 

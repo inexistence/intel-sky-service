@@ -32,9 +32,6 @@ do {
 let socketPath = configuration.socketPath
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
-application.finishLaunching()
-ComputerUseVisualCoordinator.warmUp()
-ServicePermissionRequester().requestMissingPermissions()
 let pipBootstrapController: RemoteHostedPIPBootstrapController?
 if configuration.experimentalPIPEnabled {
   let controller = RemoteHostedPIPBootstrapController()
@@ -44,6 +41,9 @@ if configuration.experimentalPIPEnabled {
 } else {
   pipBootstrapController = nil
 }
+application.finishLaunching()
+ComputerUseVisualCoordinator.warmUp()
+ServicePermissionRequester().requestMissingPermissions()
 
 let resolver = MacAppResolver()
 let snapshotCache = ElementSnapshotCache()
