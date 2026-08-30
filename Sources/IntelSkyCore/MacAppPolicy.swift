@@ -31,7 +31,7 @@ public struct MacAppPolicy: Sendable, Equatable {
 }
 
 public protocol MacAppPolicyEvaluating: Sendable {
-  func policy(for app: ResolvedMacApplication) -> MacAppPolicy
+  func policy(for app: ResolvedMacApplication) throws -> MacAppPolicy
 }
 
 public enum MacAppPolicyError: Error, CustomStringConvertible {
@@ -50,7 +50,7 @@ public enum MacAppPolicyError: Error, CustomStringConvertible {
 
 extension MacAppPolicyEvaluating {
   func requireAllowed(_ app: ResolvedMacApplication) throws {
-    switch policy(for: app).decision {
+    switch try policy(for: app).decision {
     case .allowed: return
     case .denied: throw MacAppPolicyError.denied(app.bundleIdentifier)
     case .forbidden: throw MacAppPolicyError.forbidden(app.bundleIdentifier)
@@ -137,7 +137,8 @@ public struct OfficialCompatibleMacAppPolicyEvaluator: MacAppPolicyEvaluating {
 
   public func policy(for app: ResolvedMacApplication) -> MacAppPolicy {
     let risk: MacAppPolicyRisk = app.bundleIdentifier == "com.apple.finder" ? .low : .high
-    let forbidden = Self.forbiddenBundleIdentifiers.contains(app.bundleIdentifier)
+    let forbidden =
+      Self.forbiddenBundleIdentifiers.contains(app.bundleIdentifier)
       || Self.isWebBrowserApp(atPath: app.appPath)
     return MacAppPolicy(
       allowPersistentApproval: true,

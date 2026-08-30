@@ -871,14 +871,24 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   browser detection also checks for an `http` entry in `CFBundleURLTypes` / `CFBundleURLSchemes`
   and the `AppleApplication` or `BrowserCrApplication` principal class. Finder is the sole statically
   observed low-risk target. Other targets are high risk and carry the exact warning subtitle about
-  prompt injection, data theft, and loss. `CONFIRMED_STATIC_BINARY`.
+  prompt injection, data theft, and loss. Targeted disassembly additionally confirms that the
+  provider performs an initialized `config/read` app-server request with `includeLayers: false`,
+  uses the allow-all/empty-deny/no-allow-list default only for a valid response without
+  `computer_use`, caches successful policy for 900 seconds, and applies a 30-second request
+  deadline. `CONFIRMED_STATIC_BINARY`.
 - Intel now returns the complete documented policy target schema, reproduces those local forbidden
   categories and browser bundle-metadata checks, marks Finder low risk, emits the official warning
   for high-risk Apps, and maps direct attempts to bypass the policy preflight to `appNotAllowed`
   (`-10006`). State capture checks policy before automatic launch, and action execution checks it
-  before any target mutation. `HIGH_CONFIDENCE` with regression coverage. Dynamic organization
-  `allowed_bundle_ids` / `denied_bundle_ids` ingestion is still absent and remains a
-  `KNOWN_DIFFERENCE`; exact classifier membership remains `NEEDS_ARM_ORACLE`.
+  before any target mutation. Intel now also performs the initialized app-server handshake, reads
+  the three legacy organization-policy fields, shares one coalescing 900-second cache across state,
+  action, and lifecycle paths, and propagates app-server failure instead of silently treating it as
+  allow-all. It additionally reads the current `configRequirements/read` camel-case policy shape
+  (`allowPersistentApproval`, `defaultAppAccess`, and macOS `bundleIds`) while retaining legacy
+  compatibility. The shipped app-server was probed with the same sequential request envelope and
+  returned successful initialize/config/requirements responses. `HIGH_CONFIDENCE` with parser,
+  subprocess-handshake, cache, concurrency, precedence, and failure regression coverage; exact
+  classifier membership remains `NEEDS_ARM_ORACLE`.
 - Intel now fails `get_app_state` and actions with `screenLocked` (`-10020`) when the GUI session is
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
   enabled. A lock rejection now safety-terminates the scoped turn, Capture/Event streams, cursor,

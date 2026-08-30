@@ -255,6 +255,8 @@ The implementation includes:
 - signed OpenAI process-chain authorization after the compatibility `ping`;
 - app discovery, auto-launch, focused-window screenshots, bounded Accessibility trees and diffs;
 - snapshot-bound actions, keyboard input, scrolling, text selection, and stale-target rejection;
+- Codex app-server organization policy for persistent approval and macOS app allow/deny rules,
+  with the same 15-minute successful-result cache and 30-second deadline as the ARM64 service;
 - physical-input interruption, screen-lock checks, secure-input handling, and conservative focus
   restoration;
 - Capture Stream and Record & Replay Event Stream lifecycle, ownership, bounded backpressure, and

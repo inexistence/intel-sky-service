@@ -192,7 +192,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
       userInterventionMonitor: PhysicalInputMonitor.shared,
       interventionArbitrator: ComputerUseInterventionCoordinator.shared,
       visualizer: ComputerUseVisualCoordinator.shared,
-      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator(),
+      policyEvaluator: CodexAppServerMacAppPolicyEvaluator.shared,
       sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }

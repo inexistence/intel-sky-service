@@ -30,7 +30,7 @@ public struct MacAppStateProvider: AppStateProviding {
       treeDiffer: treeDiffer,
       screenLockChecker: screenLockChecker,
       interventionArbitrator: ComputerUseInterventionCoordinator.shared,
-      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator(),
+      policyEvaluator: CodexAppServerMacAppPolicyEvaluator.shared,
       sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
@@ -157,7 +157,7 @@ public struct MacAppStateProvider: AppStateProviding {
     guard !app.appPath.isEmpty else {
       throw MacAppResolutionError.missingAppPath(app.displayName)
     }
-    let policy = policyEvaluator.policy(for: app)
+    let policy = try policyEvaluator.policy(for: app)
     var target: [String: Any] = [
       "appPath": app.appPath,
       "bundleIdentifier": app.bundleIdentifier,

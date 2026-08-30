@@ -26,7 +26,7 @@ public struct MacAppLifecycleProvider: AppLifecycleProviding {
   public init(resolver: any MacAppResolving = MacAppResolver()) {
     self.init(
       resolver: resolver,
-      policyEvaluator: OfficialCompatibleMacAppPolicyEvaluator(),
+      policyEvaluator: CodexAppServerMacAppPolicyEvaluator.shared,
       sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
