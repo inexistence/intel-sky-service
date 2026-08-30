@@ -101,6 +101,45 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   initial capture. `HIGH_CONFIDENCE`; exact official disconnect terminal visibility remains
   `NEEDS_ARM_ORACLE`.
 
+## Event Stream / Record & Replay
+
+- ARM field metadata confirms empty `ComputerUseIPCEventStreamStartRequest` and status requests,
+  plus `ComputerUseIPCEventStreamStopRequest { reason }`. All three handlers return
+  `ComputerUseIPCEventStreamSessionStatus`. The status fields are `isRecording`, optional
+  `sessionID`, `sessionDirectoryPath`, `eventsPath`, `metadataPath`, `suppressedEventsPath`,
+  `startedAt`, `endedAt`, optional `endReason`, and `maxDurationSeconds`. Exported service symbols
+  independently confirm that Start receives the optional originating thread ID and that the
+  maximum is 30 minutes. `CONFIRMED_STATIC_BINARY`.
+- The end-reason cases are exactly `toolStopped`, `debugUIStopped`,
+  `recordingControlsStopped`, `recordingControlsCancelled`, `maxDuration`, and
+  `serviceTerminated`. The record-kind raw values embedded in ARM are `session.started`,
+  `session.ended`, `window.changed`, `mouse.click`, `mouse.context_menu`, `mouse.drag`,
+  `keyboard.text_input`, `keyboard.submit`, `keyboard.shortcut`, `terminal.value_changed`,
+  `selection.changed`, and `debug.error`. `CONFIRMED_STATIC_BINARY`.
+- ARM record metadata confirms the full optional record envelope: app, window, mouse interaction,
+  keyboard interaction, selection, AX tree (`fullTree | diffFromPrevious`), and diagnostic. The
+  official recorder owns a session Event Tap, frontmost-App observer, AX observer, mouse-down state,
+  text and Terminal buffers, AX-notification debounce tasks, a JSONL writer, normal/suppressed
+  callbacks, and a URL-policy filter. `CONFIRMED_STATIC_BINARY`.
+- Intel routes all three requests, makes Start idempotent, returns the confirmed ten-field status,
+  and stores owner-only `events.jsonl`, `suppressed.jsonl`, and `metadata.json`. A shared direct
+  session Event Tap emits click/context-menu/drag and keyboard text/submit/shortcut records; a
+  0.5-second AX sampler emits full/diff window context, selection changes, and bounded Terminal
+  deltas. Session start/end boundaries and metadata counts are durable. Input Monitoring absence
+  fails closed rather than reporting a false recording. `HIGH_CONFIDENCE` for schema and lifecycle;
+  exact official debounce/buffering constants remain `NEEDS_ARM_ORACLE`.
+- The recording is owned by its initiating connection and originating Codex thread. Explicit stop,
+  matching turn end/transition, owner disconnect, lock screen, 30-minute limit, and service shutdown
+  all remove the Event Tap observer, drain queued records, append `session.ended`, synchronize and
+  close both JSONL files, and atomically refresh metadata. `HIGH_CONFIDENCE`; official behavior for
+  a cached MCP transport disconnect remains `NEEDS_ARM_ORACLE`.
+- Intel suppresses Secure Input, `AXSecureTextField`, password/security apps, ChatGPT/Codex, and its
+  own service. Suppressed records are structural only: text, key equivalents, values, selections,
+  URLs, and AX text are replaced before serialization, and both normal and suppressed records scrub
+  common password/token/API-key forms. Browser URLs retain only scheme and host with user info,
+  query, and fragment removed. `PARTIAL`: ARM's exact URL-policy database and every sensitive-App
+  category are not statically recoverable and need privacy-focused runtime oracle coverage.
+
 ## App catalog
 
 - ARM embeds the Spotlight predicate `kMDItemContentType == "com.apple.application-bundle" &&

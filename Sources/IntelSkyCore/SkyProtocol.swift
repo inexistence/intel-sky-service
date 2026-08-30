@@ -88,6 +88,7 @@ public struct SkyRequestRouter: Sendable {
   private let appActionPerformer: (any AppActionPerforming)?
   private let appCaptureProvider: (any AppCaptureProviding)?
   private let appLifecycleProvider: (any AppLifecycleProviding)?
+  private let eventStreamProvider: (any EventStreamProviding)?
   private let executionGate: SkyRequestExecutionGate
   private let turnLifecycle: any ComputerUseTurnLifecycleHandling
   private let requestObserver: (any SkyRequestResultObserving)?
@@ -99,6 +100,7 @@ public struct SkyRequestRouter: Sendable {
     appActionPerformer: (any AppActionPerforming)? = nil,
     appCaptureProvider: (any AppCaptureProviding)? = nil,
     appLifecycleProvider: (any AppLifecycleProviding)? = nil,
+    eventStreamProvider: (any EventStreamProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil
   ) {
     self.init(
@@ -107,8 +109,12 @@ public struct SkyRequestRouter: Sendable {
       appActionPerformer: appActionPerformer,
       appCaptureProvider: appCaptureProvider,
       appLifecycleProvider: appLifecycleProvider,
+      eventStreamProvider: eventStreamProvider,
       requestObserver: requestObserver,
-      turnLifecycle: ComputerUseTurnCoordinator(appCaptureProvider: appCaptureProvider),
+      turnLifecycle: ComputerUseTurnCoordinator(
+        appCaptureProvider: appCaptureProvider,
+        eventStreamProvider: eventStreamProvider
+      ),
       sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
@@ -119,6 +125,7 @@ public struct SkyRequestRouter: Sendable {
     appActionPerformer: (any AppActionPerforming)?,
     appCaptureProvider: (any AppCaptureProviding)? = nil,
     appLifecycleProvider: (any AppLifecycleProviding)? = nil,
+    eventStreamProvider: (any EventStreamProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil,
     turnLifecycle: any ComputerUseTurnLifecycleHandling,
     sessionCoordinator: any ComputerUseSessionCoordinating = NoopComputerUseSessionCoordinator()
@@ -128,6 +135,7 @@ public struct SkyRequestRouter: Sendable {
     self.appActionPerformer = appActionPerformer
     self.appCaptureProvider = appCaptureProvider
     self.appLifecycleProvider = appLifecycleProvider
+    self.eventStreamProvider = eventStreamProvider
     self.requestObserver = requestObserver
     self.executionGate = SkyRequestExecutionGate()
     self.turnLifecycle = turnLifecycle
@@ -149,10 +157,12 @@ public struct SkyRequestRouter: Sendable {
 
   func clientDisconnected(_ clientIdentifier: String) {
     (appCaptureProvider as? any AppCaptureLifecycleHandling)?.clientDisconnected(clientIdentifier)
+    (eventStreamProvider as? any EventStreamLifecycleHandling)?.clientDisconnected(clientIdentifier)
   }
 
   func shutdown() {
     (appCaptureProvider as? any AppCaptureLifecycleHandling)?.shutdown()
+    (eventStreamProvider as? any EventStreamLifecycleHandling)?.shutdown()
   }
 
   private func handleSerially(_ payload: Data) -> Data {
@@ -277,6 +287,28 @@ public struct SkyRequestRouter: Sendable {
             throw SkyRPCError.unsupportedRequestType(requestType)
           }
           result = try appCaptureProvider.nextCaptureUpdate(request: request)
+        case "ComputerUseIPCEventStreamStartRequest":
+          guard let eventStreamProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          guard request.isEmpty else {
+            throw SkyRPCError.invalidRequest("Event Stream start request must be empty")
+          }
+          var contextualRequest = request
+          if let identity = ComputerUseTurnIdentity(metadata: params["codexTurnMetadata"]) {
+            contextualRequest["_originatingThreadID"] = identity.threadID
+          }
+          result = try eventStreamProvider.startEventStream(request: contextualRequest)
+        case "ComputerUseIPCEventStreamStatusRequest":
+          guard let eventStreamProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try eventStreamProvider.eventStreamStatus(request: request)
+        case "ComputerUseIPCEventStreamStopRequest":
+          guard let eventStreamProvider else {
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          result = try eventStreamProvider.stopEventStream(request: request)
         default:
           throw SkyRPCError.unsupportedRequestType(requestType)
         }
@@ -366,6 +398,10 @@ public struct SkyRequestRouter: Sendable {
     case MacAppActionError.activationFailed:
       return SkyServerErrorCode.runningApplicationNotFound.rawValue
     case is AppCaptureSessionError:
+      return SkyServerErrorCode.couldNotGetRequestData.rawValue
+    case EventStreamSessionError.inputMonitoringUnavailable:
+      return SkyServerErrorCode.permissionsNotGranted.rawValue
+    case is EventStreamSessionError:
       return SkyServerErrorCode.couldNotGetRequestData.rawValue
     case ComputerUseSessionError.invalidStopRequest:
       return SkyServerErrorCode.couldNotGetRequestData.rawValue

@@ -56,6 +56,11 @@ let appStateProvider = MacAppStateProvider(
 )
 let appCaptureProvider = AppCaptureSessionManager(appStateProvider: appStateProvider)
 appCaptureProvider.installSessionStopHandling()
+let eventStreamProvider = EventStreamSessionManager(
+  rootDirectoryURL: URL(fileURLWithPath: socketPath)
+    .deletingLastPathComponent()
+    .appendingPathComponent("EventStreams", isDirectory: true)
+)
 let nativeBridgeController = ComputerUseNativeBridgeController(
   appStateProvider: appStateProvider,
   appCaptureProvider: appCaptureProvider
@@ -73,6 +78,7 @@ let server = SkyUnixServer(
     ),
     appCaptureProvider: appCaptureProvider,
     appLifecycleProvider: MacAppLifecycleProvider(resolver: resolver),
+    eventStreamProvider: eventStreamProvider,
     requestObserver: pipBootstrapController
   )
 )

@@ -21,6 +21,8 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
   `ComputerUseIPCAppModifyRequest` activate/deactivate transitions
 - asynchronous `ComputerUseIPCAppStartCaptureRequest` / `AppNextCaptureUpdateRequest` streams
   with bounded backpressure, long-poll deadlines, client ownership, and lifecycle cleanup
+- Record & Replay Event Stream start/status/stop, direct physical event capture, AX full/diff
+  context, owner-only JSONL/metadata storage, and sensitive-input suppression
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
 - snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input
 - snapshot-bound vertical and horizontal scrolling, with AX page actions and bounded pixel fallback
@@ -106,7 +108,7 @@ During protocol development, the unmodified bundled `@oai/sky` client from ChatG
 
 `getAppState` requires Accessibility permission. A screenshot is included only when Screen Recording permission is already available. The service deliberately avoids calling the APIs that trigger permission prompts; grant access manually to the final signed app or executable used to run the service.
 
-For the LaunchAgent installation, add `~/Applications/Intel Sky Service.app` in System Settings → Privacy & Security → Accessibility and Screen & System Audio Recording. Restart the agent after changing permissions, then open a new Codex task so Computer Use is discovered against the running socket. Rebuilding an ad-hoc-signed App changes its code identity and may require granting permissions again; a stable Apple Development signature avoids that churn.
+For the LaunchAgent installation, add `~/Applications/Intel Sky Service.app` in System Settings → Privacy & Security → Accessibility and Screen & System Audio Recording. Record & Replay additionally requires Input Monitoring. Restart the agent after changing permissions, then open a new Codex task so Computer Use is discovered against the running socket. Rebuilding an ad-hoc-signed App changes its code identity and may require granting permissions again; a stable Apple Development signature avoids that churn.
 
 When launched as an App, the service asks macOS for either permission if it is missing. Permission prompts are issued by the service process itself so macOS records the correct responsible application identity.
 
@@ -135,6 +137,18 @@ Each session belongs to the socket connection or native sender that started it. 
 socket drops its sessions immediately, service shutdown wakes blocked consumers, Next requests
 honor their request deadline, and their long polls do not serialize unrelated RPCs. Queues retain
 at most 32 updates and coalesce by update type under backpressure.
+
+Event Stream implements the official `ComputerUseIPCEventStreamStartRequest`, status request, and
+reasoned stop request. Recording is explicit and requires Input Monitoring; it never prompts or
+changes macOS consent. A session lasts at most 30 minutes and writes owner-only `events.jsonl`,
+`suppressed.jsonl`, and `metadata.json` files below the socket directory's `EventStreams` folder.
+The shared session Event Tap records mouse clicks/context menus/drags and keyboard text, submit, and
+shortcut events; periodic AX snapshots add `window.changed` full/diff context, selection changes,
+and bounded Terminal value deltas. Turn end, client disconnect, lock screen, explicit stop, timeout,
+and service shutdown all close the files with a terminal session record. Secure Input, secure text
+fields, security/password apps, ChatGPT/Codex, and this service are excluded from the ordinary log;
+their structural records go to the suppressed log only after text/value/URL fields are removed.
+Both logs also scrub common password/token/API-key forms before bytes are written.
 
 Every action requires a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. If the referenced AX object was destroyed by a window/menu rebuild, the service recaptures the tree and accepts only a unique path-and-semantics match; ambiguous, missing, or weak unlabeled matches fail closed. Screenshot coordinates are mapped through the captured window origin and image scale, including Retina screenshots, and fail closed when stale or outside the image. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll accepts every finite positive page count; element scrolling prefers AX page actions, while unsupported and fractional movement uses bounded pixel-wheel events.
 

@@ -49,11 +49,15 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
     self.eventHandler = eventHandler
   }
 
-  convenience init(appCaptureProvider: (any AppCaptureProviding)?) {
+  convenience init(
+    appCaptureProvider: (any AppCaptureProviding)?,
+    eventStreamProvider: (any EventStreamProviding)? = nil
+  ) {
     self.init { event in
       ComputerUseFocusCoordinator.shared.handle(event)
       ComputerUseSessionCoordinator.shared.handle(event)
       (appCaptureProvider as? any AppCaptureLifecycleHandling)?.handle(event)
+      (eventStreamProvider as? any EventStreamLifecycleHandling)?.handle(event)
     }
   }
 

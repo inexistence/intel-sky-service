@@ -7,11 +7,21 @@ protocol UserInterventionMonitoring: AnyObject, Sendable {
   func checkpoint(for processIdentifier: pid_t) -> UInt64
 }
 
+protocol EventStreamInputMonitoring: AnyObject, Sendable {
+  var isAvailable: Bool { get }
+  func addEventObserver(
+    _ observer: @escaping @Sendable (CGEventType, CGEvent) -> Void
+  ) -> UUID
+  func removeEventObserver(_ identifier: UUID)
+}
+
 extension UserInterventionMonitoring {
   func checkpoint(for processIdentifier: pid_t) -> UInt64 { checkpoint() }
 }
 
-public final class PhysicalInputMonitor: UserInterventionMonitoring, @unchecked Sendable {
+public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStreamInputMonitoring,
+  @unchecked Sendable
+{
   public static let shared = PhysicalInputMonitor()
 
   private let lock = NSLock()
@@ -19,6 +29,8 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, @unchecked 
   private var unknownTargetGeneration: UInt64 = 0
   private var generationByTargetProcess: [pid_t: UInt64] = [:]
   private var available = false
+  private var eventObservers: [UUID: @Sendable (CGEventType, CGEvent) -> Void] = [:]
+  private var eventTap: CFMachPort?
 
   public var isAvailable: Bool { lock.withLock { available } }
 
@@ -43,11 +55,23 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, @unchecked 
     }
   }
 
-  func record(_ event: CGEvent) {
+  func addEventObserver(
+    _ observer: @escaping @Sendable (CGEventType, CGEvent) -> Void
+  ) -> UUID {
+    let identifier = UUID()
+    lock.withLock { eventObservers[identifier] = observer }
+    return identifier
+  }
+
+  func removeEventObserver(_ identifier: UUID) {
+    _ = lock.withLock { eventObservers.removeValue(forKey: identifier) }
+  }
+
+  func record(_ event: CGEvent, type: CGEventType) {
     let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
     guard sourcePID != Int64(ProcessInfo.processInfo.processIdentifier) else { return }
     let targetPID = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
-    lock.withLock {
+    let observers = lock.withLock { () -> [@Sendable (CGEventType, CGEvent) -> Void] in
       generation &+= 1
       if targetPID > 0 {
         if generationByTargetProcess[targetPID] == nil,
@@ -61,15 +85,29 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, @unchecked 
         // An unresolved physical target must conservatively invalidate every controlled app.
         unknownTargetGeneration &+= 1
       }
+      return Array(eventObservers.values)
     }
+    for observer in observers { observer(type, event) }
+  }
+
+  func record(_ event: CGEvent) {
+    record(event, type: event.type)
+  }
+
+  func reenableEventTap() {
+    guard let tap = lock.withLock({ eventTap }) else { return }
+    CGEvent.tapEnable(tap: tap, enable: true)
   }
 
   private func runEventTap() {
     let types: [CGEventType] = [
       .keyDown,
       .leftMouseDown,
+      .leftMouseUp,
       .rightMouseDown,
+      .rightMouseUp,
       .otherMouseDown,
+      .otherMouseUp,
       .mouseMoved,
       .leftMouseDragged,
       .rightMouseDragged,
@@ -94,8 +132,15 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, @unchecked 
     let runLoop = CFRunLoopGetCurrent()
     CFRunLoopAddSource(runLoop, source, .commonModes)
     CGEvent.tapEnable(tap: tap, enable: true)
-    lock.withLock { available = true }
+    lock.withLock {
+      eventTap = tap
+      available = true
+    }
     CFRunLoopRun()
+    lock.withLock {
+      if eventTap === tap { eventTap = nil }
+      available = false
+    }
   }
 }
 
@@ -106,10 +151,17 @@ private func physicalInputTapCallback(
   userInfo: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
   if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+    if let userInfo {
+      Unmanaged<PhysicalInputMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+        .reenableEventTap()
+    }
     return Unmanaged.passUnretained(event)
   }
   if let userInfo {
-    Unmanaged<PhysicalInputMonitor>.fromOpaque(userInfo).takeUnretainedValue().record(event)
+    Unmanaged<PhysicalInputMonitor>.fromOpaque(userInfo).takeUnretainedValue().record(
+      event,
+      type: type
+    )
   }
   return Unmanaged.passUnretained(event)
 }

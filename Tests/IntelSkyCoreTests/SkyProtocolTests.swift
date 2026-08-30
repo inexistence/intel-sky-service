@@ -83,6 +83,31 @@ private final class BlockingCaptureProvider: AppCaptureProviding, @unchecked Sen
   }
 }
 
+private final class StubEventStreamProvider: EventStreamProviding, @unchecked Sendable {
+  private(set) var starts: [[String: Any]] = []
+  private(set) var statuses: [[String: Any]] = []
+  private(set) var stops: [[String: Any]] = []
+
+  func startEventStream(request: [String: Any]) throws -> [String: Any] {
+    starts.append(request)
+    return ["isRecording": true, "maxDurationSeconds": 1_800]
+  }
+
+  func eventStreamStatus(request: [String: Any]) throws -> [String: Any] {
+    statuses.append(request)
+    return ["isRecording": true, "maxDurationSeconds": 1_800]
+  }
+
+  func stopEventStream(request: [String: Any]) throws -> [String: Any] {
+    stops.append(request)
+    return [
+      "isRecording": false,
+      "endReason": request["reason"] as? String ?? NSNull(),
+      "maxDurationSeconds": 1_800,
+    ]
+  }
+}
+
 private final class StubAppLifecycleProvider: AppLifecycleProviding, @unchecked Sendable {
   private(set) var frontmostRequests: [[String: Any]] = []
   private(set) var modifyRequests: [[String: Any]] = []
@@ -559,4 +584,70 @@ private func requestPayload(id: Int, type: String, request: [String: Any]) throw
   #expect(response["result"] is [[String: Any]])
   #expect(elapsed < 0.25)
   #expect(finished.wait(timeout: .now() + 2) == .success)
+}
+
+@Test func eventStreamRequestsRouteConfirmedStartStatusAndStopSchemas() throws {
+  let provider = StubEventStreamProvider()
+  let router = SkyRequestRouter(appCatalog: StubCatalog(), eventStreamProvider: provider)
+  let metadata: [String: Any] = [
+    "session_id": "session", "thread_id": "thread", "turn_id": "turn",
+  ]
+
+  let start = try decode(
+    router.handle(
+      try requestPayloadWithMetadata(
+        id: 32,
+        type: "ComputerUseIPCEventStreamStartRequest",
+        request: [:],
+        metadata: metadata
+      )))
+  #expect((start["result"] as? [String: Any])?["isRecording"] as? Bool == true)
+  #expect(provider.starts.first?["_originatingThreadID"] as? String == "thread")
+
+  _ = try decode(
+    router.handle(
+      try requestPayload(
+        id: 33,
+        type: "ComputerUseIPCEventStreamStatusRequest",
+        request: [:]
+      )))
+  let stop = try decode(
+    router.handle(
+      try requestPayload(
+        id: 34,
+        type: "ComputerUseIPCEventStreamStopRequest",
+        request: ["reason": "toolStopped"]
+      )))
+
+  #expect(provider.statuses.count == 1)
+  #expect(provider.stops.first?["reason"] as? String == "toolStopped")
+  #expect((stop["result"] as? [String: Any])?["endReason"] as? String == "toolStopped")
+
+  let forged = try decode(
+    router.handle(
+      try requestPayload(
+        id: 35,
+        type: "ComputerUseIPCEventStreamStartRequest",
+        request: ["_originatingThreadID": "forged"]
+      )))
+  #expect((forged["error"] as? [String: Any])?["code"] as? Int == -32600)
+}
+
+private func requestPayloadWithMetadata(
+  id: Int,
+  type: String,
+  request: [String: Any],
+  metadata: [String: Any]
+) throws -> Data {
+  try JSONSerialization.data(withJSONObject: [
+    "jsonrpc": "2.0",
+    "id": id,
+    "method": "request",
+    "params": [
+      "clientApiVersion": SkyProtocol.apiVersion,
+      "codexTurnMetadata": metadata,
+      "requestType": type,
+      "request": request,
+    ],
+  ])
 }
