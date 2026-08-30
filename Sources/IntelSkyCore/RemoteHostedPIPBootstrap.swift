@@ -1,3 +1,4 @@
+import Carbon
 import Darwin
 import Foundation
 
@@ -110,9 +111,11 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
 
   deinit {
     if started {
-      NSAppleEventManager.shared().removeEventHandler(
-        forEventClass: RemoteHostedPIPBootstrapRequest.eventClass,
-        andEventID: RemoteHostedPIPBootstrapRequest.eventID
+      AERemoveEventHandler(
+        RemoteHostedPIPBootstrapRequest.eventClass,
+        RemoteHostedPIPBootstrapRequest.eventID,
+        remoteHostedPIPBootstrapEventHandler,
+        false
       )
     }
   }
@@ -124,45 +127,63 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       return true
     }
     guard shouldStart else { return }
-    NSAppleEventManager.shared().setEventHandler(
-      self,
-      andSelector: #selector(handleBootstrapEvent(_:withReplyEvent:)),
-      forEventClass: RemoteHostedPIPBootstrapRequest.eventClass,
-      andEventID: RemoteHostedPIPBootstrapRequest.eventID
+    let status = AEInstallEventHandler(
+      RemoteHostedPIPBootstrapRequest.eventClass,
+      RemoteHostedPIPBootstrapRequest.eventID,
+      remoteHostedPIPBootstrapEventHandler,
+      Unmanaged.passUnretained(self).toOpaque(),
+      false
     )
+    guard status == noErr else {
+      lock.withLock { started = false }
+      RemoteHostedPIPDiagnostics.logger.error(
+        "bootstrap listener registration failed status=\(status, privacy: .public)"
+      )
+      return
+    }
     RemoteHostedPIPDiagnostics.logger.notice("bootstrap listener started")
   }
 
-  @objc private func handleBootstrapEvent(
-    _ event: NSAppleEventDescriptor,
-    withReplyEvent replyEvent: NSAppleEventDescriptor
-  ) {
+  fileprivate func handleBootstrapEvent(_ event: UnsafePointer<AppleEvent>) -> OSErr {
     do {
       let request = try RemoteHostedPIPBootstrapRequest(
-        version: event.paramDescriptor(
-          forKeyword: RemoteHostedPIPBootstrapRequest.clientVersionKeyword
+        version: descriptor(
+          from: event,
+          keyword: RemoteHostedPIPBootstrapRequest.clientVersionKeyword,
+          isAttribute: false
         )?.stringValue,
-        senderProcessIdentifier: event.attributeDescriptor(
-          forKeyword: RemoteHostedPIPBootstrapRequest.senderPIDKeyword
+        senderProcessIdentifier: descriptor(
+          from: event,
+          keyword: RemoteHostedPIPBootstrapRequest.senderPIDKeyword,
+          isAttribute: true
         )?.int32Value,
-        replyPortData: event.attributeDescriptor(
-          forKeyword: RemoteHostedPIPBootstrapRequest.replyPortKeyword
+        replyPortData: descriptor(
+          from: event,
+          keyword: RemoteHostedPIPBootstrapRequest.replyPortKeyword,
+          isAttribute: true
         )?.data
       )
       try process(request)
+      return OSErr(noErr)
     } catch {
       RemoteHostedPIPDiagnostics.logger.error(
         "bootstrap rejected: \(String(describing: error), privacy: .public)"
       )
-      replyEvent.setParam(
-        NSAppleEventDescriptor(int32: Int32(errAEEventNotHandled)),
-        forKeyword: Self.errorNumberKeyword
-      )
-      replyEvent.setParam(
-        NSAppleEventDescriptor(string: String(describing: error)),
-        forKeyword: Self.errorStringKeyword
-      )
+      return OSErr(errAEEventNotHandled)
     }
+  }
+
+  private func descriptor(
+    from event: UnsafePointer<AppleEvent>,
+    keyword: AEKeyword,
+    isAttribute: Bool
+  ) -> NSAppleEventDescriptor? {
+    var descriptor = AEDesc()
+    let status = isAttribute
+      ? AEGetAttributeDesc(event, keyword, typeWildCard, &descriptor)
+      : AEGetParamDesc(event, keyword, typeWildCard, &descriptor)
+    guard status == noErr else { return nil }
+    return NSAppleEventDescriptor(aeDescNoCopy: &descriptor)
   }
 
   func process(_ request: RemoteHostedPIPBootstrapRequest) throws {
@@ -207,4 +228,13 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
     presentationCoordinator.handle(event)
   }
+}
+
+private let remoteHostedPIPBootstrapEventHandler: AEEventHandlerUPP = {
+  event, _, reference in
+  guard let event, let reference else { return OSErr(errAEEventNotHandled) }
+  let controller = Unmanaged<RemoteHostedPIPBootstrapController>
+    .fromOpaque(reference)
+    .takeUnretainedValue()
+  return controller.handleBootstrapEvent(event)
 }

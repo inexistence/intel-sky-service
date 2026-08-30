@@ -554,13 +554,15 @@ state image on capture reset. A real-sample regression test covers this path. Th
 `CONFIRMED_INTEL_RUNTIME`; the video-layer correction remains `HIGH_CONFIDENCE` until the next clean
 managed-host run.
 
-The next clean restart exposed a separate startup race: ChatGPT launched the managed service and
-PIP host concurrently, sent its Apple Event while `NSApplication.shared` was still being
-constructed, received `procNotFound` at 15:15:40, and did not resend after the service registered
-its handler at 15:15:41. Core socket discovery still succeeded (`list_apps` returned 71 records),
-but no PIP XPC connection existed. The bootstrap controller is now constructed and its Apple Event
-handler registered before `NSApplication` construction and all visual-runtime warm-up. This ordering
-change is `CONFIRMED_INTEL_RUNTIME` for the failure and `HIGH_CONFIDENCE` pending a clean restart.
+Clean restarts exposed a separate startup race. ChatGPT starts the managed service and PIP host
+concurrently, then sends its Apple Event immediately. Moving `NSAppleEventManager` registration
+before the explicit `NSApplication.shared` access was insufficient because the manager itself
+initializes AppKit: on the 15:24 run the host sent at 15:24:26.409, received `procNotFound`, and the
+service did not finish manager registration until 15:24:27.550. The host did not resend. Bootstrap
+registration now uses the lower-level `AEInstallEventHandler` API, before any AppKit construction,
+while retaining the same request parser, host code-signing authorization, and endpoint transfer.
+The failure and the hidden AppKit initialization are `CONFIRMED_INTEL_RUNTIME`; the low-level
+registration correction remains `HIGH_CONFIDENCE` pending the next clean restart.
 
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
