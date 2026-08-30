@@ -55,7 +55,16 @@ enum ProcessTargetedEventPoster {
     on target: ComputerUseEventTarget,
     _ body: () throws -> T
   ) throws -> T {
-    try withSyntheticFocus(
+    if activeSyntheticFocusTarget != target {
+      switch try ComputerUseFocusCoordinator.shared.withTurnScopedSyntheticFocus(
+        on: target,
+        body
+      ) {
+      case .executed(let result): return result
+      case .unavailable: break
+      }
+    }
+    return try withSyntheticFocus(
       on: target,
       isApplicationActive: {
         NSRunningApplication(processIdentifier: target.processIdentifier)?.isActive == true
@@ -233,7 +242,7 @@ enum ProcessTargetedEventPoster {
     return cgEvent
   }
 
-  private static func postOtherEvent(
+  static func postOtherEvent(
     _ descriptor: SyntheticFocusEventDescriptor,
     to target: ComputerUseEventTarget
   ) throws {

@@ -217,6 +217,7 @@ final class SystemFocusStealGuard: @unchecked Sendable {
   static let shared = SystemFocusStealGuard()
 
   struct Protection: Sendable {
+    static let inert = Protection(identifier: nil)
     fileprivate let identifier: UUID?
   }
 

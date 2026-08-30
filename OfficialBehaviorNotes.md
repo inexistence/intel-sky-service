@@ -327,14 +327,17 @@ focus-steal-preventer entry but does not itself call the explicit deactivate met
 `CONFIRMED_STATIC_BINARY`.
 
 Intel now reads `AXActivationPoint`, reproduces the AppKit mouse construction and window-local SPI,
-and omits the activation click when either the point or SPI is unavailable. It now samples
-`NSRunningApplication.isActive` before and after a physical action: an already active target receives
-no synthetic transition, and a background target that becomes genuinely active during the action
-is not synthetically deactivated. Inactive targets retain the balanced envelope, including on a
-throwing action, and same-target nesting remains deduplicated. This closes the confirmed
-actual-active-state difference while retaining an action-scoped approximation of the official
-observer lifetime. Unit coverage is `HIGH_CONFIDENCE`; an attended active-target runtime trace
-remains `NEEDS_ARM_ORACLE`. An attended real-client
+and omits the activation click when either the point or SPI is unavailable. It samples
+`NSRunningApplication.isActive` before and after physical actions: an already active target receives
+no synthetic transition, and a background target that becomes genuinely active is not
+synthetically deactivated. With Codex turn metadata, an inactive target now keeps one synthetic
+focus lease across consecutive actions. Same-target actions reuse the lease, target changes balance
+the old target before entering the new one, and turn transition/end or safety termination tears the
+lease down before any foreground restoration. Throwing actions tear down immediately, and callers
+without a turn retain the balanced action-scoped fallback. This closes the confirmed
+actual-active-state and action-lifetime differences while retaining a turn-scoped approximation of
+the official observer state machine. Unit coverage is `HIGH_CONFIDENCE`; an attended active-target
+runtime trace remains `NEEDS_ARM_ORACLE`. An attended real-client
 TextEdit smoke proved that background `Super_L+a` now selects the full document and that both
 `type_text` and `paste` replace the selection without taking foreground focus; the fixture was
 restored after both probes. `CONFIRMED_INTEL_RUNTIME`. Earlier probes that replayed only the four
@@ -342,8 +345,9 @@ notifications are retained as negative evidence: the activation-point mouse pair
 window-local coordinate are necessary for AppKit menu-key-equivalent dispatch.
 
 Intel now also installs a suppressible session event tap with the official `1 << 21` mask before
-serving requests. While a synthetic-focus action is in flight, it protects only that inactive
-target PID. A direct protected subject in `NewFront` or `KeyFocusChanged` is passed to dynamically
+serving requests. While a turn-scoped synthetic-focus lease is active, it protects only that
+inactive target PID; callers without turn metadata protect only the in-flight action. A direct
+protected subject in `NewFront` or `KeyFocusChanged` is passed to dynamically
 resolved `CPSReleaseKeyFocusWithID`; the notification is suppressed only after `noErr`. Missing or
 invalid fields, unavailable input monitoring/SPI, release failure, unrelated Apps, unsupported CPS
 subtypes, and any physical user input all pass through. Intel resolves prohibited subjects from the
@@ -356,8 +360,9 @@ one-second retry, the not-yet-understood frontmost-App gate, and the separate
 registration, user-intervention fail-open behavior, and release-before-drop semantics have
 deterministic Intel coverage. A real probe of both currently running ViewBridge helpers safely
 returned their own PIDs because neither exposed focused AX state at that instant.
-`HIGH_CONFIDENCE` for the bounded direct/actual-PID path; exact ViewBridge fallback and
-stream-scoped lifetime remain `NEEDS_ARM_ORACLE` / `KNOWN_DIFFERENCE`.
+`HIGH_CONFIDENCE` for the bounded direct/actual-PID and turn-lifetime paths; exact ViewBridge
+fallback, the official one-second retry, and observer callback timing remain `NEEDS_ARM_ORACLE` /
+`KNOWN_DIFFERENCE`.
 
 An attended negative fixture showed that explicit `NSRunningApplication.activate()` performs an
 ordinary Workspace foreground switch and emits no type-21 process notification to this tap. That
@@ -426,10 +431,10 @@ so old-turn cursor state cannot reappear. `CONFIRMED_INTEL_RUNTIME` for the atte
 `HIGH_CONFIDENCE` for the lifecycle behavior with deterministic regression coverage.
 
 The official cursor's exact artwork, path/spring constants, visibility state machine, menu handling,
-and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel now has the synthetic-focus envelope and
-native PIP-host integration, but its focus illusion is action-scoped rather than maintained by the
-official observer/event-tap state machine across the whole stream. That lifetime distinction remains
-a `KNOWN_DIFFERENCE` pending runtime calibration.
+and turn-scoped lifetime remain `NEEDS_ARM_ORACLE`. Intel now has the synthetic-focus envelope,
+turn-scoped lease lifetime, and native PIP-host integration. Its lease is lifecycle-driven rather
+than maintained by the official frontmost-application observer callbacks; exact callback timing and
+edge-case state transitions remain a `KNOWN_DIFFERENCE` pending ARM runtime calibration.
 
 ## Native host capture and PIP boundary
 
