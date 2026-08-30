@@ -16,6 +16,20 @@ public enum AccessibilitySnapshotError: Error, CustomStringConvertible {
 }
 
 public struct AccessibilitySnapshotter: Sendable {
+  private struct ElementAttributes {
+    let role: String
+    let subrole: String?
+    let identifier: String?
+    let title: String?
+    let description: String?
+    let value: String?
+    let selectedText: String?
+    let enabled: Bool?
+    let focused: Bool
+    let frame: CGRect?
+    let children: [AXUIElement]
+  }
+
   public let maximumDepth: Int
   public let maximumElements: Int
   private let geometry = AccessibilityElementGeometry()
@@ -84,37 +98,37 @@ public struct AccessibilitySnapshotter: Sendable {
     state.count += 1
     state.elementsByID[String(index)] = element
 
-    let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown"
+    let attributes = elementAttributes(element)
+    let role = attributes.role
     let locator = AccessibilityElementLocator(
       path: path,
       rolePath: rolePath + [role],
       role: role,
-      subrole: stringAttribute(element, kAXSubroleAttribute as CFString),
-      identifier: stringAttribute(element, kAXIdentifierAttribute as CFString),
-      title: stringAttribute(element, kAXTitleAttribute as CFString),
-      description: stringAttribute(element, kAXDescriptionAttribute as CFString),
-      frame: geometry.frame(of: element)
+      subrole: attributes.subrole,
+      identifier: attributes.identifier,
+      title: attributes.title,
+      description: attributes.description,
+      frame: attributes.frame
     )
     state.locatorsByID[String(index)] = locator
 
     var fields = [
       "[\(index)]", role,
     ]
-    appendField("title", stringAttribute(element, kAXTitleAttribute as CFString), to: &fields)
-    appendField(
-      "description", stringAttribute(element, kAXDescriptionAttribute as CFString), to: &fields)
-    appendField(
-      "value", printableValue(copyAttribute(element, kAXValueAttribute as CFString)), to: &fields)
-    appendField(
-      "selectedText", stringAttribute(element, kAXSelectedTextAttribute as CFString), to: &fields)
-    if let enabled = copyAttribute(element, kAXEnabledAttribute as CFString) as? Bool {
+    appendField("title", attributes.title, to: &fields)
+    appendField("description", attributes.description, to: &fields)
+    appendField("value", attributes.value, to: &fields)
+    appendField("selectedText", attributes.selectedText, to: &fields)
+    if let enabled = attributes.enabled {
       fields.append("enabled=\(enabled)")
     }
-    if let focused = copyAttribute(element, kAXFocusedAttribute as CFString) as? Bool, focused {
+    if attributes.focused {
       fields.append("focused=true")
     }
-    if let frame = frameDescription(element) {
-      fields.append("frame=\(frame)")
+    if let frame = attributes.frame {
+      let frameDescription =
+        "(\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height)))"
+      fields.append("frame=\(frameDescription)")
     }
     let actions = actionDescriptions(element)
     if !actions.isEmpty {
@@ -126,12 +140,12 @@ public struct AccessibilitySnapshotter: Sendable {
     lines.append(String(repeating: "  ", count: depth) + fields.joined(separator: " "))
 
     guard depth < maximumDepth else {
-      if !copyElements(element, kAXChildrenAttribute as CFString).isEmpty {
+      if !attributes.children.isEmpty {
         state.wasTruncated = true
       }
       return
     }
-    let children = copyElements(element, kAXChildrenAttribute as CFString)
+    let children = attributes.children
     for (offset, child) in children.enumerated() {
       append(
         child,
@@ -151,6 +165,93 @@ public struct AccessibilitySnapshotter: Sendable {
   private func appendField(_ name: String, _ value: String?, to fields: inout [String]) {
     guard let value, !value.isEmpty else { return }
     fields.append("\(name)=\(quoted(value))")
+  }
+
+  private func elementAttributes(_ element: AXUIElement) -> ElementAttributes {
+    let requested = [
+      kAXRoleAttribute,
+      kAXSubroleAttribute,
+      kAXIdentifierAttribute,
+      kAXTitleAttribute,
+      kAXDescriptionAttribute,
+      kAXValueAttribute,
+      kAXSelectedTextAttribute,
+      kAXEnabledAttribute,
+      kAXFocusedAttribute,
+      kAXPositionAttribute,
+      kAXSizeAttribute,
+      kAXChildrenAttribute,
+    ] as CFArray
+    var rawValues: CFArray?
+    guard
+      AXUIElementCopyMultipleAttributeValues(
+        element,
+        requested,
+        AXCopyMultipleAttributeOptions(rawValue: 0),
+        &rawValues
+      ) == .success,
+      let values = rawValues as? [Any],
+      values.count == 12
+    else {
+      return individuallyCopiedAttributes(element)
+    }
+    return ElementAttributes(
+      role: values[0] as? String ?? "AXUnknown",
+      subrole: values[1] as? String,
+      identifier: values[2] as? String,
+      title: values[3] as? String,
+      description: values[4] as? String,
+      value: printableValue(values[5] as CFTypeRef),
+      selectedText: values[6] as? String,
+      enabled: values[7] as? Bool,
+      focused: values[8] as? Bool ?? false,
+      frame: frame(position: values[9], size: values[10]),
+      children: elements(in: values[11])
+    )
+  }
+
+  private func individuallyCopiedAttributes(_ element: AXUIElement) -> ElementAttributes {
+    ElementAttributes(
+      role: stringAttribute(element, kAXRoleAttribute as CFString) ?? "AXUnknown",
+      subrole: stringAttribute(element, kAXSubroleAttribute as CFString),
+      identifier: stringAttribute(element, kAXIdentifierAttribute as CFString),
+      title: stringAttribute(element, kAXTitleAttribute as CFString),
+      description: stringAttribute(element, kAXDescriptionAttribute as CFString),
+      value: printableValue(copyAttribute(element, kAXValueAttribute as CFString)),
+      selectedText: stringAttribute(element, kAXSelectedTextAttribute as CFString),
+      enabled: copyAttribute(element, kAXEnabledAttribute as CFString) as? Bool,
+      focused: copyAttribute(element, kAXFocusedAttribute as CFString) as? Bool ?? false,
+      frame: geometry.frame(of: element),
+      children: copyElements(element, kAXChildrenAttribute as CFString)
+    )
+  }
+
+  private func elements(in value: Any) -> [AXUIElement] {
+    guard let values = value as? [Any] else { return [] }
+    return values.compactMap { value in
+      let reference = value as CFTypeRef
+      guard CFGetTypeID(reference) == AXUIElementGetTypeID() else { return nil }
+      return unsafeDowncast(reference, to: AXUIElement.self)
+    }
+  }
+
+  private func frame(position: Any, size: Any) -> CGRect? {
+    let positionReference = position as CFTypeRef
+    let sizeReference = size as CFTypeRef
+    guard CFGetTypeID(positionReference) == AXValueGetTypeID(),
+      CFGetTypeID(sizeReference) == AXValueGetTypeID()
+    else { return nil }
+    let positionValue = unsafeDowncast(positionReference, to: AXValue.self)
+    let sizeValue = unsafeDowncast(sizeReference, to: AXValue.self)
+    var point = CGPoint.zero
+    var dimensions = CGSize.zero
+    guard AXValueGetValue(positionValue, .cgPoint, &point),
+      AXValueGetValue(sizeValue, .cgSize, &dimensions),
+      point.x.isFinite, point.y.isFinite,
+      dimensions.width.isFinite, dimensions.height.isFinite,
+      dimensions.width > 0, dimensions.height > 0
+    else { return nil }
+    return CGRect(origin: point, size: dimensions)
   }
 
   private func quoted(_ value: String) -> String {
@@ -198,11 +299,6 @@ public struct AccessibilitySnapshotter: Sendable {
     if let string = value as? String { return string }
     if let number = value as? NSNumber { return number.stringValue }
     return nil
-  }
-
-  private func frameDescription(_ element: AXUIElement) -> String? {
-    guard let frame = geometry.frame(of: element) else { return nil }
-    return "(\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height)))"
   }
 
   private func actionDescriptions(_ element: AXUIElement) -> [String] {

@@ -491,6 +491,15 @@ request/reply endpoint transfer against the stale Mach reply port, which would o
 Apple Event main thread and starve Appshot and direct state requests. A disconnected host remains
 eligible for a fresh endpoint transfer. `CONFIRMED_RUNTIME_INTEL` / `HIGH_CONFIDENCE`.
 
+Intel batches the core AX attributes for each snapshot element with
+`AXUIElementCopyMultipleAttributeValues`, while retaining per-element action descriptions and
+settable checks. This preserves the public tree and action semantics but removes repeated
+cross-process calls for role, labels, value, focus, geometry, and children. The attended Notes
+workload exposed the need for this: overlapping 1,500-element captures left Appshot on its black
+loading surface for 86 seconds even though every resulting PNG contained the correct pixels; an
+equivalent 1,500-element batch traversal including actions and settable checks measured 5.2 seconds
+before deployment. `CONFIRMED_RUNTIME_INTEL` / `HIGH_CONFIDENCE`.
+
 Intel now also tracks successfully captured Apps as turn-scoped sessions, returns the current
 ChatGPT status-menu schema (with Computer History truthfully reported unavailable/stopped), and
 handles the authenticated App-stop request. A stop immediately removes the App from status state,
