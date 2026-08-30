@@ -401,9 +401,38 @@ revokes cursor, intervention baseline, App-session, Capture Stream, Event Stream
 then performs the conservative focus restore. A lock-screen or user-intervention error is a distinct
 safety termination: it performs the same revocation, clears the current turn so a same-ID retry must
 start fresh, and deliberately does not activate a restore target. `HIGH_CONFIDENCE`; exact official
-component ordering remains `NEEDS_ARM_ORACLE`. A host-style dynamic turn-ended smoke is still
-`NEEDS_ARM_ORACLE`: node_repl's seatbelt correctly denied a direct JavaScript socket connection,
-and the public high-level `sky` surface does not expose the lifecycle request.
+component ordering remains `NEEDS_ARM_ORACLE`.
+
+Production Intel ChatGPT does not send `ComputerUseIPCCodexTurnEndedRequest` to its managed service.
+Static caller inspection and two attended cross-turn traces instead show that ChatGPT completes the
+native Remote Hosted PIP presentation in its own task controller. The host retains a completed
+presentation for an intentional 30-second grace period, then rejects presentation-scoped XPC calls
+with `RemoteHostedPIPContent` code 3. No `com.openai.codex.computer-use.status-item-state-changed`
+distributed notification was emitted at that boundary. Intel therefore keeps the explicit request
+and observed turn-ID transition paths for compatible callers, and additionally probes the published
+host presentation with the idempotent source-PID selector. It tolerates a disconnected host for
+reconnect and one transient failure; two failures against the same publication generation stop the
+capture and invalidate local presentation state. This is a host-lifecycle signal, not an inactivity
+timeout, so a long active turn is never ended merely because it has no requests.
+
+An attended deployed run published Notes presentation
+`781E5132-83D8-40A0-A751-229863DEC97E` at 00:53:35. ChatGPT completed the turn at 00:53:40, expired
+the presentation at 00:54:12, and finalized its exit animation at 00:54:12.944. The service received
+two code-3 rejections at 00:54:12.847 and 00:54:15.039, logged `host retired presentation`, called
+`SCStream.stopCapture`, finalized the FigVideoQueue, and deallocated/deregistered the stream by
+00:54:15.042. No subsequent Computer Use request was issued to trigger cleanup, and the liveness
+probes did not extend the official host grace period. Deterministic tests cover two-strike cleanup,
+temporary disconnect, explicit end, implicit transition, reconnect generations, and publication/end
+races. `CONFIRMED_INTEL_RUNTIME` for production host completion and automatic capture teardown;
+the ARM service's internal component ordering remains `NEEDS_ARM_ORACLE`.
+
+The final error-classified build repeated the same production path with Notes presentation
+`1EE6D108-EC79-45B2-80A2-3A296ADAFB09`: ChatGPT completed at 00:59:28.030, expired it at
+00:59:57.892, and the service observed only two explicit `RemoteHostedPIPContent` code-3 replies
+before stopping/finalizing/deallocating capture at 01:00:00.801–00.803. Ordinary unavailable or
+timeout failures do not count as retirement, and a republish generation invalidates already queued
+probes. The final installed executable SHA-256 is
+`959b2b1169041d5ab13908d5ac4f0a1bb2846f3105d182fec3fe0d694b977dc3`.
 
 The socket server now accepts up to eight clients concurrently while serializing Computer Use
 request execution. This prevents a persistent node_repl transport from blocking a separate trusted

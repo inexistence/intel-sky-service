@@ -424,6 +424,148 @@ import UniformTypeIdentifiers
   )
 }
 
+@Test func retiredHostPresentationStopsCaptureAfterTwoLivenessFailures() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let scheduler = RecordingPIPLivenessScheduler()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture },
+    hostLivenessProbeInterval: 2,
+    hostLivenessScheduler: { delay, operation in
+      scheduler.schedule(after: delay, operation: operation)
+    }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  let presentationID = try #require(host.presentationID)
+  #expect(scheduler.delays == [2])
+  host.failNextSourceCallsAsRetired(count: 2)
+
+  scheduler.runNext()
+  #expect(!capture.stopped)
+  #expect(scheduler.delays == [2])
+
+  scheduler.runNext()
+  #expect(capture.stopped)
+  #expect(host.events.contains("invalidate:\(presentationID)"))
+  #expect(scheduler.delays.isEmpty)
+}
+
+@Test func disconnectedHostDefersLivenessProbeWithoutStoppingCapture() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let scheduler = RecordingPIPLivenessScheduler()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture },
+    hostLivenessProbeInterval: 2,
+    hostLivenessScheduler: { delay, operation in
+      scheduler.schedule(after: delay, operation: operation)
+    }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  host.connected = false
+
+  scheduler.runNext()
+  #expect(!capture.stopped)
+  #expect(host.events.filter { $0 == "source:123" }.count == 1)
+  #expect(scheduler.delays == [2])
+
+  host.connected = true
+  scheduler.runNext()
+  #expect(!capture.stopped)
+  #expect(host.events.filter { $0 == "source:123" }.count == 2)
+  #expect(scheduler.delays == [2])
+}
+
+@Test func transientLivenessFailuresDoNotRetireActivePresentation() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let scheduler = RecordingPIPLivenessScheduler()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture },
+    hostLivenessProbeInterval: 2,
+    hostLivenessScheduler: { delay, operation in
+      scheduler.schedule(after: delay, operation: operation)
+    }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  host.failNextSourceCallsAsUnavailable(count: 2)
+
+  scheduler.runNext()
+  scheduler.runNext()
+
+  #expect(!capture.stopped)
+  #expect(scheduler.delays == [2])
+}
+
+@Test func republishInvalidatesEarlierLivenessGeneration() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let scheduler = RecordingPIPLivenessScheduler()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture },
+    hostLivenessProbeInterval: 2,
+    hostLivenessScheduler: { delay, operation in
+      scheduler.schedule(after: delay, operation: operation)
+    }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  coordinator.hostDidReconnect()
+  #expect(scheduler.delays == [2, 2])
+  let sourceCallsAfterRepublish = host.events.filter { $0 == "source:123" }.count
+
+  scheduler.runNext()
+  #expect(host.events.filter { $0 == "source:123" }.count == sourceCallsAfterRepublish)
+  #expect(scheduler.delays == [2])
+
+  scheduler.runNext()
+  #expect(host.events.filter { $0 == "source:123" }.count == sourceCallsAfterRepublish + 1)
+  #expect(scheduler.delays == [2])
+}
+
 private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   @unchecked Sendable
 {
@@ -464,6 +606,22 @@ private final class RecordingPIPCaptureFactory: @unchecked Sendable {
   }
 }
 
+private final class RecordingPIPLivenessScheduler: @unchecked Sendable {
+  private let lock = NSLock()
+  private var pending: [(delay: TimeInterval, operation: @Sendable () -> Void)] = []
+
+  var delays: [TimeInterval] { lock.withLock { pending.map(\.delay) } }
+
+  func schedule(after delay: TimeInterval, operation: @escaping @Sendable () -> Void) {
+    lock.withLock { pending.append((delay, operation)) }
+  }
+
+  func runNext() {
+    let operation = lock.withLock { pending.isEmpty ? nil : pending.removeFirst().operation }
+    operation?()
+  }
+}
+
 private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @unchecked Sendable {
   private let lock = NSLock()
   private var storedEvents: [String] = []
@@ -471,6 +629,7 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
   private var publishHandler: (() -> Void)?
   private var storedConnected: Bool
   private var publishUnavailableCount = 0
+  private var sourceFailures: [RemoteHostedPIPHostCallError] = []
   var events: [String] { lock.withLock { storedEvents } }
   var presentationID: String? { lock.withLock { storedPresentationID } }
   var isConnected: Bool { lock.withLock { storedConnected } }
@@ -489,6 +648,21 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
 
   func failNextPublishAsUnavailable() {
     lock.withLock { publishUnavailableCount += 1 }
+  }
+
+  func failNextSourceCallsAsUnavailable(count: Int) {
+    lock.withLock { sourceFailures.append(contentsOf: repeatElement(.unavailable, count: count)) }
+  }
+
+  func failNextSourceCallsAsRetired(count: Int) {
+    let error = NSError(
+      domain: "RemoteHostedPIPContent",
+      code: 3,
+      userInfo: [NSLocalizedDescriptionKey: "The remote hosted PiP presentation is unavailable."]
+    )
+    lock.withLock {
+      sourceFailures.append(contentsOf: repeatElement(.rejected(error), count: count))
+    }
   }
 
   func publishPresentation(
@@ -511,7 +685,11 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
   }
 
   func setSourceProcessIdentifier(_ pid: pid_t, presentationID: String) throws {
-    lock.withLock { storedEvents.append("source:\(pid)") }
+    let failure = lock.withLock { () -> RemoteHostedPIPHostCallError? in
+      storedEvents.append("source:\(pid)")
+      return sourceFailures.isEmpty ? nil : sourceFailures.removeFirst()
+    }
+    if let failure { throw failure }
   }
 
   func prepareResize(

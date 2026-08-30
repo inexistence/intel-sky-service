@@ -45,6 +45,8 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     var publicationState: PublicationState
     var captureStarted: Bool
     var ending: Bool
+    var livenessGeneration: UInt64
+    var consecutiveLivenessFailures: Int
   }
 
   private let lock = NSLock()
@@ -52,6 +54,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private let surfaceFactory: @Sendable (URL) throws -> RemoteHostedPIPSurface
   private let captureFactory:
     @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) -> any RemoteHostedPIPWindowCapturing
+  private let hostLivenessProbeInterval: TimeInterval
+  private let hostLivenessScheduler:
+    @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
   private var presentations: [Key: Presentation] = [:]
   private var maximumDisplayDimension: CGFloat?
 
@@ -63,11 +68,22 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     captureFactory: @escaping @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) ->
       any RemoteHostedPIPWindowCapturing = {
         RemoteHostedPIPWindowCapture(processIdentifier: $0, outputSize: $1, surface: $2)
-      }
+      },
+    hostLivenessProbeInterval: TimeInterval = 2,
+    hostLivenessScheduler: @escaping @Sendable (
+      TimeInterval, @escaping @Sendable () -> Void
+    ) -> Void = { delay, operation in
+      DispatchQueue.global(qos: .utility).asyncAfter(
+        deadline: .now() + delay,
+        execute: operation
+      )
+    }
   ) {
     self.host = host
     self.surfaceFactory = surfaceFactory
     self.captureFactory = captureFactory
+    self.hostLivenessProbeInterval = hostLivenessProbeInterval
+    self.hostLivenessScheduler = hostLivenessScheduler
   }
 
   deinit {
@@ -292,7 +308,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           nextOperationID: 1,
           publicationState: .pending,
           captureStarted: false,
-          ending: false
+          ending: false,
+          livenessGeneration: 0,
+          consecutiveLivenessFailures: 0
         )
       }
       if host.isConnected {
@@ -346,7 +364,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           nextOperationID: existing.nextOperationID + 1,
           publicationState: .published,
           captureStarted: true,
-          ending: false
+          ending: false,
+          livenessGeneration: existing.livenessGeneration,
+          consecutiveLivenessFailures: existing.consecutiveLivenessFailures
         )
         return true
       }
@@ -391,7 +411,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           nextOperationID: existing.nextOperationID,
           publicationState: .pending,
           captureStarted: false,
-          ending: false
+          ending: false,
+          livenessGeneration: existing.livenessGeneration,
+          consecutiveLivenessFailures: existing.consecutiveLivenessFailures
         )
         return true
       }
@@ -523,22 +545,24 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         presentation.processIdentifier,
         presentationID: presentation.id
       )
-      let shouldStartCapture = lock.withLock { () -> Bool? in
+      let publication = lock.withLock { () -> (shouldStartCapture: Bool, generation: UInt64)? in
         guard var current = presentations[key], current.id == presentation.id,
           !current.ending
         else { return nil }
         current.publicationState = .published
         let shouldStart = !current.captureStarted
         current.captureStarted = true
+        current.livenessGeneration &+= 1
+        current.consecutiveLivenessFailures = 0
         presentations[key] = current
-        return shouldStart
+        return (shouldStart, current.livenessGeneration)
       }
-      guard let shouldStartCapture else {
+      guard let publication else {
         try? host.invalidatePresentation(id: presentation.id)
         invalidate(presentationID: presentation.id, notifyHost: false)
         return
       }
-      if shouldStartCapture {
+      if publication.shouldStartCapture {
         presentation.capture.start()
         RemoteHostedPIPDiagnostics.logger.notice(
           "presentation capture requested id=\(presentation.id, privacy: .public)"
@@ -546,6 +570,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       } else if captureWasStarted {
         presentation.capture.refresh(outputSize: presentation.surface.captureOutputSize)
       }
+      scheduleHostLivenessProbe(
+        presentationID: presentation.id,
+        generation: publication.generation
+      )
     } catch {
       let isUnavailable: Bool
       if let hostError = error as? RemoteHostedPIPHostCallError,
@@ -572,6 +600,99 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       )
       invalidate(presentationID: presentation.id)
     }
+  }
+
+  /// Production ChatGPT completes PIP turns inside its native host but does not send the public
+  /// CodexTurnEnded request to the managed Intel service. The host intentionally retains completed
+  /// presentations for a 30-second grace period, then rejects presentation-scoped calls. An
+  /// idempotent source-PID probe lets the producer stop capture promptly after that official grace
+  /// period without guessing turn duration or treating ordinary request inactivity as turn end.
+  private func scheduleHostLivenessProbe(presentationID: String, generation: UInt64) {
+    hostLivenessScheduler(hostLivenessProbeInterval) { [weak self] in
+      self?.probeHostLiveness(presentationID: presentationID, generation: generation)
+    }
+  }
+
+  private func probeHostLiveness(presentationID: String, generation: UInt64) {
+    guard
+      let presentation = lock.withLock({
+        presentations.values.first {
+          $0.id == presentationID && !$0.ending
+            && $0.publicationState == .published
+            && $0.livenessGeneration == generation
+        }
+      })
+    else { return }
+
+    guard host.isConnected else {
+      scheduleHostLivenessProbe(presentationID: presentationID, generation: generation)
+      return
+    }
+
+    do {
+      try host.setSourceProcessIdentifier(
+        presentation.processIdentifier,
+        presentationID: presentationID
+      )
+      let remainsCurrent = lock.withLock { () -> Bool in
+        guard var current = presentations.values.first(where: { $0.id == presentationID }),
+          !current.ending, current.publicationState == .published,
+          current.livenessGeneration == generation
+        else { return false }
+        current.consecutiveLivenessFailures = 0
+        guard let key = presentations.first(where: { $0.value.id == presentationID })?.key else {
+          return false
+        }
+        presentations[key] = current
+        return true
+      }
+      if remainsCurrent {
+        scheduleHostLivenessProbe(presentationID: presentationID, generation: generation)
+      }
+    } catch {
+      guard Self.isRetiredPresentationError(error) else {
+        let remainsCurrent = lock.withLock { () -> Bool in
+          guard let entry = presentations.first(where: { $0.value.id == presentationID }),
+            var current = presentations[entry.key], !current.ending,
+            current.publicationState == .published,
+            current.livenessGeneration == generation
+          else { return false }
+          current.consecutiveLivenessFailures = 0
+          presentations[entry.key] = current
+          return true
+        }
+        if remainsCurrent {
+          scheduleHostLivenessProbe(presentationID: presentationID, generation: generation)
+        }
+        return
+      }
+      let shouldInvalidate = lock.withLock { () -> Bool in
+        guard let key = presentations.first(where: { $0.value.id == presentationID })?.key,
+          var current = presentations[key], !current.ending,
+          current.publicationState == .published,
+          current.livenessGeneration == generation
+        else { return false }
+        current.consecutiveLivenessFailures += 1
+        presentations[key] = current
+        return current.consecutiveLivenessFailures >= 2
+      }
+      if shouldInvalidate {
+        RemoteHostedPIPDiagnostics.logger.notice(
+          "host retired presentation id=\(presentationID, privacy: .public); stopping capture"
+        )
+        invalidate(presentationID: presentationID)
+      } else {
+        scheduleHostLivenessProbe(presentationID: presentationID, generation: generation)
+      }
+    }
+  }
+
+  private static func isRetiredPresentationError(_ error: Error) -> Bool {
+    guard let hostError = error as? RemoteHostedPIPHostCallError,
+      case .rejected(let underlyingError) = hostError
+    else { return false }
+    let error = underlyingError as NSError
+    return error.domain == "RemoteHostedPIPContent" && error.code == 3
   }
 
   private static func nonempty(_ value: Any?) -> String? {
