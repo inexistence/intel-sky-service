@@ -40,6 +40,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private let captureFactory:
     @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) -> any RemoteHostedPIPWindowCapturing
   private var presentations: [Key: Presentation] = [:]
+  private var maximumDisplayDimension: CGFloat?
 
   init(
     host: any RemoteHostedPIPHostCalling,
@@ -75,6 +76,9 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     connection.setConnectionStateHandler { [weak self] connected in
       if connected { self?.hostDidReconnect() }
     }
+    connection.setMaximumDisplaySizeHandler { [weak self] size in
+      self?.setMaximumDisplayDimension(CGFloat(size))
+    }
   }
 
   func hostDidReconnect() {
@@ -104,7 +108,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           invalidate(presentationID: presentation.id)
           continue
         }
-        presentation.capture.refresh(outputSize: presentation.surface.size)
+        presentation.capture.refresh(outputSize: presentation.surface.captureOutputSize)
       } catch {
         RemoteHostedPIPDiagnostics.logger.error(
           "presentation republish failed id=\(presentation.id, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -114,9 +118,56 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     }
   }
 
-  func updateCursor(point: CGPoint, isActive: Bool) {
-    guard lock.withLock({ !presentations.isEmpty }) else { return }
+  @discardableResult
+  func updateCursor(point: CGPoint, isActive: Bool, isPressed: Bool) -> Bool {
+    let surfaces = lock.withLock {
+      presentations.values.compactMap { $0.ending ? nil : $0.surface }
+    }
+    guard !surfaces.isEmpty else { return false }
+    for surface in surfaces {
+      surface.updateCursor(screenPoint: point, isActive: isActive, isPressed: isPressed)
+    }
     try? host.setCursorLocation(point, isActive: isActive)
+    return true
+  }
+
+  func setMaximumDisplayDimension(_ maximumDimension: CGFloat) {
+    guard maximumDimension.isFinite, maximumDimension > 0 else { return }
+    let current = lock.withLock { () -> [(Key, Presentation)] in
+      maximumDisplayDimension = maximumDimension
+      return presentations.compactMap { key, presentation in
+        presentation.ending ? nil : (key, presentation)
+      }
+    }
+    for (key, presentation) in current {
+      guard presentation.surface.setMaximumDisplayDimension(maximumDimension) else { continue }
+      do {
+        let fencePort = try presentation.surface.createFencePort()
+        defer { mach_port_deallocate(remoteHostedPIPTaskPort(), fencePort) }
+        try host.prepareResize(
+          presentationID: presentation.id,
+          operationID: presentation.nextOperationID,
+          contextID: presentation.surface.contextID,
+          size: presentation.surface.size,
+          fencePort: fencePort
+        )
+        try host.completeOperation(
+          presentationID: presentation.id,
+          operationID: presentation.nextOperationID
+        )
+        lock.withLock {
+          guard var stored = presentations[key], stored.id == presentation.id else { return }
+          stored.nextOperationID += 1
+          presentations[key] = stored
+        }
+        presentation.capture.refresh(outputSize: presentation.surface.captureOutputSize)
+      } catch {
+        RemoteHostedPIPDiagnostics.logger.error(
+          "maximum display resize failed id=\(presentation.id, privacy: .public): \(String(describing: error), privacy: .public)"
+        )
+        invalidate(presentationID: presentation.id)
+      }
+    }
   }
 
   func stopApplication(bundleIdentifier: String) {
@@ -217,12 +268,13 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
           return
         }
       }
-      existing.capture.refresh(outputSize: existing.surface.size)
+      existing.capture.refresh(outputSize: existing.surface.captureOutputSize)
       return
     }
 
     do {
       let surface = try surfaceFactory(imageURL)
+      surface.setMaximumDisplayDimension(lock.withLock { maximumDisplayDimension })
       let presentationID = UUID().uuidString
       RemoteHostedPIPDiagnostics.logger.notice(
         "publishing presentation id=\(presentationID, privacy: .public) app=\(bundleIdentifier, privacy: .public) pid=\(processIdentifier, privacy: .public) size=\(surface.size.width, privacy: .public)x\(surface.size.height, privacy: .public)"
@@ -243,7 +295,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         try? host.invalidatePresentation(id: presentationID)
         throw error
       }
-      let capture = captureFactory(processIdentifier, surface.size, surface)
+      let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
       lock.withLock {
         presentations[key] = Presentation(
           id: presentationID,
@@ -274,7 +326,8 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   ) {
     do {
       let surface = try surfaceFactory(imageURL)
-      let capture = captureFactory(processIdentifier, surface.size, surface)
+      surface.setMaximumDisplayDimension(lock.withLock { maximumDisplayDimension })
+      let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
       let fencePort = try surface.createFencePort()
       defer { mach_port_deallocate(remoteHostedPIPTaskPort(), fencePort) }
       try host.prepareContextReplacement(

@@ -603,6 +603,20 @@ while preserving front order and sole compact windows. The bootstrap handler now
 standard success reply (`errn=0`) so the already-successful endpoint exchange does not leave the
 sender waiting for an empty raw reply.
 
+The 16:23 managed launch after lazy bootstrap registration connected the unmodified Intel host on
+the first endpoint transfer. The service published Notes and Finder presentations, captured valid
+ScreenCaptureKit frames, and CoreMedia displayed subsequent action frames with zero drops. Human
+on-glass evidence supplied by the user corrected the initial interpretation of the screenshot: the
+translucent hosted PIP contained only the lower-left portion of the Notes window rather than a
+complete Finder window; only its lower-left corner appeared rounded. The same attended run showed
+the compatibility service's custom cursor outside the hosted PIP, with a style different from ARM.
+Therefore real cross-process pixels are confirmed, but complete geometry and cursor rendering are
+not yet confirmed. Fresh Notes and Finder presentations used new context and presentation IDs while
+invalidating their predecessors, confirming target transition cleanup. The host still logs
+`errAETimeout` 15 seconds after the endpoint exchange even though the raw handler reports
+`replyStatus=0`, XPC is accepted, and the host logs `connected to CUAService`; this is a remaining
+bootstrap-reply difference that does not tear down the live PIP channel.
+
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
 `setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore
@@ -620,7 +634,21 @@ CAContext with `contextWithCGSConnection:options:`. On this Intel system that fa
 
 ARM imports ScreenCaptureKit and AVFoundation, and its `RemoteHostedPIPWindowRenderer` metadata
 contains `SCStream`, `SCContentFilter`, `SCShareableContent`, `AVSampleBufferDisplayLayer`, separate
-window/cursor display layers, and separate capture-stream fields. `CONFIRMED_STATIC_BINARY`.
+window/cursor display layers, separate capture-stream fields, `currentSourceSize`,
+`currentPresentationSize`, and `maxDisplaySize`. Its cursor metadata contains target/crop geometry
+and a separate cursor capture key; the bundled `SoftwareCursor` rendition is 200x230 with alpha.
+The installed Intel host's JavaScript consumes the XPC cursor location as a global screen point for
+the ChatGPT Pet/overlay and does not composite that cursor into the hosted content. These facts
+explain both attended failures: Intel had published the full source pixel size after the host asked
+for a 200-point maximum, and its fallback `NSPanel` cursor remained outside the official PIP.
+`CONFIRMED_STATIC_BINARY` / `CONFIRMED_INTEL_RUNTIME`.
+
+The pending Intel correction now separates source, presentation, and 2x capture sizes, fits the
+CAContext root to the host maximum, tracks the selected `SCWindow.frame`, and composites an ARM
+SoftwareCursor rendition plus click/drag pressed state above the live and fallback layers. When a
+hosted presentation accepts cursor state, the separate local cursor panel is immediately hidden.
+This implementation has unit coverage but remains pending deployment and attended verification.
+`PARTIAL`.
 
 Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
 producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
@@ -705,7 +733,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, and ViewBridge coverage brought that checkpoint to 173
-  tests; the current complete suite contains 205 tests.
+  tests; the current complete suite contains 214 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
@@ -758,7 +786,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 206 Swift tests, the six-case Node oracle suite, the
+- The current runtime checkpoint passes 214 Swift tests, the six-case Node oracle suite, the
   soft-link hash test, the 12-selector Intel PIP-host audit, and an x86_64 release build compiled
   with warnings as errors.
 

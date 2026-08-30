@@ -98,6 +98,33 @@ import UniformTypeIdentifiers
   #expect(host.events.contains("invalidate:\(presentationID)"))
 }
 
+@Test func hostMaximumDisplaySizeResizesPublishedContentAndRetinaCapture() throws {
+  let imageURL = try makePIPTestImage(width: 1_000, height: 500)
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  let presentationID = try #require(host.presentationID)
+
+  coordinator.setMaximumDisplayDimension(200)
+
+  #expect(host.events.contains("prepare:\(presentationID):1:200x100"))
+  #expect(host.events.contains("complete:\(presentationID):1"))
+  #expect(capture.outputSize == CGSize(width: 400, height: 200))
+}
+
 @Test func turnTransitionEndsPIPWithoutWaitingForExplicitEndRequest() throws {
   let imageURL = try makePIPTestImage()
   defer { try? FileManager.default.removeItem(at: imageURL) }

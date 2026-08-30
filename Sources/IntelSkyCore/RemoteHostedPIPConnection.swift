@@ -54,6 +54,7 @@ final class RemoteHostedPIPContentProducer: NSObject,
   private var actionHandler: (@Sendable (String, String) throws -> Void)?
   private var didEndStreamHandler: (@Sendable (String) -> Void)?
   private var connectionStateHandler: (@Sendable (Bool) -> Void)?
+  private var maximumDisplaySizeHandler: (@Sendable (Double) -> Void)?
 
   var isConnected: Bool { lock.withLock { connected } }
   var maxDisplaySize: Double? { lock.withLock { maximumDisplaySize } }
@@ -74,11 +75,15 @@ final class RemoteHostedPIPContentProducer: NSObject,
       reply(Self.error(code: 2, description: "The PIP maximum display size is invalid."))
       return
     }
-    lock.withLock { maximumDisplaySize = size }
+    let handler = lock.withLock { () -> (@Sendable (Double) -> Void)? in
+      maximumDisplaySize = size
+      return maximumDisplaySizeHandler
+    }
     RemoteHostedPIPDiagnostics.logger.notice(
       "native host set maximum display size=\(size, privacy: .public)"
     )
     reply(nil)
+    handler?(size)
   }
 
   func performAction(
@@ -123,6 +128,14 @@ final class RemoteHostedPIPContentProducer: NSObject,
 
   func setConnectionStateHandler(_ handler: @escaping @Sendable (Bool) -> Void) {
     lock.withLock { connectionStateHandler = handler }
+  }
+
+  func setMaximumDisplaySizeHandler(_ handler: @escaping @Sendable (Double) -> Void) {
+    let existing = lock.withLock { () -> Double? in
+      maximumDisplaySizeHandler = handler
+      return maximumDisplaySize
+    }
+    if let existing { handler(existing) }
   }
 
   private static func error(code: Int, description: String) -> NSError {
@@ -179,6 +192,10 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
 
   func setConnectionStateHandler(_ handler: @escaping @Sendable (Bool) -> Void) {
     producer.setConnectionStateHandler(handler)
+  }
+
+  func setMaximumDisplaySizeHandler(_ handler: @escaping @Sendable (Double) -> Void) {
+    producer.setMaximumDisplaySizeHandler(handler)
   }
 
   func publishPresentation(

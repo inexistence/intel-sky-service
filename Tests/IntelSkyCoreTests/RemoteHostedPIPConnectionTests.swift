@@ -123,6 +123,17 @@ private nonisolated(unsafe) func pipTestTaskPort() -> mach_port_t {
   #expect(states.values == [true, false])
 }
 
+@Test func pipProducerReplaysAndPublishesMaximumDisplaySize() {
+  let producer = RemoteHostedPIPContentProducer()
+  let sizes = LockedValues<Double>()
+  producer.setMaxDisplaySize(200) { error in #expect(error == nil) }
+
+  producer.setMaximumDisplaySizeHandler { sizes.append($0) }
+  producer.setMaxDisplaySize(320) { error in #expect(error == nil) }
+
+  #expect(sizes.values == [200, 320])
+}
+
 private struct AllowAnyProcessAuthorizer: ProcessAuthorizing {
   func authorize(processIdentifier: pid_t) throws {}
 }
@@ -132,6 +143,13 @@ private final class PIPReplyResult: @unchecked Sendable {
   private var storedError: Error?
   var error: Error? { lock.withLock { storedError } }
   func record(_ error: Error?) { lock.withLock { storedError = error } }
+}
+
+private final class LockedValues<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [Value] = []
+  var values: [Value] { lock.withLock { stored } }
+  func append(_ value: Value) { lock.withLock { stored.append(value) } }
 }
 
 private final class PIPConnectionStateRecorder: @unchecked Sendable {

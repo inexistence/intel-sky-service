@@ -103,6 +103,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
       return
     }
 
+    surface.updateTargetBounds(window.frame)
     let filter = SCContentFilter(desktopIndependentWindow: window)
     let state = lock.withLock { () -> (SCStream?, CGSize, Bool, Bool)? in
       guard !stopped else { return nil }

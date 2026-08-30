@@ -15,7 +15,7 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
   public static let shared = ComputerUseVisualCoordinator()
 
   private let lock = NSLock()
-  private var remoteCursorHandler: (@Sendable (CGPoint, Bool) -> Void)?
+  private var remoteCursorHandler: (@Sendable (CGPoint, Bool, Bool) -> Bool)?
   private var remoteCursorGeneration: UInt64 = 0
   private var lifecycleGeneration: UInt64 = 0
   private var lastRemoteCursorPoint: CGPoint?
@@ -31,43 +31,63 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
   }
 
   func moveCursor(to point: CGPoint) {
-    notifyRemoteCursor(at: point)
+    let remote = notifyRemoteCursor(at: point, isPressed: false)
     if rendersLocalOverlay {
-      performOnMain { VirtualCursorOverlay.shared.move(to: point) }
+      performOnMain {
+        if remote.handled {
+          VirtualCursorOverlay.shared.hideImmediately()
+        } else {
+          VirtualCursorOverlay.shared.move(to: point)
+        }
+      }
     }
   }
 
   func showClick(at point: CGPoint) {
-    notifyRemoteCursor(at: point)
+    let remote = notifyRemoteCursor(at: point, isPressed: true)
+    scheduleRemoteRelease(at: point, generation: remote.generation, delay: 0.12)
     if rendersLocalOverlay {
-      performOnMain { VirtualCursorOverlay.shared.click(at: point) }
+      performOnMain {
+        if remote.handled {
+          VirtualCursorOverlay.shared.hideImmediately()
+        } else {
+          VirtualCursorOverlay.shared.click(at: point)
+        }
+      }
     }
   }
 
   func showDrag(from start: CGPoint, to end: CGPoint) {
     let turnGeneration = lock.withLock { lifecycleGeneration }
-    notifyRemoteCursor(at: start)
+    let remote = notifyRemoteCursor(at: start, isPressed: true)
     DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.08) { [weak self] in
       guard let self,
         lock.withLock({ lifecycleGeneration == turnGeneration })
       else { return }
-      notifyRemoteCursor(at: end)
+      let endState = notifyRemoteCursor(at: end, isPressed: true)
+      scheduleRemoteRelease(at: end, generation: endState.generation, delay: 0.12)
     }
     if rendersLocalOverlay {
-      performOnMain { VirtualCursorOverlay.shared.drag(from: start, to: end) }
+      performOnMain {
+        if remote.handled {
+          VirtualCursorOverlay.shared.hideImmediately()
+        } else {
+          VirtualCursorOverlay.shared.drag(from: start, to: end)
+        }
+      }
     }
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
     let inactive = lock.withLock {
-      () -> (CGPoint?, (@Sendable (CGPoint, Bool) -> Void)?) in
+      () -> (CGPoint?, (@Sendable (CGPoint, Bool, Bool) -> Bool)?) in
       lifecycleGeneration &+= 1
       remoteCursorGeneration &+= 1
       let point = lastRemoteCursorPoint
       lastRemoteCursorPoint = nil
       return (point, remoteCursorHandler)
     }
-    if let point = inactive.0 { inactive.1?(point, false) }
+    if let point = inactive.0 { _ = inactive.1?(point, false, false) }
     if rendersLocalOverlay {
       performOnMain { VirtualCursorOverlay.shared.hideImmediately() }
     }
@@ -82,25 +102,45 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
   }
 
   func setRemoteCursorHandler(
-    _ handler: @escaping @Sendable (CGPoint, Bool) -> Void
+    _ handler: @escaping @Sendable (CGPoint, Bool, Bool) -> Bool
   ) {
     lock.withLock { remoteCursorHandler = handler }
   }
 
-  private func notifyRemoteCursor(at point: CGPoint) {
-    let (generation, handler) = lock.withLock { () -> (UInt64, (@Sendable (CGPoint, Bool) -> Void)?) in
+  private func notifyRemoteCursor(
+    at point: CGPoint,
+    isPressed: Bool
+  ) -> (handled: Bool, generation: UInt64) {
+    let (generation, handler) = lock.withLock {
+      () -> (UInt64, (@Sendable (CGPoint, Bool, Bool) -> Bool)?) in
       remoteCursorGeneration &+= 1
       lastRemoteCursorPoint = point
       return (remoteCursorGeneration, remoteCursorHandler)
     }
-    handler?(point, true)
+    let handled = handler?(point, true, isPressed) ?? false
     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 4.5) { [weak self] in
       guard let self else { return }
-      let handler = lock.withLock { () -> (@Sendable (CGPoint, Bool) -> Void)? in
+      let handler = lock.withLock { () -> (@Sendable (CGPoint, Bool, Bool) -> Bool)? in
         guard remoteCursorGeneration == generation else { return nil }
         return remoteCursorHandler
       }
-      handler?(point, false)
+      _ = handler?(point, false, false)
+    }
+    return (handled, generation)
+  }
+
+  private func scheduleRemoteRelease(
+    at point: CGPoint,
+    generation: UInt64,
+    delay: TimeInterval
+  ) {
+    DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      let handler = lock.withLock { () -> (@Sendable (CGPoint, Bool, Bool) -> Bool)? in
+        guard remoteCursorGeneration == generation else { return nil }
+        return remoteCursorHandler
+      }
+      _ = handler?(point, true, false)
     }
   }
 }

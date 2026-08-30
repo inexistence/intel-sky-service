@@ -47,6 +47,41 @@ import UniformTypeIdentifiers
   #expect(surface.size == CGSize(width: 640, height: 480))
 }
 
+@Test func pipSurfaceSeparatesSourcePresentationAndRetinaCaptureSizes() throws {
+  let surface = try RemoteHostedPIPSurface(size: CGSize(width: 1_702, height: 1_378))
+
+  #expect(surface.setMaximumDisplayDimension(200))
+  #expect(surface.sourceSize == CGSize(width: 1_702, height: 1_378))
+  #expect(surface.size == CGSize(width: 200, height: 162))
+  #expect(surface.captureOutputSize == CGSize(width: 400, height: 324))
+}
+
+@Test func pipSurfaceMapsGlobalCursorIntoPresentationAndTracksPressedState() throws {
+  let surface = try RemoteHostedPIPSurface(size: CGSize(width: 1_000, height: 500))
+  surface.setMaximumDisplayDimension(200)
+  surface.updateTargetBounds(CGRect(x: 100, y: 200, width: 1_000, height: 500))
+
+  surface.updateCursor(
+    screenPoint: CGPoint(x: 600, y: 450),
+    isActive: true,
+    isPressed: true
+  )
+
+  let frame = try #require(surface.cursorFrame)
+  #expect(surface.isCursorVisible)
+  #expect(surface.isCursorPressed)
+  #expect(frame.midX > 80 && frame.midX < 120)
+  #expect(frame.midY > 35 && frame.midY < 65)
+
+  surface.updateCursor(
+    screenPoint: CGPoint(x: 50, y: 50),
+    isActive: true,
+    isPressed: false
+  )
+  #expect(!surface.isCursorVisible)
+  #expect(surface.cursorFrame == nil)
+}
+
 @Test func pipSurfaceEnqueuesShareableVideoAndRestoresFallbackVisibility() throws {
   let surface = try RemoteHostedPIPSurface(size: CGSize(width: 8, height: 6))
   var pixelBuffer: CVPixelBuffer?

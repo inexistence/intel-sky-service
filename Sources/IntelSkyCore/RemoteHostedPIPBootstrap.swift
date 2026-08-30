@@ -283,8 +283,12 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       if installsProductionCallbacks {
         presentationCoordinator.installProducerCallbacks(on: connectionController)
         ComputerUseVisualCoordinator.shared.setRemoteCursorHandler {
-          [weak presentationCoordinator] point, isActive in
-          presentationCoordinator?.updateCursor(point: point, isActive: isActive)
+          [weak presentationCoordinator] point, isActive, isPressed in
+          presentationCoordinator?.updateCursor(
+            point: point,
+            isActive: isActive,
+            isPressed: isPressed
+          ) ?? false
         }
         ComputerUseSessionCoordinator.shared.setStopHandler {
           [weak presentationCoordinator] bundleIdentifier in
