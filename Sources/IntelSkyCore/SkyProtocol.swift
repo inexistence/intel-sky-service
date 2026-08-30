@@ -108,7 +108,7 @@ public struct SkyRequestRouter: Sendable {
       appCaptureProvider: appCaptureProvider,
       appLifecycleProvider: appLifecycleProvider,
       requestObserver: requestObserver,
-      turnLifecycle: ComputerUseTurnCoordinator(),
+      turnLifecycle: ComputerUseTurnCoordinator(appCaptureProvider: appCaptureProvider),
       sessionCoordinator: ComputerUseSessionCoordinator.shared
     )
   }
@@ -135,7 +135,24 @@ public struct SkyRequestRouter: Sendable {
   }
 
   public func handle(_ payload: Data) -> Data {
-    executionGate.withLock { handleSerially(payload) }
+    handle(payload, clientIdentifier: "direct")
+  }
+
+  func handle(_ payload: Data, clientIdentifier: String) -> Data {
+    ComputerUseClientContext.withIdentifier(clientIdentifier) {
+      if Self.isNextCaptureUpdate(payload) {
+        return handleSerially(payload)
+      }
+      return executionGate.withLock { handleSerially(payload) }
+    }
+  }
+
+  func clientDisconnected(_ clientIdentifier: String) {
+    (appCaptureProvider as? any AppCaptureLifecycleHandling)?.clientDisconnected(clientIdentifier)
+  }
+
+  func shutdown() {
+    (appCaptureProvider as? any AppCaptureLifecycleHandling)?.shutdown()
   }
 
   private func handleSerially(_ payload: Data) -> Data {
@@ -175,6 +192,13 @@ public struct SkyRequestRouter: Sendable {
       return false
     }
     return params["clientApiVersion"] as? String == SkyProtocol.apiVersion
+  }
+
+  private static func isNextCaptureUpdate(_ payload: Data) -> Bool {
+    guard let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+      let params = object["params"] as? [String: Any]
+    else { return false }
+    return params["requestType"] as? String == "ComputerUseIPCAppNextCaptureUpdateRequest"
   }
 
   private func route(_ object: [String: Any]) throws -> Any {
@@ -420,5 +444,9 @@ enum RequestDeadlineContext {
     try ComputerUseSessionOperationContext.check()
     guard let deadline = Thread.current.threadDictionary[key] as? Date else { return }
     if now >= deadline { throw SkyRuntimeError.deadlineExceeded }
+  }
+
+  static var deadline: Date? {
+    Thread.current.threadDictionary[key] as? Date
   }
 }

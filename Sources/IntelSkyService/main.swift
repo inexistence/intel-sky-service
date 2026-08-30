@@ -55,6 +55,7 @@ let appStateProvider = MacAppStateProvider(
   interactionTracker: interactionTracker
 )
 let appCaptureProvider = AppCaptureSessionManager(appStateProvider: appStateProvider)
+appCaptureProvider.installSessionStopHandling()
 let nativeBridgeController = ComputerUseNativeBridgeController(
   appStateProvider: appStateProvider,
   appCaptureProvider: appCaptureProvider

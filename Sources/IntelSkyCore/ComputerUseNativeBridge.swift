@@ -170,6 +170,14 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
 
   func process(_ request: ComputerUseNativeBridgeRequest) throws -> [String: Any] {
     try hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
+    return try ComputerUseClientContext.withIdentifier(
+      "native:\(request.senderProcessIdentifier)"
+    ) {
+      try processAuthorized(request)
+    }
+  }
+
+  private func processAuthorized(_ request: ComputerUseNativeBridgeRequest) throws -> [String: Any] {
     switch request.requestType {
     case "ComputerUseIPCAppGetSkyshotRequest":
       return try appStateProvider.getAppState(request: request.request)

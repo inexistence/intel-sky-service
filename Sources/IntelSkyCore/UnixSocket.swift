@@ -72,6 +72,7 @@ public final class SkyUnixServer: @unchecked Sendable {
     if let identity = state.1 {
       UnixSocketFilePreparer.removeSocketIfOwned(at: socketPath, identity: identity)
     }
+    router.shutdown()
   }
 
   public func run(onReady: () -> Void = {}) throws {
@@ -144,6 +145,8 @@ public final class SkyUnixServer: @unchecked Sendable {
   }
 
   private func serve(_ client: Int32) throws {
+    let clientIdentifier = "socket:\(UUID().uuidString)"
+    defer { router.clientDisconnected(clientIdentifier) }
     var decoder = SkyFrameDecoder()
     var didReplyToPing = false
     var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -160,7 +163,7 @@ public final class SkyUnixServer: @unchecked Sendable {
         if !didReplyToPing, !SkyRequestRouter.isCompatiblePing(payload) {
           throw SkyRPCError.invalidRequest("First request must be ping")
         }
-        let response = router.handle(payload)
+        let response = router.handle(payload, clientIdentifier: clientIdentifier)
         try writeFrame(response, to: client)
 
         if !didReplyToPing {

@@ -137,6 +137,7 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
   private var activeApplications: [String: ActiveApplication] = [:]
   private var stoppedBundleIdentifiers: Set<String> = []
   private var stopHandler: (@Sendable (String) -> Void)?
+  private var additionalStopHandlers: [UUID: @Sendable (String) -> Void] = [:]
 
   func requireNotStopped(_ app: ResolvedMacApplication) throws {
     guard !lock.withLock({ stoppedBundleIdentifiers.contains(app.bundleIdentifier) }) else {
@@ -178,13 +179,13 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
   }
 
   func deactivateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
-    let handler: (@Sendable (String) -> Void)? = try lock.withLock {
+    let handlers: [@Sendable (String) -> Void] = try lock.withLock {
       guard activeApplications.removeValue(forKey: app.bundleIdentifier) != nil else {
         throw ComputerUseSessionError.noActiveSession(app.bundleIdentifier)
       }
-      return stopHandler
+      return [stopHandler].compactMap { $0 } + additionalStopHandlers.values
     }
-    handler?(app.bundleIdentifier)
+    for handler in handlers { handler(app.bundleIdentifier) }
     return ["active": false, "currentApp": NSNull()]
   }
 
@@ -195,7 +196,7 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
     let identifier = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !identifier.isEmpty else { throw ComputerUseSessionError.invalidStopRequest }
 
-    let stopped: (application: ActiveApplication, handler: (@Sendable (String) -> Void)?)? =
+    let stopped: (application: ActiveApplication, handlers: [@Sendable (String) -> Void])? =
       lock.withLock {
         guard
           let match = activeApplications.first(where: { $0.value.matches(identifier) })
@@ -204,10 +205,13 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
         }
         activeApplications.removeValue(forKey: match.key)
         stoppedBundleIdentifiers.insert(match.value.bundleIdentifier)
-        return (match.value, stopHandler)
+        return (
+          match.value,
+          [stopHandler].compactMap { $0 } + additionalStopHandlers.values
+        )
       }
     guard let stopped else { throw ComputerUseSessionError.noActiveSession(identifier) }
-    stopped.handler?(stopped.application.bundleIdentifier)
+    for handler in stopped.handlers { handler(stopped.application.bundleIdentifier) }
     return [:]
   }
 
@@ -243,6 +247,13 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating, @unch
 
   func setStopHandler(_ handler: (@Sendable (String) -> Void)?) {
     lock.withLock { stopHandler = handler }
+  }
+
+  @discardableResult
+  func addStopHandler(_ handler: @escaping @Sendable (String) -> Void) -> UUID {
+    let identifier = UUID()
+    lock.withLock { additionalStopHandlers[identifier] = handler }
+    return identifier
   }
 
   private static func appDescriptor(_ app: ResolvedMacApp) -> [String: Any] {

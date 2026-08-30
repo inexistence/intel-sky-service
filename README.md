@@ -19,6 +19,8 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - `ComputerUseIPCAppPolicyRequest`, preserving the official JavaScript approval flow
 - `ComputerUseIPCFrontmostWindowRequest` and app-instance
   `ComputerUseIPCAppModifyRequest` activate/deactivate transitions
+- asynchronous `ComputerUseIPCAppStartCaptureRequest` / `AppNextCaptureUpdateRequest` streams
+  with bounded backpressure, long-poll deadlines, client ownership, and lifecycle cleanup
 - snapshot-bound `ComputerUseIPCAppPerformActionRequest` clicks by element ID or screenshot coordinate, using `AXPress` before physical fallback
 - snapshot-bound, PID/window-targeted `pressKey` chords and bounded Unicode `typeText` input
 - snapshot-bound vertical and horizontal scrolling, with AX page actions and bounded pixel fallback
@@ -125,6 +127,14 @@ The running service writes its own authoritative startup state to:
 Restart the LaunchAgent after changing privacy settings, then verify that both permission fields in this owner-only file are `true`.
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
+
+Capture Stream sessions continuously poll fresh AX and screenshot state and emit only changed
+`metadata`, `axText`, or `screenshot` updates. `completed` is reserved for turn transition/end or an
+explicit App stop/deactivation; producer errors use the official `failed` update and reason enum.
+Each session belongs to the socket connection or native sender that started it. A disconnected
+socket drops its sessions immediately, service shutdown wakes blocked consumers, Next requests
+honor their request deadline, and their long polls do not serialize unrelated RPCs. Queues retain
+at most 32 updates and coalesce by update type under backpressure.
 
 Every action requires a successful `getAppState` for the same bundle ID and process ID within the previous five minutes. Element targets resolve only IDs from that latest snapshot. If the referenced AX object was destroyed by a window/menu rebuild, the service recaptures the tree and accepts only a unique path-and-semantics match; ambiguous, missing, or weak unlabeled matches fail closed. Screenshot coordinates are mapped through the captured window origin and image scale, including Retina screenshots, and fail closed when stale or outside the image. `pressKey` supports common X11 keysym-style chords used by the official client; `typeText` accepts at most 10,000 UTF-16 code units per request. Scroll accepts every finite positive page count; element scrolling prefers AX page actions, while unsupported and fractional movement uses bounded pixel-wheel events.
 

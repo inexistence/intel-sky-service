@@ -68,6 +68,21 @@ private struct StubActionPerformer: AppActionPerforming {
   }
 }
 
+private final class BlockingCaptureProvider: AppCaptureProviding, @unchecked Sendable {
+  let entered = DispatchSemaphore(value: 0)
+  let release = DispatchSemaphore(value: 0)
+
+  func startCapture(request: [String: Any]) throws -> [String: Any] {
+    ["result": "started"]
+  }
+
+  func nextCaptureUpdate(request: [String: Any]) throws -> [String: Any] {
+    entered.signal()
+    release.wait()
+    return ["type": "completed", "app": ["bundleIdentifier": "com.apple.finder"]]
+  }
+}
+
 private final class StubAppLifecycleProvider: AppLifecycleProviding, @unchecked Sendable {
   private(set) var frontmostRequests: [[String: Any]] = []
   private(set) var modifyRequests: [[String: Any]] = []
@@ -518,4 +533,30 @@ private func requestPayload(id: Int, type: String, request: [String: Any]) throw
 
   #expect(result.isEmpty)
   #expect(lifecycle.currentIdentity == nil)
+}
+
+@Test func captureLongPollDoesNotBlockIndependentRequests() throws {
+  let capture = BlockingCaptureProvider()
+  let router = SkyRequestRouter(appCatalog: StubCatalog(), appCaptureProvider: capture)
+  let finished = DispatchSemaphore(value: 0)
+  DispatchQueue.global(qos: .userInitiated).async {
+    _ = router.handle(
+      try! requestPayload(
+        id: 30,
+        type: "ComputerUseIPCAppNextCaptureUpdateRequest",
+        request: ["requestId": "capture"]
+      ))
+    finished.signal()
+  }
+  #expect(capture.entered.wait(timeout: .now() + 1) == .success)
+  DispatchQueue.global().asyncAfter(deadline: .now() + 1) { capture.release.signal() }
+
+  let started = Date()
+  let response = try decode(
+    router.handle(try requestPayload(id: 31, type: "ComputerUseIPCListAppsRequest", request: [:])))
+  let elapsed = Date().timeIntervalSince(started)
+
+  #expect(response["result"] is [[String: Any]])
+  #expect(elapsed < 0.25)
+  #expect(finished.wait(timeout: .now() + 2) == .success)
 }

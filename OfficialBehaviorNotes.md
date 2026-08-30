@@ -76,6 +76,31 @@ baseline. The authorization-gated differential harness has a dedicated low-level
 
 Evidence: `CONFIRMED_CLIENT_SOURCE`.
 
+## Capture Stream
+
+- ARM field metadata confirms `ComputerUseIPCAppStartCaptureRequest(app, requestID,
+  permissionRequestID, animationTarget, version)`, version cases `initial`, `reliableFinalFrame`,
+  and `future(Int)`, and a start response with `result`, optional animation/transition fields, and
+  optional permission grant state. The start result cases are `started` and
+  `appshotPermissionsAbandoned`. `CONFIRMED_STATIC_BINARY`.
+- ARM field metadata confirms that each `ComputerUseIPCCaptureUpdate` carries `type`, `app`, and
+  optional `text`, `screenshot`, `transitionSnapshotURL`, or `failureReason`. The update cases are
+  exactly `metadata`, `axText`, `screenshot`, `completed`, and `failed`; failure reasons are
+  `blockedByPolicy`, `screenshotCaptureFailed`, and `unknownCaptureFailed`.
+  `CONFIRMED_STATIC_BINARY`.
+- Intel now treats Start as a session start rather than a precomputed four-item response. A bounded
+  producer continuously samples full AX/screenshot state, compares content, coalesces queued update
+  types under backpressure, and lets Next long-poll until a change, terminal event, or request
+  deadline. Capture polls bypass the otherwise conservative serialized AX/action gate, so other
+  clients and ordinary RPCs remain responsive. `PARTIAL`: the producer is polling-based rather than
+  the official runtime's not-yet-recovered change notification and reliable-final-frame machinery.
+- Capture ownership is stable per Unix connection and per native Apple Event sender PID. Socket
+  disconnect and service shutdown discard owned streams and wake blocked consumers; turn
+  transition/end and App stop/deactivation enqueue `completed`; producer failures enqueue the
+  confirmed `failed` shape. A lifecycle generation closes the race where a turn ends during Start's
+  initial capture. `HIGH_CONFIDENCE`; exact official disconnect terminal visibility remains
+  `NEEDS_ARM_ORACLE`.
+
 ## App catalog
 
 - ARM embeds the Spotlight predicate `kMDItemContentType == "com.apple.application-bundle" &&

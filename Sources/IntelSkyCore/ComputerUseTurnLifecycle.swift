@@ -49,6 +49,14 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
     self.eventHandler = eventHandler
   }
 
+  convenience init(appCaptureProvider: (any AppCaptureProviding)?) {
+    self.init { event in
+      ComputerUseFocusCoordinator.shared.handle(event)
+      ComputerUseSessionCoordinator.shared.handle(event)
+      (appCaptureProvider as? any AppCaptureLifecycleHandling)?.handle(event)
+    }
+  }
+
   var currentIdentity: ComputerUseTurnIdentity? { lock.withLock { current } }
 
   func observe(metadata: Any?) {
