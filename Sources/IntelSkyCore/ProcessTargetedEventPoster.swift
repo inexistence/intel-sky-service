@@ -55,15 +55,49 @@ enum ProcessTargetedEventPoster {
     on target: ComputerUseEventTarget,
     _ body: () throws -> T
   ) throws -> T {
+    try withSyntheticFocus(
+      on: target,
+      isApplicationActive: {
+        NSRunningApplication(processIdentifier: target.processIdentifier)?.isActive == true
+      },
+      postDescriptor: { descriptor in
+        try postOtherEvent(descriptor, to: target)
+      },
+      body
+    )
+  }
+
+  static func withSyntheticFocus<T>(
+    on target: ComputerUseEventTarget,
+    isApplicationActive: () -> Bool,
+    postDescriptor: (SyntheticFocusEventDescriptor) throws -> Void,
+    _ body: () throws -> T
+  ) throws -> T {
     if activeSyntheticFocusTarget == target { return try body() }
+
+    // The official enforcer seeds its belief and actual-state bits from the
+    // running application and emits only missing transitions. An actually
+    // active application receives no synthetic activation or deactivation.
+    if isApplicationActive() {
+      return try $activeSyntheticFocusTarget.withValue(target) { try body() }
+    }
+
     let sequence = syntheticFocusSequence(for: target)
-    for descriptor in sequence.begin { try postOtherEvent(descriptor, to: target) }
+    for descriptor in sequence.begin { try postDescriptor(descriptor) }
+
+    func deactivateIfStillSynthetic() {
+      // The official deactivate path runs only while the application is still
+      // actually inactive. Preserve a genuine user/system focus change.
+      guard !isApplicationActive() else { return }
+      for descriptor in sequence.end { try? postDescriptor(descriptor) }
+    }
+
     do {
       let result = try $activeSyntheticFocusTarget.withValue(target) { try body() }
-      for descriptor in sequence.end { try? postOtherEvent(descriptor, to: target) }
+      deactivateIfStillSynthetic()
       return result
     } catch {
-      for descriptor in sequence.end { try? postOtherEvent(descriptor, to: target) }
+      deactivateIfStillSynthetic()
       throw error
     }
   }

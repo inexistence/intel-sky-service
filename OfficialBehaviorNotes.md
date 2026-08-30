@@ -161,6 +161,10 @@ Targeted ARM symbol and disassembly analysis adds the following details:
   subtype `2` (application deactivated).
 - `SystemFocusStealPreventer` exposes process-scoped start/stop calls plus target-lost/target-gained
   callbacks and menu-dismissal suppression.
+- Its lazy singleton owns a session event tap whose mask is exactly `1 << 21` (AppKit process
+  notifications) plus a per-target event tap assembled from a CGEventType array. The singleton
+  stores each protected PID with lost/gained callbacks, mouse event taps, and a menu-dismissal
+  suppression flag. Exact drop/pass-through rules in the callbacks remain under analysis.
 - `RemoteHostedPIPContentStream` stores `threadID`, `turnID`, `focusRestoreTarget`, associated window
   IDs, and a stream-end timeout; its lifecycle exposes `willEndStream`, `noteInteraction`, and
   `invalidate`.
@@ -176,8 +180,9 @@ metadata contains `session_id`, `thread_id`, and `turn_id`; the ARM binary also 
 Intel uses background AX operations for single-left element click (`AXPress`), complete AX page
 scroll, `setValue`, secondary AX actions, and text selection. Physical fallbacks no longer activate
 the target or post through the global HID tap: click, drag, pixel scroll, key chords, Unicode typing,
-and paste are bound to the latest snapshot's PID/window ID and use `CGEvent.postToPid`. Each bundle
-is bracketed by the official activation/focus-returned and focus-removed/deactivation sequence.
+and paste are bound to the latest snapshot's PID/window ID and use `CGEvent.postToPid`. For an
+inactive target, each bundle is bracketed by the official activation/focus-returned and
+focus-removed/deactivation sequence.
 Snapshot expiry or a missing window ID fails closed before input. The process-notification constants
 and event routing are `CONFIRMED_STATIC_BINARY`; Intel schema/event-construction tests are
 `HIGH_CONFIDENCE`.
@@ -196,8 +201,25 @@ Those mouse events set CoreGraphics fields `3 = 0`, `7 = 3`, and `91/92 = window
 binary calls private `CGEventSetWindowLocation` with `activationPoint - windowFrame.origin`. The
 leave path sends AppKit `13/2` before `21/0x4000`. `CONFIRMED_STATIC_BINARY`.
 
+The enforcer constructor creates a `SystemFrontmostApplicationTracker`, registers target-lost and
+target-gained handlers with `SystemFocusStealPreventer`, and seeds
+`applicationBelievesItIsActive`, `applicationBelievesItHasFocus`, and `applicationIsActive` from
+the real process/frontmost state. `enforceActiveState(for:)` is incremental rather than an
+unconditional replay. Its explicit `deactivateFocusEnforcer()` path runs only when the target
+believes it is active while `applicationIsActive == false`; an actually active target is not sent
+the synthetic `13/2` and `21/0x4000` pair. The enforcer's deinitializer unregisters its observer and
+focus-steal-preventer entry but does not itself call the explicit deactivate method.
+`CONFIRMED_STATIC_BINARY`.
+
 Intel now reads `AXActivationPoint`, reproduces the AppKit mouse construction and window-local SPI,
-and omits the activation click when either the point or SPI is unavailable. An attended real-client
+and omits the activation click when either the point or SPI is unavailable. It now samples
+`NSRunningApplication.isActive` before and after a physical action: an already active target receives
+no synthetic transition, and a background target that becomes genuinely active during the action
+is not synthetically deactivated. Inactive targets retain the balanced envelope, including on a
+throwing action, and same-target nesting remains deduplicated. This closes the confirmed
+actual-active-state difference while retaining an action-scoped approximation of the official
+observer lifetime. Unit coverage is `HIGH_CONFIDENCE`; an attended active-target runtime trace
+remains `NEEDS_ARM_ORACLE`. An attended real-client
 TextEdit smoke proved that background `Super_L+a` now selects the full document and that both
 `type_text` and `paste` replace the selection without taking foreground focus; the fixture was
 restored after both probes. `CONFIRMED_INTEL_RUNTIME`. Earlier probes that replayed only the four

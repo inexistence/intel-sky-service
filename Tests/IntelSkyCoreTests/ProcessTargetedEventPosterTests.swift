@@ -3,13 +3,15 @@ import Testing
 
 @testable import IntelSkyCore
 
+private let syntheticFocusTestTarget = ComputerUseEventTarget(
+  processIdentifier: 42,
+  windowID: 77,
+  screenFrame: CGRect(x: 100, y: 150, width: 400, height: 300),
+  activationPoint: CGPoint(x: 240, y: 172)
+)
+
 @Test func syntheticFocusSequenceMatchesOfficialProcessNotifications() throws {
-  let target = ComputerUseEventTarget(
-    processIdentifier: 42,
-    windowID: 77,
-    screenFrame: CGRect(x: 100, y: 150, width: 400, height: 300),
-    activationPoint: CGPoint(x: 240, y: 172)
-  )
+  let target = syntheticFocusTestTarget
 
   let sequence = ProcessTargetedEventPoster.syntheticFocusSequence(for: target)
 
@@ -77,4 +79,87 @@ import Testing
       )
     }
   }
+}
+
+@Test func activeApplicationDoesNotReceiveSyntheticFocusTransitions() throws {
+  var posted: [SyntheticFocusEventDescriptor] = []
+  var bodyWasCalled = false
+
+  try ProcessTargetedEventPoster.withSyntheticFocus(
+    on: syntheticFocusTestTarget,
+    isApplicationActive: { true },
+    postDescriptor: { posted.append($0) }
+  ) {
+    bodyWasCalled = true
+  }
+
+  #expect(bodyWasCalled)
+  #expect(posted.isEmpty)
+}
+
+@Test func inactiveApplicationReceivesBalancedSyntheticFocusTransitions() throws {
+  var posted: [SyntheticFocusEventDescriptor] = []
+  let expected = ProcessTargetedEventPoster.syntheticFocusSequence(for: syntheticFocusTestTarget)
+
+  try ProcessTargetedEventPoster.withSyntheticFocus(
+    on: syntheticFocusTestTarget,
+    isApplicationActive: { false },
+    postDescriptor: { posted.append($0) }
+  ) {}
+
+  #expect(posted == expected.begin + expected.end)
+}
+
+@Test func applicationThatBecomesActiveIsNotSyntheticallyDeactivated() throws {
+  var posted: [SyntheticFocusEventDescriptor] = []
+  var applicationIsActive = false
+  let expected = ProcessTargetedEventPoster.syntheticFocusSequence(for: syntheticFocusTestTarget)
+
+  try ProcessTargetedEventPoster.withSyntheticFocus(
+    on: syntheticFocusTestTarget,
+    isApplicationActive: { applicationIsActive },
+    postDescriptor: { posted.append($0) }
+  ) {
+    applicationIsActive = true
+  }
+
+  #expect(posted == expected.begin)
+}
+
+@Test func nestedActionForSameTargetDoesNotRepeatSyntheticFocusTransitions() throws {
+  var posted: [SyntheticFocusEventDescriptor] = []
+  let expected = ProcessTargetedEventPoster.syntheticFocusSequence(for: syntheticFocusTestTarget)
+
+  try ProcessTargetedEventPoster.withSyntheticFocus(
+    on: syntheticFocusTestTarget,
+    isApplicationActive: { false },
+    postDescriptor: { posted.append($0) }
+  ) {
+    try ProcessTargetedEventPoster.withSyntheticFocus(
+      on: syntheticFocusTestTarget,
+      isApplicationActive: { false },
+      postDescriptor: { posted.append($0) }
+    ) {}
+  }
+
+  #expect(posted == expected.begin + expected.end)
+}
+
+@Test func throwingActionStillBalancesSyntheticFocusTransitions() {
+  enum ExpectedFailure: Error { case action }
+
+  var posted: [SyntheticFocusEventDescriptor] = []
+  let expected = ProcessTargetedEventPoster.syntheticFocusSequence(for: syntheticFocusTestTarget)
+
+  #expect(throws: ExpectedFailure.self) {
+    try ProcessTargetedEventPoster.withSyntheticFocus(
+      on: syntheticFocusTestTarget,
+      isApplicationActive: { false },
+      postDescriptor: { posted.append($0) }
+    ) {
+      throw ExpectedFailure.action
+    }
+  }
+
+  #expect(posted == expected.begin + expected.end)
 }
