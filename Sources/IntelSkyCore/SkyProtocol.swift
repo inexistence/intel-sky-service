@@ -2,6 +2,27 @@ import Foundation
 
 public enum SkyProtocol {
   public static let apiVersion = "CodexComputerUseIPC-5"
+  public static let outOfScopeRequestTypes: Set<String> = [
+    "ComputerUseIPCStartAudioRecordingRequest",
+    "ComputerUseIPCStopAudioRecordingRequest",
+    "ComputerUseIPCSkysightStartRequest",
+    "ComputerUseIPCSkysightStatusRequest",
+    "ComputerUseIPCSkysightStopRequest",
+    "ComputerUseIPCSkysightPauseRequest",
+    "ComputerUseIPCSkysightResumeRequest",
+    "ComputerUseIPCSkysightClearHistoryRequest",
+    "ComputerUseIPCSkysightGetSettingsRequest",
+    "ComputerUseIPCSkysightUpdateSettingsRequest",
+    "ComputerUseIPCSkysightUpdateObservationPolicyRequest",
+    "ComputerUseIPCMessagesPrepareSendRequest",
+    "ComputerUseIPCMessagesCommitSendRequest",
+    "ComputerUseIPCMessagesFindChatsRequest",
+    "ComputerUseIPCMessagesSearchChatsRequest",
+    "ComputerUseIPCMessagesReadMessagesRequest",
+    "ComputerUseIPCMessagesSearchMessagesRequest",
+    "ComputerUseIPCMessagesCountActivityRequest",
+    "ComputerUseIPCMessagesReadImageRequest",
+  ]
 }
 
 public enum SkyServerErrorCode: Int, Sendable {

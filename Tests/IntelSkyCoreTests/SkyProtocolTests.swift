@@ -372,6 +372,23 @@ private func requestPayload(id: Int, type: String, request: [String: Any]) throw
   #expect(error["code"] as? Int == -32700)
 }
 
+@Test func cataloguedOutOfScopeRequestsFailSafelyWithoutDispatchingProviders() throws {
+  #expect(SkyProtocol.outOfScopeRequestTypes.count == 19)
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appStateProvider: StubAppStateProvider(),
+    appActionPerformer: StubActionPerformer()
+  )
+
+  for requestType in SkyProtocol.outOfScopeRequestTypes.sorted() {
+    let payload = try requestPayload(id: 900, type: requestType, request: [:])
+    let response = try decode(router.handle(payload))
+    let error = try #require(response["error"] as? [String: Any])
+    #expect(error["code"] as? Int == SkyServerErrorCode.couldNotResolveRequestType.rawValue)
+    #expect((error["message"] as? String)?.contains(requestType) == true)
+  }
+}
+
 @Test func appRequestRequiresObjectPayload() throws {
   let request = try JSONSerialization.data(withJSONObject: [
     "jsonrpc": "2.0",
