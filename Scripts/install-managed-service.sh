@@ -149,6 +149,11 @@ installed_new_app=true
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$installed_app"
 /usr/bin/lipo "$installed_app/Contents/MacOS/SkyComputerUseService" -verify_arch x86_64
+if ! capability_preparation="$($installed_app/Contents/MacOS/SkyComputerUseService --prepare-capability)"; then
+  print -u2 "Computer Use capability preparation failed:"
+  print -u2 "$capability_preparation"
+  exit 78
+fi
 installed_hash="$(LC_ALL=C LANG=C /usr/bin/shasum -a 256 \
   "$installed_app/Contents/MacOS/SkyComputerUseService" | /usr/bin/awk '{print $1}')"
 installation_complete=true
@@ -157,6 +162,7 @@ print
 print "Installed ChatGPT-managed Computer Use:"
 print "  app=$installed_app"
 print "  sha256=$installed_hash"
+print "  capabilityPreparation=$capability_preparation"
 if [[ -e "$backup_app" ]]; then
   print "  rollbackApp=$backup_app"
 fi

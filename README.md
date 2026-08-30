@@ -81,7 +81,8 @@ and notarization so Gatekeeper can validate the downloaded App.
 
 For a source checkout, the one-command installer builds the App when needed, audits the installed
 Intel ChatGPT PIP host, verifies the App signature and x86_64 architecture, backs up an existing
-managed App, disables the legacy LaunchAgent if present, and installs to ChatGPT's canonical path:
+managed App, disables the legacy LaunchAgent if present, installs to ChatGPT's canonical path, and
+prepares the bundled Computer Use runtime for future Codex sessions:
 
 ```sh
 Scripts/install-managed-service.sh
@@ -99,6 +100,26 @@ The installed path and executable basename are exact requirements:
 ~/.codex/computer-use/Codex Computer Use.app
 ~/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService
 ```
+
+Capability setup uses only files bundled with the installed ChatGPT App. The installer verifies
+the bundled `node_repl`, Node.js, and `@oai/sky` runtime. When the current Codex configuration has
+no `node_repl` MCP entry, it adds one through the bundled Codex CLI. An existing compatible entry
+is retained exactly as-is; an incompatible entry is reported and never overwritten.
+
+After the managed service has bound its socket, it automatically links the official skill
+directory into the cross-client discovery location:
+
+```text
+~/.agents/skills/computer-use -> /Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/sky/docs/skills/oai_sky_lib/macos
+```
+
+An existing non-link `computer-use` skill is reported and never overwritten. The health-gated
+registration is idempotent, so later ChatGPT updates are picked up automatically.
+
+Start a **new Codex session** after restarting ChatGPT. The new session discovers the skill and
+`node_repl` automatically, so requests such as “打开备忘录并新建一条笔记” work without mentioning
+MCP, `node_repl`, `@oai/sky`, or the Unix socket. Existing sessions keep the tool set captured when
+they were created and therefore do not gain Computer Use retroactively.
 
 If ChatGPT uses a custom `CODEX_HOME`, run the installer with that same environment value; it then
 installs to `$CODEX_HOME/computer-use/Codex Computer Use.app`. The installer never starts or quits
@@ -193,6 +214,21 @@ The running service writes its own authoritative startup state to:
 
 After restarting ChatGPT, verify that `accessibility`, `screenRecording`,
 `physicalInputMonitoring`, and `focusStealProtection` are all `true` in this owner-only file.
+`computerUseCapability.registered` must also be `true`. When it is `false`,
+`computerUseCapability.diagnostic` identifies the exact missing runtime, conflicting user entry, or
+Codex configuration failure. If the service itself is stopped, the already-registered official
+skill and `node_repl` remain discoverable; the bundled `@oai/sky` client then reports the concrete
+native-pipe/startup failure instead of making the session conclude that Computer Use does not
+exist.
+
+Capability registration can be rechecked without reinstalling the App:
+
+```sh
+~/.codex/computer-use/Codex\ Computer\ Use.app/Contents/MacOS/SkyComputerUseService \
+  --register-capability
+```
+
+The command prints structured JSON and exits with status 78 when registration is unavailable.
 
 Accessibility traversal is bounded to 12 levels and 1,500 elements. Screenshot files are owner-only and stale PNGs older than 24 hours are removed when the next capture runs.
 

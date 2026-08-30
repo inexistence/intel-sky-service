@@ -6,9 +6,35 @@ import IntelSkyCore
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments == ["--help"] || arguments == ["-h"] {
   print(
-    "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] [--disable-pip] | --check-permissions"
+    "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] [--disable-pip] | --check-permissions | --prepare-capability | --register-capability"
   )
   exit(0)
+}
+if arguments == ["--prepare-capability"] {
+  let registration = ComputerUseCapabilityRegistrar().prepareRuntime()
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+  do {
+    FileHandle.standardOutput.write(try encoder.encode(registration))
+    FileHandle.standardOutput.write(Data("\n".utf8))
+  } catch {
+    fputs("could not encode capability preparation: \(error)\n", stderr)
+    exit(1)
+  }
+  exit(registration.registered ? 0 : 78)
+}
+if arguments == ["--register-capability"] {
+  let registration = ComputerUseCapabilityRegistrar().register()
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+  do {
+    FileHandle.standardOutput.write(try encoder.encode(registration))
+    FileHandle.standardOutput.write(Data("\n".utf8))
+  } catch {
+    fputs("could not encode capability registration: \(error)\n", stderr)
+    exit(1)
+  }
+  exit(registration.registered ? 0 : 78)
 }
 if arguments == ["--check-permissions"] {
   let status = ServicePermissionDiagnostics().currentStatus()
@@ -134,6 +160,7 @@ DispatchQueue.global(qos: .userInitiated).async {
   do {
     try server.run {
       let permissions = ServicePermissionDiagnostics().currentStatus()
+      let capability = ComputerUseCapabilityRegistrar().register()
       do {
         try ServiceRuntimeStatusWriter.write(
           ServiceRuntimeStatus(
@@ -141,6 +168,7 @@ DispatchQueue.global(qos: .userInitiated).async {
             processIdentifier: processIdentifier,
             physicalInputMonitoring: PhysicalInputMonitor.shared.isAvailable,
             focusStealProtection: focusStealProtectionAvailable,
+            computerUseCapability: capability,
             updatedAt: Date()
           ),
           nextToSocketAt: socketPath
@@ -152,6 +180,14 @@ DispatchQueue.global(qos: .userInitiated).async {
         "permissions: accessibility=\(permissions.accessibility) screenRecording=\(permissions.screenRecording)\n",
         stderr
       )
+      if capability.registered {
+        fputs("Computer Use capability registered for new Codex sessions\n", stderr)
+      } else {
+        fputs(
+          "Computer Use capability unavailable: \(capability.diagnostic ?? "unknown error")\n",
+          stderr
+        )
+      }
     }
     cleanupRuntimeStatus()
     DispatchQueue.main.async {
