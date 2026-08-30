@@ -1,4 +1,6 @@
 import CoreGraphics
+import CoreMedia
+import CoreVideo
 import Foundation
 import ImageIO
 import Testing
@@ -43,4 +45,49 @@ import UniformTypeIdentifiers
 
   #expect(surface.contextID != 0)
   #expect(surface.size == CGSize(width: 640, height: 480))
+}
+
+@Test func pipSurfaceEnqueuesShareableVideoAndRestoresFallbackVisibility() throws {
+  let surface = try RemoteHostedPIPSurface(size: CGSize(width: 8, height: 6))
+  var pixelBuffer: CVPixelBuffer?
+  let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary
+  #expect(
+    CVPixelBufferCreate(
+      kCFAllocatorDefault,
+      8,
+      6,
+      kCVPixelFormatType_32BGRA,
+      attributes,
+      &pixelBuffer
+    ) == kCVReturnSuccess
+  )
+  let buffer = try #require(pixelBuffer)
+  var formatDescription: CMVideoFormatDescription?
+  #expect(
+    CMVideoFormatDescriptionCreateForImageBuffer(
+      allocator: kCFAllocatorDefault,
+      imageBuffer: buffer,
+      formatDescriptionOut: &formatDescription
+    ) == noErr
+  )
+  var timing = CMSampleTimingInfo(
+    duration: .invalid,
+    presentationTimeStamp: .zero,
+    decodeTimeStamp: .invalid
+  )
+  var sampleBuffer: CMSampleBuffer?
+  #expect(
+    CMSampleBufferCreateReadyWithImageBuffer(
+      allocator: kCFAllocatorDefault,
+      imageBuffer: buffer,
+      formatDescription: try #require(formatDescription),
+      sampleTiming: &timing,
+      sampleBufferOut: &sampleBuffer
+    ) == noErr
+  )
+
+  #expect(surface.enqueue(try #require(sampleBuffer)))
+  #expect(surface.hasDisplayFrame)
+  surface.resetToFallbackImage()
+  #expect(!surface.hasDisplayFrame)
 }

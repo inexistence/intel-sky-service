@@ -536,7 +536,23 @@ controlled smoke with an Apple-Development-signed host and an ad-hoc producer al
 video layer. These results disprove signing Team ID alone as a hard rendering restriction; they do
 not by themselves prove the complete official managed-host path. The prior gray result is retained
 as historical `CONFIRMED_INTEL_RUNTIME`; its cross-Team explanation is withdrawn. A fresh managed
-ChatGPT continuous-frame smoke remains pending and must not be reported as complete.
+ChatGPT continuous-frame smoke was therefore required and must not be inferred from local tests.
+
+A clean managed restart on 2026-08-30 established the official Intel host connection, published
+`CAContext` 1722585886, attached presentation
+`4E669B1B-0035-47CD-89B0-353A757BC1F5`, and captured Finder window 4621 at 1840×872. The service
+logged its first valid ScreenCaptureKit frame, while both the official floating presentation and
+the in-composer thumbnail remained opaque gray. Intel host disassembly showed no attach-time error:
+the initial path creates `CALayerHost`, assigns `contextId`, sizes it, adds it to the host container,
+and flushes. ARM disassembly also confirmed `CGSMainConnectionID()`, an empty options dictionary,
+and a plain root `CALayer`, excluding the context factory/options and root-layer class as the active
+difference. Inspection then found that Intel had created an `AVSampleBufferDisplayLayer` and all of
+the IOSurface-backed sample conversion machinery but had neither attached that layer to the root nor
+enqueued a sample into it; only a throttled `CGImage` fallback was updated. The video layer is now
+attached, hidden until its first sample, fed shareable BGRA samples, and flushed back to the retained
+state image on capture reset. A real-sample regression test covers this path. The gray result is
+`CONFIRMED_INTEL_RUNTIME`; the video-layer correction remains `HIGH_CONFIDENCE` until the next clean
+managed-host run.
 
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
@@ -693,7 +709,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 205 Swift tests, the six-case Node oracle suite, the
+- The current runtime checkpoint passes 206 Swift tests, the six-case Node oracle suite, the
   soft-link hash test, the 12-selector Intel PIP-host audit, and an x86_64 release build compiled
   with warnings as errors.
 

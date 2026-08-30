@@ -30,6 +30,10 @@ enum RemoteHostedPIPSurfaceError: Error, CustomStringConvertible {
 final class RemoteHostedPIPSurface: @unchecked Sendable {
   private static let diagnosticPatternSentinel = "/tmp/intel-sky-pip-test-pattern"
 
+  private struct SendableSampleBuffer: @unchecked Sendable {
+    let value: CMSampleBuffer
+  }
+
   private struct LayerState: @unchecked Sendable {
     let context: NSObject
     let rootLayer: CALayer
@@ -48,10 +52,12 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private var storedSize: CGSize
   private var dumpedDiagnosticFrame = false
   private var lastImageFrameTime: TimeInterval = 0
+  private var showingDisplayFrame = false
   var size: CGSize { lock.withLock { storedSize } }
   var hasImageContents: Bool {
     Self.onMainThread { self.lock.withLock { self.imageLayer.contents != nil } }
   }
+  var hasDisplayFrame: Bool { lock.withLock { showingDisplayFrame } }
 
   init(size: CGSize) throws {
     guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else {
@@ -108,6 +114,8 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       let displayLayer = AVSampleBufferDisplayLayer()
       displayLayer.frame = layer.bounds
       displayLayer.videoGravity = .resizeAspect
+      displayLayer.isHidden = true
+      layer.addSublayer(displayLayer)
 
       let spi = unsafeBitCast(context, to: (any RemoteHostedPIPCAContextSPI).self)
       CATransaction.begin()
@@ -191,6 +199,21 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     guard CMSampleBufferDataIsReady(sampleBuffer), CMSampleBufferGetImageBuffer(sampleBuffer) != nil
     else { return false }
     dumpDiagnosticFrameIfRequested(sampleBuffer)
+    guard let displaySample = Self.makeDisplaySample(from: sampleBuffer) else { return false }
+    let sendableDisplaySample = SendableSampleBuffer(value: displaySample)
+
+    Self.onMainThread {
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      self.displayLayer.sampleBufferRenderer.enqueue(sendableDisplaySample.value)
+      self.displayLayer.isHidden = false
+      CATransaction.commit()
+      CATransaction.flush()
+      self.lock.withLock { self.showingDisplayFrame = true }
+    }
+
+    // Keep a low-rate decoded image beneath the video layer. If capture is reset, this becomes the
+    // immediately visible fallback without requiring another state request.
     let now = ProcessInfo.processInfo.systemUptime
     let shouldRender = lock.withLock { () -> Bool in
       guard now - lastImageFrameTime >= 0.1 else { return false }
@@ -213,10 +236,18 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   }
 
   func resetToFallbackImage() {
-    displayLayer.sampleBufferRenderer.flush(
-      removingDisplayedImage: true,
-      completionHandler: nil
-    )
+    Self.onMainThread {
+      self.displayLayer.sampleBufferRenderer.flush(
+        removingDisplayedImage: true,
+        completionHandler: nil
+      )
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      self.displayLayer.isHidden = true
+      CATransaction.commit()
+      CATransaction.flush()
+      self.lock.withLock { self.showingDisplayFrame = false }
+    }
   }
 
   private static func readImage(at url: URL) throws -> CGImage {
