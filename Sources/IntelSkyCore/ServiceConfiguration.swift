@@ -8,7 +8,7 @@ public enum SkyServiceConfigurationError: Error, CustomStringConvertible {
     switch self {
     case .invalidArguments:
       return
-        "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] [--experimental-pip]"
+        "usage: intel-sky-service [--socket /absolute/path/computeruse.sock] [--disable-pip]"
     case .relativeSocketPath(let path):
       return "socket path must be absolute: \(path)"
     }
@@ -19,7 +19,7 @@ public struct SkyServiceConfiguration: Equatable, Sendable {
   public static let groupContainerIdentifier = "2DC432GLL2.com.openai.sky.CUAService"
 
   public let socketPath: String
-  public let experimentalPIPEnabled: Bool
+  public let remoteHostedPIPEnabled: Bool
 
   public init(
     arguments: [String],
@@ -27,12 +27,12 @@ public struct SkyServiceConfiguration: Equatable, Sendable {
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) throws {
     var rawPath: String?
-    // ChatGPT may inject experimental PIP variables into managed services. The
-    // Intel compatibility service must fail closed because remote video layers
-    // can render as an opaque gray surface across signing-team boundaries.
-    // Keep PIP available only for an explicit developer launch.
-    var experimentalPIPEnabled = false
-    var experimentalPIPArgumentSeen = false
+    // The host rendezvous is authenticated twice (Apple Event sender and XPC peer),
+    // and presentation failure is isolated from the Computer Use request result.
+    // Keep an explicit rollback switch while making the official host path available
+    // to ChatGPT's argument-free managed-service launch.
+    var remoteHostedPIPEnabled = true
+    var pipArgumentSeen = false
     var index = 0
     while index < arguments.count {
       switch arguments[index] {
@@ -43,11 +43,19 @@ public struct SkyServiceConfiguration: Equatable, Sendable {
         rawPath = NSString(string: arguments[index + 1]).expandingTildeInPath
         index += 2
       case "--experimental-pip":
-        guard !experimentalPIPArgumentSeen else {
+        // Backward-compatible alias from the development-only phase.
+        guard !pipArgumentSeen else {
           throw SkyServiceConfigurationError.invalidArguments
         }
-        experimentalPIPArgumentSeen = true
-        experimentalPIPEnabled = true
+        pipArgumentSeen = true
+        remoteHostedPIPEnabled = true
+        index += 1
+      case "--disable-pip":
+        guard !pipArgumentSeen else {
+          throw SkyServiceConfigurationError.invalidArguments
+        }
+        pipArgumentSeen = true
+        remoteHostedPIPEnabled = false
         index += 1
       default:
         throw SkyServiceConfigurationError.invalidArguments
@@ -58,7 +66,7 @@ public struct SkyServiceConfiguration: Equatable, Sendable {
       throw SkyServiceConfigurationError.relativeSocketPath(resolvedPath)
     }
     socketPath = URL(fileURLWithPath: resolvedPath).standardizedFileURL.path
-    self.experimentalPIPEnabled = experimentalPIPEnabled
+    self.remoteHostedPIPEnabled = remoteHostedPIPEnabled
   }
 
   public static func defaultSocketURL(homeDirectory: URL) -> URL {

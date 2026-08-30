@@ -49,6 +49,9 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private var dumpedDiagnosticFrame = false
   private var lastImageFrameTime: TimeInterval = 0
   var size: CGSize { lock.withLock { storedSize } }
+  var hasImageContents: Bool {
+    Self.onMainThread { self.lock.withLock { self.imageLayer.contents != nil } }
+  }
 
   init(size: CGSize) throws {
     guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else {
@@ -160,6 +163,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
           self.imageLayer.frame = self.rootLayer.bounds
           self.displayLayer.frame = self.rootLayer.bounds
         }
+        self.imageLayer.contents = image
         CATransaction.commit()
         CATransaction.flush()
         return resized

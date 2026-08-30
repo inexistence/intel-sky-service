@@ -72,6 +72,46 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     connection.setDidEndStreamHandler { [weak self] presentationID in
       self?.invalidate(presentationID: presentationID)
     }
+    connection.setConnectionStateHandler { [weak self] connected in
+      if connected { self?.hostDidReconnect() }
+    }
+  }
+
+  func hostDidReconnect() {
+    let current = lock.withLock {
+      presentations.compactMap { key, presentation in
+        presentation.ending ? nil : (key, presentation)
+      }
+    }
+    for (key, presentation) in current {
+      do {
+        try host.publishPresentation(
+          id: presentation.id,
+          threadID: key.threadID,
+          turnID: key.turnID,
+          contextID: presentation.surface.contextID,
+          size: presentation.surface.size
+        )
+        try host.setSourceProcessIdentifier(
+          presentation.processIdentifier,
+          presentationID: presentation.id
+        )
+        let isStillLive = lock.withLock {
+          guard let current = presentations[key] else { return false }
+          return current.id == presentation.id && !current.ending
+        }
+        guard isStillLive else {
+          invalidate(presentationID: presentation.id)
+          continue
+        }
+        presentation.capture.refresh(outputSize: presentation.surface.size)
+      } catch {
+        RemoteHostedPIPDiagnostics.logger.error(
+          "presentation republish failed id=\(presentation.id, privacy: .public): \(String(describing: error), privacy: .public)"
+        )
+        invalidate(presentationID: presentation.id)
+      }
+    }
   }
 
   func updateCursor(point: CGPoint, isActive: Bool) {
@@ -140,6 +180,15 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       RemoteHostedPIPDiagnostics.logger.notice(
         "refreshing presentation id=\(existing.id, privacy: .public) app=\(bundleIdentifier, privacy: .public)"
       )
+      if existing.processIdentifier != processIdentifier {
+        replaceContext(
+          for: key,
+          existing: existing,
+          processIdentifier: processIdentifier,
+          imageURL: imageURL
+        )
+        return
+      }
       guard let resized = try? existing.surface.update(imageURL: imageURL) else { return }
       if resized {
         do {
@@ -214,6 +263,61 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         "presentation publish failed app=\(bundleIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
       )
       // Presentation is an optional UX layer; public Computer Use must continue if it is absent.
+    }
+  }
+
+  private func replaceContext(
+    for key: Key,
+    existing: Presentation,
+    processIdentifier: pid_t,
+    imageURL: URL
+  ) {
+    do {
+      let surface = try surfaceFactory(imageURL)
+      let capture = captureFactory(processIdentifier, surface.size, surface)
+      let fencePort = try surface.createFencePort()
+      defer { mach_port_deallocate(remoteHostedPIPTaskPort(), fencePort) }
+      try host.prepareContextReplacement(
+        presentationID: existing.id,
+        operationID: existing.nextOperationID,
+        contextID: surface.contextID,
+        size: surface.size,
+        fencePort: fencePort
+      )
+      try host.setSourceProcessIdentifier(processIdentifier, presentationID: existing.id)
+      try host.completeOperation(
+        presentationID: existing.id,
+        operationID: existing.nextOperationID
+      )
+      let didReplace = lock.withLock { () -> Bool in
+        guard let current = presentations[key], current.id == existing.id,
+          current.processIdentifier == existing.processIdentifier, !current.ending
+        else { return false }
+        presentations[key] = Presentation(
+          id: existing.id,
+          processIdentifier: processIdentifier,
+          surface: surface,
+          capture: capture,
+          nextOperationID: existing.nextOperationID + 1,
+          ending: false
+        )
+        return true
+      }
+      guard didReplace else {
+        capture.stop()
+        invalidate(presentationID: existing.id)
+        return
+      }
+      existing.capture.stop()
+      capture.start()
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "replaced presentation context id=\(existing.id, privacy: .public) oldPID=\(existing.processIdentifier, privacy: .public) newPID=\(processIdentifier, privacy: .public)"
+      )
+    } catch {
+      RemoteHostedPIPDiagnostics.logger.error(
+        "presentation context replacement failed id=\(existing.id, privacy: .public): \(String(describing: error), privacy: .public)"
+      )
+      invalidate(presentationID: existing.id)
     }
   }
 

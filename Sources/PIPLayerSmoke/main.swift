@@ -179,10 +179,10 @@ private func readLine(from handle: FileHandle) throws -> String {
   }
 }
 
-@MainActor private func runHost(outputURL: URL, video: Bool) throws {
+@MainActor private func runHost(outputURL: URL, video: Bool, producerURL: URL? = nil) throws {
   let producer = Process()
   let pipe = Pipe()
-  producer.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+  producer.executableURL = producerURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
   producer.arguments = [video ? "--video-producer" : "--producer"]
   producer.standardOutput = pipe
   producer.standardError = FileHandle.standardError
@@ -258,11 +258,27 @@ do {
   if arguments.first == "--producer" || arguments.first == "--video-producer" {
     try runProducer(video: arguments.first == "--video-producer")
   } else {
-    let video = arguments.first == "--video"
+    var hostArguments = arguments
+    var producerURL: URL?
+    if hostArguments.first == "--producer-executable" {
+      guard hostArguments.count >= 2 else {
+        throw SmokeError("--producer-executable requires an absolute path")
+      }
+      producerURL = URL(fileURLWithPath: hostArguments[1])
+      guard producerURL?.path.hasPrefix("/") == true else {
+        throw SmokeError("--producer-executable requires an absolute path")
+      }
+      hostArguments.removeFirst(2)
+    }
+    let video = hostArguments.first == "--video"
     let outputPath =
-      (video ? arguments.dropFirst().first : arguments.first)
+      (video ? hostArguments.dropFirst().first : hostArguments.first)
       ?? "/tmp/intel-sky-ca-smoke.png"
-    try runHost(outputURL: URL(fileURLWithPath: outputPath), video: video)
+    try runHost(
+      outputURL: URL(fileURLWithPath: outputPath),
+      video: video,
+      producerURL: producerURL
+    )
   }
 } catch {
   fputs("pip-layer-smoke: \(error)\n", stderr)

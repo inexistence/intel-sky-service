@@ -29,7 +29,7 @@ This is not an OpenAI product. The protocol is undocumented; compatibility is ba
 - all eleven public APIs: `list_apps`, `get_app_state`, `click`, `drag`, `paste`, `perform_secondary_action`, `press_key`, `scroll`, `select_text`, `set_value`, and `type_text`
 - signed x86_64 App bundle and per-user LaunchAgent installer
 
-The eleven public `@oai/sky` APIs are implemented, including target-scoped physical-input interruption with requery latching, lock/secure-input checks, loading-aware settling, PID/window-targeted synthetic input, release-before-suppress protection against direct background focus theft, an input-transparent software cursor, turn tracking, and conservative focus restoration. The hidden Appshot Apple Event bridge and an experimental native Codex PIP path are also implemented: the service can rendezvous with Intel `sky.node`, publish a real CAContext, continuously feed the target window through ScreenCaptureKit and `AVSampleBufferDisplayLayer`, follow target-window replacement and resize through fenced host operations, recover from bounded capture failures, retain state snapshots as a fallback, forward cursor state, and end capture with its turn. Exact ARM ViewBridge focus/capture lifetimes and long-run resilience remain active compatibility work. See `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
+The eleven public `@oai/sky` APIs are implemented, including target-scoped physical-input interruption with requery latching, lock/secure-input checks, loading-aware settling, PID/window-targeted synthetic input, release-before-suppress protection against direct background focus theft, an input-transparent software cursor, turn tracking, and conservative focus restoration. The hidden Appshot Apple Event bridge and native Codex PIP path are also implemented: the service can rendezvous with Intel `sky.node`, publish a real CAContext, continuously feed the target window through ScreenCaptureKit and `AVSampleBufferDisplayLayer`, follow target-window resize and process replacement through fenced host operations, republish live presentations after a host reconnect, recover from bounded capture failures, retain state snapshots as a fallback, forward cursor state, and end capture with its turn. Exact ARM ViewBridge focus/capture lifetimes and long-run resilience remain active compatibility work. See [`ProtocolCatalog.md`](ProtocolCatalog.md) for the request-by-request coverage matrix and `OfficialBehaviorNotes.md` for the evidence ledger and known differences.
 
 `Tools/oracle` contains an authorization-safe ARM/Intel differential runner. Its default case does
 not target an App; state capture and mutation cases require separate explicit opt-ins so unattended
@@ -80,8 +80,7 @@ Scripts/install-launch-agent.sh
 
 The installer copies the App to `~/Applications` and creates the per-user LaunchAgent `dev.huangjianbin.intel-sky-service`. The service uses its own bundle identity; it does not impersonate OpenAI's `com.openai.sky.CUAService` or request OpenAI's application-group entitlement.
 
-After a ChatGPT update, run the read-only native-host compatibility audit before enabling any
-future experimental PIP integration:
+After a ChatGPT update, run the read-only native-host compatibility audit before using native PIP:
 
 ```sh
 Scripts/audit-pip-host.sh
@@ -97,10 +96,13 @@ ChatGPT copies it into its canonical Codex-home location, starts that exact exec
 the resulting PID, and passes the PID to the native PIP host. This variable belongs to the ChatGPT
 main process, not to `node_repl` or the Computer Use MCP environment.
 
-Experimental PIP rendezvous is disabled for managed-service launches, including when ChatGPT
-injects `INTEL_SKY_EXPERIMENTAL_PIP=1`. Cross-signing-team remote video layers currently render as
-an opaque gray surface on Intel Macs. Developers can still opt in for protocol testing by launching
-the service directly with `--experimental-pip` after `Scripts/audit-pip-host.sh` passes.
+Authenticated PIP rendezvous is enabled for the argument-free managed-service launch. Use
+`--disable-pip` as the explicit rollback switch if a future ChatGPT build fails the host audit or
+regresses the presentation path; the older `--experimental-pip` spelling remains accepted as a
+compatibility alias. The service still treats PIP as an optional presentation layer, so failure to
+publish never changes the underlying Computer Use request result. Local static, video-layer, and
+controlled cross-signature CAContext smokes render correctly; the full managed ChatGPT continuous-
+frame, resize, replacement, reconnect, and end sequence remains an attended release gate.
 
 During protocol development, the unmodified bundled `@oai/sky` client from ChatGPT `26.825.41651` successfully completed the IPC-5 handshake, returned the local app list, and captured Finder state on x86_64. The production peer policy additionally requires the real `node_repl → codex → com.openai.codex` process chain; launching ChatGPT's signed Node binary from a shell is intentionally rejected.
 

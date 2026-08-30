@@ -487,7 +487,7 @@ Intel now also tracks successfully captured Apps as turn-scoped sessions, return
 ChatGPT status-menu schema (with Computer History truthfully reported unavailable/stopped), and
 handles the authenticated App-stop request. A stop immediately removes the App from status state,
 cancels in-flight work at cooperative action/deadline checkpoints, blocks subsequent state and
-action requests with `userStoppedSession` (`-10012`), and invalidates its experimental native PIP.
+action requests with `userStoppedSession` (`-10012`), and invalidates its native PIP.
 The latch clears only at a turn start/transition/end; the per-turn active registry is cleared at the
 same boundary, so actions in a new turn require a fresh state capture even if an old AX snapshot is
 still cached. Both Apple Event and socket request paths are supported. Schema, routing,
@@ -527,12 +527,16 @@ restarted with the compatibility App on its managed-service path, the native Com
 item appeared, confirming that socket discovery alone is insufficient and that the host requires
 the managed service PID. `CONFIRMED_INTEL_RUNTIME`.
 
-The same managed-host smoke reached remote PIP presentation but rendered only an opaque gray
-surface (occasionally showing the service-supplied Finder placeholder) rather than live window
-frames. Multiple CAContext, ordinary CALayer, and AVSampleBufferDisplayLayer variants did not cross
-the ChatGPT/service signing-team boundary reliably. PIP is therefore a documented
-`KNOWN_DIFFERENCE` and is disabled for managed launches; the core Computer Use IPC/action path does
-not depend on it. `CONFIRMED_INTEL_RUNTIME`.
+An earlier managed-host smoke reached remote PIP presentation but rendered an opaque gray surface
+(occasionally showing a Finder placeholder) rather than live frames. Subsequent inspection found a
+concrete producer defect: the initial decoded state image sized the CAContext but was never assigned
+to the published image layer. That assignment is now covered by a regression test. Local static and
+AVSampleBufferDisplayLayer smokes render distinct color content across a real process boundary, and a
+controlled smoke with an Apple-Development-signed host and an ad-hoc producer also renders the live
+video layer. These results disprove signing Team ID alone as a hard rendering restriction; they do
+not by themselves prove the complete official managed-host path. The prior gray result is retained
+as historical `CONFIRMED_INTEL_RUNTIME`; its cross-Team explanation is withdrawn. A fresh managed
+ChatGPT continuous-frame smoke remains pending and must not be reported as complete.
 
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
@@ -561,17 +565,22 @@ frames at up to 30 fps into an `AVSampleBufferDisplayLayer`; the latest `get_app
 visible until the first frame and returns if capture stops. Capture excludes the physical cursor
 because cursor state is sent separately to the native host. Every subsequent `get_app_state`
 reconciles the capture against the target process's current front normal window and updates the
-existing `SCStream` filter when the window ID changes. Stream creation, filter-update, and delegate
+existing `SCStream` filter when the window ID changes. If the App relaunches under a new PID, Intel
+creates a new CAContext and capture, sends the host's fenced `replace-context` operation, updates the
+source PID, and retires the old capture only after the replacement completes. When the host XPC
+connection returns, all non-ending presentations and source PIDs are republished and their capture
+filters are refreshed. Stream creation, filter-update, and delegate
 failures fall back to the retained state image and use finite 0.25/0.5/1-second recovery attempts;
 late callbacks from replaced streams are ignored by identity. Unit tests replace capture with a
 fake, so routine tests cannot request Screen Recording or per-target Computer Use approval.
 For stable source-size changes, Intel resizes the CAContext layers, creates a transaction fence,
 sends the host's `resize` prepare/complete sequence, and updates the live `SCStream` configuration.
-The Mach-send fence envelope is covered by a real bidirectional XPC test. `HIGH_CONFIDENCE`.
-Dynamic managed-host verification and long-running resize/recovery stress remain pending, so the
-feature is fail-closed for managed launches. ChatGPT's inherited
-`INTEL_SKY_EXPERIMENTAL_PIP=1` is deliberately ignored; direct developer launches may opt in with
-`--experimental-pip` only.
+The Mach-send fence envelope is covered by a real bidirectional XPC test. Authenticated PIP is now
+enabled for argument-free managed launches; `--disable-pip` is the explicit rollback switch and the
+old `--experimental-pip` flag is a compatibility alias. PIP failure remains isolated from the
+Computer Use response. `HIGH_CONFIDENCE` for the implemented protocol and local/cross-signature
+smokes. Dynamic managed-host continuous frames, cursor, resize, PID replacement, host reconnect,
+turn end, and long-running recovery stress remain pending attended verification.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,
@@ -630,7 +639,8 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   window rejects an old-window element and that a dismissed “显示简介” menu item now fails with the
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
-  the later socket, lifecycle, PIP, focus, and ViewBridge coverage bring the suite to 173 tests.
+  the later socket, lifecycle, PIP, focus, and ViewBridge coverage brought that checkpoint to 173
+  tests; the current complete suite contains 205 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
@@ -683,8 +693,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The unified lifecycle checkpoint passes 198 Swift tests, the six-case Node oracle suite, the
-  soft-link hash test, and an x86_64 release build compiled with warnings as errors.
+- The current runtime checkpoint passes 205 Swift tests, the six-case Node oracle suite, the
+  soft-link hash test, the 12-selector Intel PIP-host audit, and an x86_64 release build compiled
+  with warnings as errors.
 
 ## Oracle backlog
 

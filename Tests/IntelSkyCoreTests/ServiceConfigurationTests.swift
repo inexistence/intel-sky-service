@@ -14,7 +14,7 @@ import Testing
     configuration.socketPath
       == "/Users/example/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock"
   )
-  #expect(!configuration.experimentalPIPEnabled)
+  #expect(configuration.remoteHostedPIPEnabled)
 }
 
 @Test func explicitAbsoluteSocketOverridesDefault() throws {
@@ -25,16 +25,16 @@ import Testing
   )
 
   #expect(configuration.socketPath == "/tmp/intel-sky/computeruse.sock")
-  #expect(!configuration.experimentalPIPEnabled)
+  #expect(configuration.remoteHostedPIPEnabled)
 }
 
-@Test func managedServiceEnvironmentCannotEnableExperimentalPIP() throws {
+@Test func managedServiceLaunchEnablesAuthenticatedRemoteHostedPIPByDefault() throws {
   let configuration = try SkyServiceConfiguration(
     arguments: [],
     environment: ["INTEL_SKY_EXPERIMENTAL_PIP": "1"]
   )
 
-  #expect(!configuration.experimentalPIPEnabled)
+  #expect(configuration.remoteHostedPIPEnabled)
 }
 
 @Test func experimentalPIPFlagCanBeCombinedWithSocketInEitherOrder() throws {
@@ -45,10 +45,16 @@ import Testing
     arguments: ["--socket", "/tmp/second.sock", "--experimental-pip"]
   )
 
-  #expect(first.experimentalPIPEnabled)
+  #expect(first.remoteHostedPIPEnabled)
   #expect(first.socketPath == "/tmp/first.sock")
-  #expect(second.experimentalPIPEnabled)
+  #expect(second.remoteHostedPIPEnabled)
   #expect(second.socketPath == "/tmp/second.sock")
+}
+
+@Test func remoteHostedPIPHasExplicitRollbackSwitch() throws {
+  let configuration = try SkyServiceConfiguration(arguments: ["--disable-pip"])
+
+  #expect(!configuration.remoteHostedPIPEnabled)
 }
 
 @Test func invalidArgumentsAndRelativeSocketAreRejected() {
@@ -60,6 +66,9 @@ import Testing
   }
   #expect(throws: SkyServiceConfigurationError.self) {
     try SkyServiceConfiguration(arguments: ["--experimental-pip", "--experimental-pip"])
+  }
+  #expect(throws: SkyServiceConfigurationError.self) {
+    try SkyServiceConfiguration(arguments: ["--disable-pip", "--experimental-pip"])
   }
   #expect(throws: SkyServiceConfigurationError.self) {
     try SkyServiceConfiguration(arguments: ["--socket"])

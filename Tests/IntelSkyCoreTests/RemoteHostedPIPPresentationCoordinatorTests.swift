@@ -135,6 +135,101 @@ import UniformTypeIdentifiers
   #expect(host.events.filter { $0 == "will-end:\(presentationID)" }.count == 1)
 }
 
+@Test func appProcessReplacementUsesHostReplaceContextOperation() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let captures = RecordingPIPCaptureFactory()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { pid, _, _ in captures.make(processIdentifier: pid) }
+  )
+  func publish(pid: Int32) {
+    coordinator.observe(
+      requestType: "ComputerUseIPCAppGetSkyshotRequest",
+      request: ["app": "com.example.fixture"],
+      codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+      result: [
+        "app": ["bundleIdentifier": "com.example.fixture", "pid": pid],
+        "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      ]
+    )
+  }
+
+  publish(pid: 123)
+  let presentationID = try #require(host.presentationID)
+  publish(pid: 456)
+
+  #expect(captures.capture(for: 123)?.stopped == true)
+  #expect(captures.capture(for: 456)?.started == true)
+  #expect(host.events.contains("replace:\(presentationID):1:2x2"))
+  #expect(host.events.contains("source:456"))
+  #expect(host.events.contains("complete:\(presentationID):1"))
+  #expect(!host.events.contains("invalidate:\(presentationID)"))
+}
+
+@Test func hostReconnectRepublishesLivePresentationAndRefreshesCapture() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  let presentationID = try #require(host.presentationID)
+
+  coordinator.hostDidReconnect()
+
+  #expect(
+    host.events.filter { $0 == "publish:\(presentationID):thread:turn:2x2" }.count == 2
+  )
+  #expect(host.events.filter { $0 == "source:123" }.count == 2)
+  #expect(capture.refreshCount == 1)
+  #expect(!capture.stopped)
+}
+
+@Test func turnEndRacingHostReconnectCannotRepublishAnEndedPresentation() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let capture = RecordingPIPWindowCapture()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { _, _, _ in capture }
+  )
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+  let presentationID = try #require(host.presentationID)
+  let turn = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+  )
+  host.setPublishHandler { coordinator.handle(.ended(turn)) }
+
+  coordinator.hostDidReconnect()
+
+  #expect(host.events.contains("will-end:\(presentationID)"))
+  #expect(host.events.contains("invalidate:\(presentationID)"))
+  #expect(capture.stopped)
+  #expect(capture.refreshCount == 0)
+}
+
 private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   @unchecked Sendable
 {
@@ -158,12 +253,34 @@ private final class RecordingPIPWindowCapture: RemoteHostedPIPWindowCapturing,
   func stop() { lock.withLock { didStop = true } }
 }
 
+private final class RecordingPIPCaptureFactory: @unchecked Sendable {
+  private let lock = NSLock()
+  private var captures: [pid_t: RecordingPIPWindowCapture] = [:]
+
+  func make(processIdentifier: pid_t) -> RecordingPIPWindowCapture {
+    lock.withLock {
+      let capture = RecordingPIPWindowCapture()
+      captures[processIdentifier] = capture
+      return capture
+    }
+  }
+
+  func capture(for processIdentifier: pid_t) -> RecordingPIPWindowCapture? {
+    lock.withLock { captures[processIdentifier] }
+  }
+}
+
 private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @unchecked Sendable {
   private let lock = NSLock()
   private var storedEvents: [String] = []
   private var storedPresentationID: String?
+  private var publishHandler: (() -> Void)?
   var events: [String] { lock.withLock { storedEvents } }
   var presentationID: String? { lock.withLock { storedPresentationID } }
+
+  func setPublishHandler(_ handler: @escaping () -> Void) {
+    lock.withLock { publishHandler = handler }
+  }
 
   func publishPresentation(
     id: String,
@@ -172,11 +289,13 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
     contextID: UInt32,
     size: CGSize
   ) throws {
-    lock.withLock {
+    let handler = lock.withLock { () -> (() -> Void)? in
       storedPresentationID = id
       storedEvents.append(
         "publish:\(id):\(threadID):\(turnID):\(Int(size.width))x\(Int(size.height))")
+      return publishHandler
     }
+    handler?()
   }
 
   func setSourceProcessIdentifier(_ pid: pid_t, presentationID: String) throws {
@@ -194,6 +313,20 @@ private final class RecordingPIPHostCaller: RemoteHostedPIPHostCalling, @uncheck
     lock.withLock {
       storedEvents.append(
         "prepare:\(presentationID):\(operationID):\(Int(size.width))x\(Int(size.height))")
+    }
+  }
+
+  func prepareContextReplacement(
+    presentationID: String,
+    operationID: UInt64,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws {
+    #expect(fencePort != MACH_PORT_NULL)
+    lock.withLock {
+      storedEvents.append(
+        "replace:\(presentationID):\(operationID):\(Int(size.width))x\(Int(size.height))")
     }
   }
 

@@ -31,6 +31,13 @@ protocol RemoteHostedPIPHostCalling: Sendable {
     size: CGSize,
     fencePort: mach_port_t
   ) throws
+  func prepareContextReplacement(
+    presentationID: String,
+    operationID: UInt64,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws
   func completeOperation(presentationID: String, operationID: UInt64) throws
   func willEndStream(presentationID: String) throws
   func invalidatePresentation(id: String) throws
@@ -46,14 +53,20 @@ final class RemoteHostedPIPContentProducer: NSObject,
   private var maximumDisplaySize: Double?
   private var actionHandler: (@Sendable (String, String) throws -> Void)?
   private var didEndStreamHandler: (@Sendable (String) -> Void)?
+  private var connectionStateHandler: (@Sendable (Bool) -> Void)?
 
   var isConnected: Bool { lock.withLock { connected } }
   var maxDisplaySize: Double? { lock.withLock { maximumDisplaySize } }
 
   func connect(reply: @escaping RemoteHostedPIPReply) {
-    lock.withLock { connected = true }
+    let handler = lock.withLock { () -> (@Sendable (Bool) -> Void)? in
+      guard !connected else { return nil }
+      connected = true
+      return connectionStateHandler
+    }
     RemoteHostedPIPDiagnostics.logger.notice("native host connected")
     reply(nil)
+    handler?(true)
   }
 
   func setMaxDisplaySize(_ size: Double, reply: @escaping RemoteHostedPIPReply) {
@@ -92,7 +105,12 @@ final class RemoteHostedPIPContentProducer: NSObject,
   }
 
   func connectionDidInvalidate() {
-    lock.withLock { connected = false }
+    let handler = lock.withLock { () -> (@Sendable (Bool) -> Void)? in
+      guard connected else { return nil }
+      connected = false
+      return connectionStateHandler
+    }
+    handler?(false)
   }
 
   func setActionHandler(_ handler: @escaping @Sendable (String, String) throws -> Void) {
@@ -101,6 +119,10 @@ final class RemoteHostedPIPContentProducer: NSObject,
 
   func setDidEndStreamHandler(_ handler: @escaping @Sendable (String) -> Void) {
     lock.withLock { didEndStreamHandler = handler }
+  }
+
+  func setConnectionStateHandler(_ handler: @escaping @Sendable (Bool) -> Void) {
+    lock.withLock { connectionStateHandler = handler }
   }
 
   private static func error(code: Int, description: String) -> NSError {
@@ -155,6 +177,10 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
     producer.setDidEndStreamHandler(handler)
   }
 
+  func setConnectionStateHandler(_ handler: @escaping @Sendable (Bool) -> Void) {
+    producer.setConnectionStateHandler(handler)
+  }
+
   func publishPresentation(
     id: String,
     threadID: String,
@@ -188,13 +214,48 @@ final class RemoteHostedPIPConnectionController: NSObject, NSXPCListenerDelegate
     size: CGSize,
     fencePort: mach_port_t
   ) throws {
+    try prepareOperation(
+      presentationID: presentationID,
+      operationID: operationID,
+      kind: "resize",
+      contextID: contextID,
+      size: size,
+      fencePort: fencePort
+    )
+  }
+
+  func prepareContextReplacement(
+    presentationID: String,
+    operationID: UInt64,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws {
+    try prepareOperation(
+      presentationID: presentationID,
+      operationID: operationID,
+      kind: "replace-context",
+      contextID: contextID,
+      size: size,
+      fencePort: fencePort
+    )
+  }
+
+  private func prepareOperation(
+    presentationID: String,
+    operationID: UInt64,
+    kind: String,
+    contextID: UInt32,
+    size: CGSize,
+    fencePort: mach_port_t
+  ) throws {
     let fencePayload = xpc_dictionary_create(nil, nil, 0)
     xpc_dictionary_set_mach_send(fencePayload, "fence", fencePort)
     try performHostCall { host, reply in
       host.prepareOperation(
         presentationID: presentationID,
         operationID: operationID,
-        kind: "resize",
+        kind: kind,
         contextID: contextID,
         width: size.width,
         height: size.height,

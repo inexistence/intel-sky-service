@@ -76,12 +76,22 @@ private nonisolated(unsafe) func pipTestTaskPort() -> mach_port_t {
     fencePort: fencePort
   )
   try controller.completeOperation(presentationID: "presentation", operationID: 1)
+  try controller.prepareContextReplacement(
+    presentationID: "presentation",
+    operationID: 2,
+    contextID: surface.contextID,
+    size: surface.size,
+    fencePort: fencePort
+  )
+  try controller.completeOperation(presentationID: "presentation", operationID: 2)
   #expect(
     host.events == [
       "publish:presentation:42:640x480",
       "source:presentation:321",
       "prepare:presentation:1:resize:800x600:fence",
       "complete:presentation:1",
+      "prepare:presentation:2:replace-context:800x600:fence",
+      "complete:presentation:2",
     ]
   )
 }
@@ -100,6 +110,19 @@ private nonisolated(unsafe) func pipTestTaskPort() -> mach_port_t {
   #expect(actionError != nil)
 }
 
+@Test func pipProducerReportsConnectionStateTransitionsOnce() {
+  let producer = RemoteHostedPIPContentProducer()
+  let states = PIPConnectionStateRecorder()
+  producer.setConnectionStateHandler { states.append($0) }
+
+  producer.connect { _ in }
+  producer.connect { _ in }
+  producer.connectionDidInvalidate()
+  producer.connectionDidInvalidate()
+
+  #expect(states.values == [true, false])
+}
+
 private struct AllowAnyProcessAuthorizer: ProcessAuthorizing {
   func authorize(processIdentifier: pid_t) throws {}
 }
@@ -109,6 +132,13 @@ private final class PIPReplyResult: @unchecked Sendable {
   private var storedError: Error?
   var error: Error? { lock.withLock { storedError } }
   func record(_ error: Error?) { lock.withLock { storedError = error } }
+}
+
+private final class PIPConnectionStateRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [Bool] = []
+  var values: [Bool] { lock.withLock { stored } }
+  func append(_ value: Bool) { lock.withLock { stored.append(value) } }
 }
 
 private final class RecordingPIPHost: NSObject, RemoteHostedPIPContentHostXPCProtocol {
