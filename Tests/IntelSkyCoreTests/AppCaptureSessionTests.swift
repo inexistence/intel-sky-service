@@ -83,8 +83,94 @@ import Testing
   manager.shutdown()
 }
 
+@Test func nativeChangeSignalDrivesCaptureWithoutWaitingForFallbackPoll() throws {
+  let provider = ChangingCaptureStateProvider()
+  let monitorBox = CaptureChangeMonitorBox()
+  let manager = AppCaptureSessionManager(
+    appStateProvider: provider,
+    pollInterval: 60,
+    changeMonitorFactory: { processIdentifier, changeHandler in
+      #expect(processIdentifier == 123)
+      return monitorBox.make(changeHandler: changeHandler)
+    }
+  )
+  try start(manager, requestID: "native-change")
+  for _ in 0..<3 {
+    _ = try manager.nextCaptureUpdate(request: ["requestId": "native-change"])
+  }
+  let monitor = try #require(monitorBox.monitor)
+  #expect(monitor.started)
+
+  monitor.trigger()
+  let update = try RequestDeadlineContext.withDeadline(Date().addingTimeInterval(1)) {
+    try manager.nextCaptureUpdate(request: ["requestId": "native-change"])
+  }
+
+  #expect(update["type"] as? String == "axText")
+  #expect(update["text"] as? String == "[0] AXWindow title=\"Changed\"")
+  manager.shutdown()
+  #expect(monitor.stopped)
+}
+
+@Test func completedCaptureStopsNativeChangeMonitorImmediately() throws {
+  let provider = ChangingCaptureStateProvider()
+  let monitorBox = CaptureChangeMonitorBox()
+  let manager = AppCaptureSessionManager(
+    appStateProvider: provider,
+    pollInterval: 60,
+    changeMonitorFactory: { _, changeHandler in
+      monitorBox.make(changeHandler: changeHandler)
+    }
+  )
+  try start(manager, requestID: "monitor-stop")
+  let monitor = try #require(monitorBox.monitor)
+
+  try manager.completeCapture(request: ["requestId": "monitor-stop"])
+
+  #expect(monitor.stopped)
+  monitor.trigger()
+  #expect(provider.calls == 1)
+}
+
+@Test func captureProcessReplacementMovesNativeChangeMonitorToNewPID() throws {
+  let provider = ReplacingCaptureStateProvider()
+  let monitorLog = CaptureChangeMonitorLog()
+  let manager = AppCaptureSessionManager(
+    appStateProvider: provider,
+    pollInterval: 60,
+    changeMonitorFactory: { processIdentifier, changeHandler in
+      monitorLog.make(processIdentifier: processIdentifier, changeHandler: changeHandler)
+    }
+  )
+  try start(manager, requestID: "pid-replacement")
+  for _ in 0..<3 {
+    _ = try manager.nextCaptureUpdate(request: ["requestId": "pid-replacement"])
+  }
+  let first = try #require(monitorLog.monitor(for: 123))
+
+  first.trigger()
+  let metadata = try RequestDeadlineContext.withDeadline(Date().addingTimeInterval(1)) {
+    try manager.nextCaptureUpdate(request: ["requestId": "pid-replacement"])
+  }
+  let text = try manager.nextCaptureUpdate(request: ["requestId": "pid-replacement"])
+
+  #expect(metadata["type"] as? String == "metadata")
+  #expect((metadata["app"] as? [String: Any])?["pid"] as? Int == 456)
+  #expect(text["type"] as? String == "axText")
+  #expect(first.stopped)
+  #expect(monitorLog.monitor(for: 456)?.started == true)
+  manager.shutdown()
+  #expect(monitorLog.monitor(for: 456)?.stopped == true)
+}
+
 @Test func nativeOneShotCompletionPreservesInitialUpdatesAndExpires() throws {
-  let manager = AppCaptureSessionManager(appStateProvider: CaptureStateProvider())
+  let manager = AppCaptureSessionManager(
+    appStateProvider: CaptureStateProvider(),
+    changeMonitorFactory: { _, _ in
+      Issue.record("finite native Appshot must not start a continuous change monitor")
+      return RecordingCaptureChangeMonitor(changeHandler: {})
+    }
+  )
   try ComputerUseClientContext.withIdentifier("native:123") {
     try start(manager, requestID: "native-one-shot")
     try manager.completeCapture(request: ["requestId": "native-one-shot"])
@@ -218,6 +304,7 @@ private struct CaptureStateProvider: AppStateProviding {
 private final class ChangingCaptureStateProvider: AppStateProviding, @unchecked Sendable {
   private let lock = NSLock()
   private var callCount = 0
+  var calls: Int { lock.withLock { callCount } }
 
   func getAppState(request: [String: Any]) throws -> [String: Any] {
     let current = lock.withLock { () -> Int in
@@ -246,6 +333,24 @@ private final class FailingCaptureStateProvider: AppStateProviding, @unchecked S
   func getAppPolicy(request: [String: Any]) throws -> [String: Any] { [:] }
 }
 
+private final class ReplacingCaptureStateProvider: AppStateProviding, @unchecked Sendable {
+  private let lock = NSLock()
+  private var callCount = 0
+
+  func getAppState(request: [String: Any]) throws -> [String: Any] {
+    let current = lock.withLock { () -> Int in
+      callCount += 1
+      return callCount
+    }
+    return captureState(
+      text: current == 1 ? "Initial" : "Replaced",
+      processIdentifier: current == 1 ? 123 : 456
+    )
+  }
+
+  func getAppPolicy(request: [String: Any]) throws -> [String: Any] { [:] }
+}
+
 private final class BlockingInitialCaptureStateProvider: AppStateProviding, @unchecked Sendable {
   let entered = DispatchSemaphore(value: 0)
   let release = DispatchSemaphore(value: 0)
@@ -266,6 +371,59 @@ private final class CaptureStartResult: @unchecked Sendable {
   func store(_ error: Error?) { lock.withLock { storedError = error } }
 }
 
+private final class CaptureChangeMonitorBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedMonitor: RecordingCaptureChangeMonitor?
+  var monitor: RecordingCaptureChangeMonitor? { lock.withLock { storedMonitor } }
+
+  func make(changeHandler: @escaping @Sendable () -> Void) -> RecordingCaptureChangeMonitor {
+    lock.withLock {
+      let monitor = RecordingCaptureChangeMonitor(changeHandler: changeHandler)
+      storedMonitor = monitor
+      return monitor
+    }
+  }
+}
+
+private final class CaptureChangeMonitorLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var monitors: [pid_t: RecordingCaptureChangeMonitor] = [:]
+
+  func make(
+    processIdentifier: pid_t,
+    changeHandler: @escaping @Sendable () -> Void
+  ) -> RecordingCaptureChangeMonitor {
+    lock.withLock {
+      let monitor = RecordingCaptureChangeMonitor(changeHandler: changeHandler)
+      monitors[processIdentifier] = monitor
+      return monitor
+    }
+  }
+
+  func monitor(for processIdentifier: pid_t) -> RecordingCaptureChangeMonitor? {
+    lock.withLock { monitors[processIdentifier] }
+  }
+}
+
+private final class RecordingCaptureChangeMonitor: AppCaptureChangeMonitoring,
+  @unchecked Sendable
+{
+  private let lock = NSLock()
+  private let changeHandler: @Sendable () -> Void
+  private var didStart = false
+  private var didStop = false
+  var started: Bool { lock.withLock { didStart } }
+  var stopped: Bool { lock.withLock { didStop } }
+
+  init(changeHandler: @escaping @Sendable () -> Void) {
+    self.changeHandler = changeHandler
+  }
+
+  func start() { lock.withLock { didStart = true } }
+  func stop() { lock.withLock { didStop = true } }
+  func trigger() { changeHandler() }
+}
+
 private func start(_ manager: AppCaptureSessionManager, requestID: String) throws {
   _ = try manager.startCapture(request: [
     "app": "com.apple.finder",
@@ -276,9 +434,9 @@ private func start(_ manager: AppCaptureSessionManager, requestID: String) throw
   ])
 }
 
-private func captureState(text: String) -> [String: Any] {
+private func captureState(text: String, processIdentifier: Int = 123) -> [String: Any] {
   [
-    "app": ["bundleIdentifier": "com.apple.finder", "pid": 123],
+    "app": ["bundleIdentifier": "com.apple.finder", "pid": processIdentifier],
     "skyshot": [
       "text": "[0] AXWindow title=\"\(text)\"",
       "screenshot": ["url": "file:///tmp/finder.png", "mimeType": "image/png"],

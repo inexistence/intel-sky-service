@@ -333,7 +333,7 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     reconciliationFailed(stream: stream)
   }
 
-  private static func bestWindow(in windows: [SCWindow], processIdentifier: pid_t) -> SCWindow? {
+  static func bestWindow(in windows: [SCWindow], processIdentifier: pid_t) -> SCWindow? {
     let orderedWindowIDs =
       (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
       as? [[CFString: Any]])?

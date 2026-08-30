@@ -92,11 +92,13 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   `blockedByPolicy`, `screenshotCaptureFailed`, and `unknownCaptureFailed`.
   `CONFIRMED_STATIC_BINARY`.
 - Intel now treats Start as a session start rather than a precomputed four-item response. A bounded
-  producer continuously samples full AX/screenshot state, compares content, coalesces queued update
-  types under backpressure, and lets Next long-poll until a change, terminal event, or request
-  deadline. Capture polls bypass the otherwise conservative serialized AX/action gate, so other
-  clients and ordinary RPCs remain responsive. `PARTIAL`: the producer is polling-based rather than
-  the official runtime's not-yet-recovered change notification and reliable-final-frame machinery.
+  producer uses target-window ScreenCaptureKit frame signatures plus Accessibility window/layout/
+  value notifications to request state asynchronously, compares AX/screenshot content, coalesces
+  queued update types under backpressure, and lets Next long-poll until a change, terminal event, or
+  request deadline. A two-second fallback sample covers unavailable or dropped native notifications;
+  unchanged 64×64 detector frames do not recapture full state. Capture refreshes bypass the otherwise
+  conservative serialized AX/action gate, so other clients and ordinary RPCs remain responsive.
+  `HIGH_CONFIDENCE`; the exact official reliable-final-frame machinery remains `NEEDS_ARM_ORACLE`.
 - Capture ownership is stable per Unix connection and per native Apple Event sender PID. Socket
   disconnect and service shutdown discard owned streams and wake blocked consumers; turn
   transition/end and App stop/deactivation enqueue `completed`; producer failures enqueue the
@@ -816,7 +818,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, and ViewBridge coverage brought that checkpoint to 173
-  tests; the current complete suite contains 235 tests.
+  tests; the current complete suite contains 239 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 

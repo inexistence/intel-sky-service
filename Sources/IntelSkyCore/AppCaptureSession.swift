@@ -5,6 +5,16 @@ public protocol AppCaptureProviding: Sendable {
   func nextCaptureUpdate(request: [String: Any]) throws -> [String: Any]
 }
 
+public protocol AppCaptureChangeMonitoring: Sendable {
+  func start()
+  func stop()
+}
+
+public typealias AppCaptureChangeMonitorFactory = @Sendable (
+  _ processIdentifier: pid_t,
+  _ changeHandler: @escaping @Sendable () -> Void
+) -> any AppCaptureChangeMonitoring
+
 protocol AppCaptureCompleting: Sendable {
   func completeCapture(request: [String: Any]) throws
 }
@@ -65,6 +75,8 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     var lastText: String
     var lastScreenshotSignature: Data?
     var lastScreenshotURL: URL?
+    var changeMonitor: (any AppCaptureChangeMonitoring)?
+    var refreshRequested = false
     var terminalQueued = false
     var disconnected = false
 
@@ -90,6 +102,25 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       if let screenshot {
         updates.append(Self.screenshotUpdate(app: appMetadata, screenshot: screenshot))
       }
+    }
+
+    func requestRefresh() {
+      condition.lock()
+      guard !terminalQueued, !disconnected else {
+        condition.unlock()
+        return
+      }
+      refreshRequested = true
+      condition.broadcast()
+      condition.unlock()
+    }
+
+    func installChangeMonitor(_ monitor: any AppCaptureChangeMonitoring) -> Bool {
+      condition.lock()
+      defer { condition.unlock() }
+      guard !terminalQueued, !disconnected, changeMonitor == nil else { return false }
+      changeMonitor = monitor
+      return true
     }
 
     static func screenshotUpdate(
@@ -135,7 +166,8 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   private let permissionDiagnostics: ServicePermissionDiagnostics
   private let pollInterval: TimeInterval
   private let maximumQueuedUpdates: Int
-  private let pollingQueue = DispatchQueue(
+  private let changeMonitorFactory: AppCaptureChangeMonitorFactory?
+  private let producerQueue = DispatchQueue(
     label: "dev.huangjianbin.intel-sky-service.capture-stream",
     qos: .userInitiated,
     attributes: .concurrent
@@ -147,13 +179,15 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   public init(
     appStateProvider: any AppStateProviding,
     permissionDiagnostics: ServicePermissionDiagnostics = .init(),
-    pollInterval: TimeInterval = 0.25,
-    maximumQueuedUpdates: Int = 32
+    pollInterval: TimeInterval = 2,
+    maximumQueuedUpdates: Int = 32,
+    changeMonitorFactory: AppCaptureChangeMonitorFactory? = nil
   ) {
     self.appStateProvider = appStateProvider
     self.permissionDiagnostics = permissionDiagnostics
     self.pollInterval = max(0.01, pollInterval)
     self.maximumQueuedUpdates = max(4, maximumQueuedUpdates)
+    self.changeMonitorFactory = changeMonitorFactory
   }
 
   public func installSessionStopHandling() {
@@ -211,7 +245,18 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       }
       sessions[requestID] = session
     }
-    beginPolling(session)
+    if !session.owner.hasPrefix("native:"),
+      let processIdentifier = (appMetadata["pid"] as? NSNumber)?.int32Value,
+      processIdentifier > 0,
+      let changeMonitorFactory
+    {
+      let monitor = changeMonitorFactory(processIdentifier) { [weak session] in
+        session?.requestRefresh()
+      }
+      monitor.start()
+      if !session.installChangeMonitor(monitor) { monitor.stop() }
+    }
+    beginProducing(session)
 
     return [
       "result": "started",
@@ -301,10 +346,10 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     for session in removed { disconnect(session) }
   }
 
-  private func beginPolling(_ session: Session) {
-    pollingQueue.async { [weak self, weak session] in
+  private func beginProducing(_ session: Session) {
+    producerQueue.async { [weak self, weak session] in
       guard let self, let session else { return }
-      while self.waitForNextPoll(session) {
+      while self.waitForRefresh(session) {
         do {
           let state = try self.appStateProvider.getAppState(
             request: ["app": session.app, "disableDiff": true]
@@ -327,11 +372,17 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     }
   }
 
-  private func waitForNextPoll(_ session: Session) -> Bool {
+  private func waitForRefresh(_ session: Session) -> Bool {
     session.condition.lock()
     defer { session.condition.unlock() }
     guard !session.terminalQueued, !session.disconnected else { return false }
-    _ = session.condition.wait(until: Date().addingTimeInterval(pollInterval))
+    let deadline = Date().addingTimeInterval(pollInterval)
+    while !session.refreshRequested, !session.terminalQueued, !session.disconnected,
+      Date() < deadline
+    {
+      _ = session.condition.wait(until: deadline)
+    }
+    session.refreshRequested = false
     return !session.terminalQueued && !session.disconnected
   }
 
@@ -343,8 +394,12 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       throw AppCaptureSessionError.invalidRequest("Capture state provider returned an invalid state")
     }
     session.condition.lock()
-    defer { session.condition.unlock() }
-    guard !session.terminalQueued, !session.disconnected else { return }
+    guard !session.terminalQueued, !session.disconnected else {
+      session.condition.unlock()
+      return
+    }
+    let previousProcessIdentifier = (session.appMetadata["pid"] as? NSNumber)?.int32Value
+    let nextProcessIdentifier = (appMetadata["pid"] as? NSNumber)?.int32Value
     if !NSDictionary(dictionary: session.appMetadata).isEqual(to: appMetadata) {
       session.appMetadata = appMetadata
       enqueue(["type": "metadata", "app": appMetadata], in: session)
@@ -366,6 +421,30 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       }
     }
     session.condition.broadcast()
+    session.condition.unlock()
+    if let nextProcessIdentifier, nextProcessIdentifier > 0,
+      previousProcessIdentifier != nextProcessIdentifier
+    {
+      replaceChangeMonitor(for: session, processIdentifier: nextProcessIdentifier)
+    }
+  }
+
+  private func replaceChangeMonitor(for session: Session, processIdentifier: pid_t) {
+    guard !session.owner.hasPrefix("native:"), let changeMonitorFactory else { return }
+    let replacement = changeMonitorFactory(processIdentifier) { [weak session] in
+      session?.requestRefresh()
+    }
+    replacement.start()
+    session.condition.lock()
+    guard !session.terminalQueued, !session.disconnected else {
+      session.condition.unlock()
+      replacement.stop()
+      return
+    }
+    let previous = session.changeMonitor
+    session.changeMonitor = replacement
+    session.condition.unlock()
+    previous?.stop()
   }
 
   private func enqueue(_ update: [String: Any], in session: Session) {
@@ -391,18 +470,24 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       return
     }
     session.terminalQueued = true
+    let changeMonitor = session.changeMonitor
+    session.changeMonitor = nil
     if session.updates.count >= maximumQueuedUpdates { session.updates.removeFirst() }
     session.updates.append(update)
     session.condition.broadcast()
     session.condition.unlock()
+    changeMonitor?.stop()
   }
 
   private func disconnect(_ session: Session) {
     session.condition.lock()
+    let changeMonitor = session.changeMonitor
+    session.changeMonitor = nil
     session.disconnected = true
     session.updates.removeAll()
     session.condition.broadcast()
     session.condition.unlock()
+    changeMonitor?.stop()
   }
 
   private func terminalUpdate(

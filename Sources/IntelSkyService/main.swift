@@ -86,7 +86,15 @@ let appStateProvider = MacAppStateProvider(
   snapshotCache: snapshotCache,
   interactionTracker: interactionTracker
 )
-let appCaptureProvider = AppCaptureSessionManager(appStateProvider: appStateProvider)
+let appCaptureProvider = AppCaptureSessionManager(
+  appStateProvider: appStateProvider,
+  changeMonitorFactory: { processIdentifier, changeHandler in
+    NativeAppCaptureChangeMonitor(
+      processIdentifier: processIdentifier,
+      changeHandler: changeHandler
+    )
+  }
+)
 appCaptureProvider.installSessionStopHandling()
 let eventStreamProvider = EventStreamSessionManager(
   rootDirectoryURL: URL(fileURLWithPath: socketPath)
