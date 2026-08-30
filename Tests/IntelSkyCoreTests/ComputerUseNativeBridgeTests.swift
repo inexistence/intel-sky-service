@@ -39,7 +39,7 @@ import Testing
   let response = try controller.process(request)
 
   #expect(response["result"] as? String == "started")
-  #expect(state.events == ["authorize:123", "start"])
+  #expect(state.events == ["authorize:123", "start", "complete"])
 }
 
 @Test func nativeBridgeRoutesStatusMenuAndUserStopRequests() throws {
@@ -116,7 +116,7 @@ private struct NativeBridgeStateProvider: AppStateProviding {
   func getAppPolicy(request: [String: Any]) throws -> [String: Any] { [:] }
 }
 
-private struct NativeBridgeCaptureProvider: AppCaptureProviding {
+private struct NativeBridgeCaptureProvider: AppCaptureProviding, AppCaptureCompleting {
   let state: NativeBridgeState
   func startCapture(request: [String: Any]) throws -> [String: Any] {
     state.append("start")
@@ -125,5 +125,8 @@ private struct NativeBridgeCaptureProvider: AppCaptureProviding {
   func nextCaptureUpdate(request: [String: Any]) throws -> [String: Any] {
     state.append("next")
     return ["type": "completed"]
+  }
+  func completeCapture(request: [String: Any]) throws {
+    state.append("complete")
   }
 }

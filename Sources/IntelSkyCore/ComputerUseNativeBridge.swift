@@ -63,6 +63,14 @@ struct ComputerUseNativeBridgeRequest: @unchecked Sendable {
 }
 
 public final class ComputerUseNativeBridgeController: NSObject, @unchecked Sendable {
+  private final class SuspendedEvent: @unchecked Sendable {
+    let identifier: NSAppleEventManager.SuspensionID
+
+    init(identifier: NSAppleEventManager.SuspensionID) {
+      self.identifier = identifier
+    }
+  }
+
   private static let directObjectKeyword: AEKeyword = 0x2D2D_2D2D  // ----
   private static let dataDescriptorType: DescType = 0x7464_7461  // tdta
   private static let errorNumberKeyword: AEKeyword = 0x6572_726E  // errn
@@ -73,6 +81,11 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
   private let appCaptureProvider: any AppCaptureProviding
   private let sessionCoordinator: any ComputerUseSessionCoordinating
   private let hostAuthorizer: any ProcessAuthorizing
+  private let requestQueue = DispatchQueue(
+    label: "dev.huangjianbin.intel-sky-service.native-bridge",
+    qos: .userInitiated,
+    attributes: .concurrent
+  )
   private var started = false
 
   public init(
@@ -142,30 +155,58 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
           forKeyword: ComputerUseNativeBridgeRequest.requestDataKeyword
         )?.data
       )
-      let response = try process(request)
-      let data = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
-      guard
-        let responseDescriptor = NSAppleEventDescriptor(
-          descriptorType: Self.dataDescriptorType,
-          data: data
-        )
-      else {
-        throw ComputerUseNativeBridgeError.invalidRequestData
+      let manager = NSAppleEventManager.shared()
+      guard let suspensionIdentifier = manager.suspendCurrentAppleEvent() else {
+        try writeResponse(for: request, to: replyEvent)
+        return
       }
-      replyEvent.setParam(
-        responseDescriptor,
-        forKeyword: Self.directObjectKeyword
-      )
+      let suspendedEvent = SuspendedEvent(identifier: suspensionIdentifier)
+      requestQueue.async { [self] in
+        let manager = NSAppleEventManager.shared()
+        let replyEvent = manager.replyAppleEvent(
+          forSuspensionID: suspendedEvent.identifier
+        )
+        do {
+          try writeResponse(for: request, to: replyEvent)
+        } catch {
+          write(error: error, to: replyEvent)
+        }
+        manager.resume(withSuspensionID: suspendedEvent.identifier)
+      }
     } catch {
-      replyEvent.setParam(
-        NSAppleEventDescriptor(int32: Int32(errorNumber(for: error))),
-        forKeyword: Self.errorNumberKeyword
-      )
-      replyEvent.setParam(
-        NSAppleEventDescriptor(string: String(describing: error)),
-        forKeyword: Self.errorStringKeyword
-      )
+      write(error: error, to: replyEvent)
     }
+  }
+
+  private func writeResponse(
+    for request: ComputerUseNativeBridgeRequest,
+    to replyEvent: NSAppleEventDescriptor
+  ) throws {
+    let response = try process(request)
+    let data = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
+    guard
+      let responseDescriptor = NSAppleEventDescriptor(
+        descriptorType: Self.dataDescriptorType,
+        data: data
+      )
+    else {
+      throw ComputerUseNativeBridgeError.invalidRequestData
+    }
+    replyEvent.setParam(
+      responseDescriptor,
+      forKeyword: Self.directObjectKeyword
+    )
+  }
+
+  private func write(error: Error, to replyEvent: NSAppleEventDescriptor) {
+    replyEvent.setParam(
+      NSAppleEventDescriptor(int32: Int32(errorNumber(for: error))),
+      forKeyword: Self.errorNumberKeyword
+    )
+    replyEvent.setParam(
+      NSAppleEventDescriptor(string: String(describing: error)),
+      forKeyword: Self.errorStringKeyword
+    )
   }
 
   func process(_ request: ComputerUseNativeBridgeRequest) throws -> [String: Any] {
@@ -182,7 +223,13 @@ public final class ComputerUseNativeBridgeController: NSObject, @unchecked Senda
     case "ComputerUseIPCAppGetSkyshotRequest":
       return try appStateProvider.getAppState(request: request.request)
     case "ComputerUseIPCAppStartCaptureRequest":
-      return try appCaptureProvider.startCapture(request: request.request)
+      let response = try appCaptureProvider.startCapture(request: request.request)
+      // Appshot consumes this Apple Event bridge as a finite snapshot sequence.
+      // Socket clients keep the same capture open as a true asynchronous stream.
+      if let completer = appCaptureProvider as? any AppCaptureCompleting {
+        try completer.completeCapture(request: request.request)
+      }
+      return response
     case "ComputerUseIPCAppNextCaptureUpdateRequest":
       return try appCaptureProvider.nextCaptureUpdate(request: request.request)
     case "ComputerUseIPCAppStopRequest":

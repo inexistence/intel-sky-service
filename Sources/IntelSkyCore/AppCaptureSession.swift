@@ -5,6 +5,10 @@ public protocol AppCaptureProviding: Sendable {
   func nextCaptureUpdate(request: [String: Any]) throws -> [String: Any]
 }
 
+protocol AppCaptureCompleting: Sendable {
+  func completeCapture(request: [String: Any]) throws
+}
+
 protocol AppCaptureLifecycleHandling: ComputerUseTurnLifecycleEventHandling {
   func clientDisconnected(_ clientIdentifier: String)
   func handle(_ event: ComputerUseTurnLifecycleEvent)
@@ -46,8 +50,8 @@ enum AppCaptureSessionError: Error, CustomStringConvertible {
   }
 }
 
-public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureLifecycleHandling,
-  @unchecked Sendable
+public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureCompleting,
+  AppCaptureLifecycleHandling, @unchecked Sendable
 {
   private static let currentVersion = 2
 
@@ -228,6 +232,16 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureLife
       session.condition.unlock()
       try RequestDeadlineContext.check()
     }
+  }
+
+  func completeCapture(request: [String: Any]) throws {
+    let requestID = try Self.nonemptyString(request["requestId"], named: "requestId")
+    guard let session = lock.withLock({ sessions[requestID] }),
+      session.owner == ComputerUseClientContext.identifier
+    else {
+      throw AppCaptureSessionError.captureNotFound(requestID)
+    }
+    terminate(session, update: terminalUpdate(type: "completed", session: session))
   }
 
   func clientDisconnected(_ clientIdentifier: String) {

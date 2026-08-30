@@ -61,6 +61,24 @@ import Testing
   manager.shutdown()
 }
 
+@Test func nativeOneShotCompletionPreservesInitialUpdatesAndExpires() throws {
+  let manager = AppCaptureSessionManager(appStateProvider: CaptureStateProvider())
+  try ComputerUseClientContext.withIdentifier("native:123") {
+    try start(manager, requestID: "native-one-shot")
+    try manager.completeCapture(request: ["requestId": "native-one-shot"])
+
+    var updateTypes: [String] = []
+    for _ in 0..<4 {
+      let update = try manager.nextCaptureUpdate(request: ["requestId": "native-one-shot"])
+      updateTypes.append(try #require(update["type"] as? String))
+    }
+    #expect(updateTypes == ["metadata", "axText", "screenshot", "completed"])
+    #expect(throws: AppCaptureSessionError.self) {
+      try manager.nextCaptureUpdate(request: ["requestId": "native-one-shot"])
+    }
+  }
+}
+
 @Test func captureSessionLongPollHonorsRequestDeadline() throws {
   let manager = AppCaptureSessionManager(
     appStateProvider: CaptureStateProvider(),

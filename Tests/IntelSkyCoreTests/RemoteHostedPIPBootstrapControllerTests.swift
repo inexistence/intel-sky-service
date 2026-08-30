@@ -65,24 +65,6 @@ import Testing
   #expect(sender.sentPorts == [99, 99, 99])
 }
 
-@Test func pipBootstrapEndpointTransferStartsAfterReturningFromEventWork() throws {
-  let sender = BlockingEndpointSender()
-  let controller = RemoteHostedPIPBootstrapController(
-    connectionController: RemoteHostedPIPConnectionController(
-      hostAuthorizer: AllowBootstrapHost(),
-      enforceConnectionCodeSigningRequirement: false
-    ),
-    endpointSender: sender,
-    hostAuthorizer: AllowBootstrapHost()
-  )
-
-  try controller.beginProcessing(bootstrapRequest(pid: 42, port: 99))
-
-  #expect(sender.started.wait(timeout: .now() + 1) == .success)
-  sender.release.signal()
-  #expect(sender.completed.wait(timeout: .now() + 1) == .success)
-}
-
 private struct AllowBootstrapHost: ProcessAuthorizing {
   func authorize(processIdentifier: pid_t) throws {}
 }
@@ -111,18 +93,6 @@ private final class RecordingEndpointSender: RemoteHostedPIPEndpointSending, @un
       return true
     }
     if shouldFail { throw RemoteHostedPIPEndpointTransportError.routineFailed(EIO) }
-  }
-}
-
-private final class BlockingEndpointSender: RemoteHostedPIPEndpointSending, @unchecked Sendable {
-  let started = DispatchSemaphore(value: 0)
-  let release = DispatchSemaphore(value: 0)
-  let completed = DispatchSemaphore(value: 0)
-
-  func send(endpoint: NSXPCListenerEndpoint, to replyPort: mach_port_t) throws {
-    started.signal()
-    release.wait()
-    completed.signal()
   }
 }
 

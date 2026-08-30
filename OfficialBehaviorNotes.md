@@ -480,8 +480,10 @@ allows PNG/JPEG. `CONFIRMED_CLIENT_SOURCE` (installed Intel caller).
 
 Intel implements this bridge with OpenAI-host signature validation, exact event constants, version
 and schema checks, and a capture queue that emits metadata, AX text, screenshot, and completion
-updates. It never launches the ARM service. `HIGH_CONFIDENCE`; a real Appshot run against an already
-approved target remains pending.
+updates. The native Apple Event path explicitly completes after the initial snapshot sequence,
+matching Appshot's finite consumer contract; socket capture clients retain the continuous async
+stream until a lifecycle terminal event. It never launches the ARM service. `HIGH_CONFIDENCE`; a
+real Appshot run against an already approved target remains pending.
 
 Intel now also tracks successfully captured Apps as turn-scoped sessions, returns the current
 ChatGPT status-menu schema (with Computer History truthfully reported unavailable/stopped), and

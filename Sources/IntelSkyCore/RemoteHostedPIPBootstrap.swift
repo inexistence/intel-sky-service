@@ -58,7 +58,7 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   private static let errorNumberKeyword: AEKeyword = 0x6572_726E  // errn
   private static let errorStringKeyword: AEKeyword = 0x6572_7273  // errs
 
-  private struct Runtime: Sendable {
+  private struct Runtime {
     let connectionController: RemoteHostedPIPConnectionController
     let endpointSender: any RemoteHostedPIPEndpointSending
     let hostAuthorizer: any ProcessAuthorizing
@@ -67,10 +67,6 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
 
   private let lock = NSLock()
   private let runtimeLock = NSLock()
-  private let endpointQueue = DispatchQueue(
-    label: "dev.huangjianbin.intel-sky-service.pip-bootstrap",
-    qos: .userInitiated
-  )
   private let injectedConnectionController: RemoteHostedPIPConnectionController?
   private let injectedEndpointSender: (any RemoteHostedPIPEndpointSending)?
   private let injectedHostAuthorizer: (any ProcessAuthorizing)?
@@ -171,7 +167,10 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
           isAttribute: true
         )?.data
       )
-      try beginProcessing(request)
+      // The reply port is borrowed from the incoming Apple Event. It must be used
+      // before this handler returns; deferring the XPC pipe transfer leaves the
+      // native host waiting on a port whose event lifetime has already ended.
+      try process(request)
       let replyStatus = Self.writeReply(error: nil, to: reply)
       RemoteHostedPIPDiagnostics.logger.notice(
         "bootstrap event handled for host pid=\(request.senderProcessIdentifier, privacy: .public) replyStatus=\(replyStatus, privacy: .public)"
@@ -236,23 +235,6 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
     )
     try runtime.hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
     try sendEndpoint(for: request, using: runtime)
-  }
-
-  func beginProcessing(_ request: RemoteHostedPIPBootstrapRequest) throws {
-    let runtime = runtime()
-    RemoteHostedPIPDiagnostics.logger.notice(
-      "authorizing asynchronous bootstrap request from host pid=\(request.senderProcessIdentifier, privacy: .public)"
-    )
-    try runtime.hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
-    endpointQueue.async { [self] in
-      do {
-        try sendEndpoint(for: request, using: runtime)
-      } catch {
-        RemoteHostedPIPDiagnostics.logger.error(
-          "asynchronous bootstrap endpoint transfer failed for host pid=\(request.senderProcessIdentifier, privacy: .public): \(String(describing: error), privacy: .public)"
-        )
-      }
-    }
   }
 
   private func sendEndpoint(
