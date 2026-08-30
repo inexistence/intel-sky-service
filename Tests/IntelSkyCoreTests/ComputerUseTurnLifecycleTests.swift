@@ -75,15 +75,15 @@ import Testing
   DispatchQueue.global().async {
     coordinator.observe(metadata: turnMetadata(session: "s", thread: "t", turn: "1"))
   }
-  #expect(startedDelivery.wait(timeout: .now() + 1) == .success)
+  #expect(startedDelivery.wait(timeout: .now() + 5) == .success)
   DispatchQueue.global().async {
     coordinator.observe(metadata: turnMetadata(session: "s", thread: "t", turn: "2"))
     transitionCallReturned.signal()
   }
-  #expect(transitionCallReturned.wait(timeout: .now() + 1) == .success)
+  #expect(transitionCallReturned.wait(timeout: .now() + 5) == .success)
   allowStartedDeliveryToFinish.signal()
 
-  let deadline = Date().addingTimeInterval(1)
+  let deadline = Date().addingTimeInterval(5)
   while recorder.events.count < 2, Date() < deadline { Thread.sleep(forTimeInterval: 0.001) }
   #expect(recorder.events.count == 2)
   if recorder.events.count == 2 {

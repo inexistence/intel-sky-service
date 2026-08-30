@@ -124,13 +124,13 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       return true
     }
     guard shouldStart else { return }
-    RemoteHostedPIPDiagnostics.logger.notice("bootstrap listener started")
     NSAppleEventManager.shared().setEventHandler(
       self,
       andSelector: #selector(handleBootstrapEvent(_:withReplyEvent:)),
       forEventClass: RemoteHostedPIPBootstrapRequest.eventClass,
       andEventID: RemoteHostedPIPBootstrapRequest.eventID
     )
+    RemoteHostedPIPDiagnostics.logger.notice("bootstrap listener started")
   }
 
   @objc private func handleBootstrapEvent(

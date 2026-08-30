@@ -554,6 +554,14 @@ state image on capture reset. A real-sample regression test covers this path. Th
 `CONFIRMED_INTEL_RUNTIME`; the video-layer correction remains `HIGH_CONFIDENCE` until the next clean
 managed-host run.
 
+The next clean restart exposed a separate startup race: ChatGPT launched the managed service and
+PIP host concurrently, sent its Apple Event while `NSApplication.shared` was still being
+constructed, received `procNotFound` at 15:15:40, and did not resend after the service registered
+its handler at 15:15:41. Core socket discovery still succeeded (`list_apps` returned 71 records),
+but no PIP XPC connection existed. The bootstrap controller is now constructed and its Apple Event
+handler registered before `NSApplication` construction and all visual-runtime warm-up. This ordering
+change is `CONFIRMED_INTEL_RUNTIME` for the failure and `HIGH_CONFIDENCE` pending a clean restart.
+
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
 `setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore

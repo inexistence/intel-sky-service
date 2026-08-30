@@ -30,8 +30,10 @@ do {
   exit(64)
 }
 let socketPath = configuration.socketPath
-let application = NSApplication.shared
-application.setActivationPolicy(.accessory)
+
+// ChatGPT starts its PIP host and the managed service concurrently, then sends the bootstrap Apple
+// Event on a short deadline. Register that handler before constructing NSApplication or warming any
+// visual runtime so the service is eligible as soon as its process is discoverable.
 let pipBootstrapController: RemoteHostedPIPBootstrapController?
 if configuration.remoteHostedPIPEnabled {
   let controller = RemoteHostedPIPBootstrapController()
@@ -41,6 +43,9 @@ if configuration.remoteHostedPIPEnabled {
 } else {
   pipBootstrapController = nil
 }
+
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
 application.finishLaunching()
 ComputerUseVisualCoordinator.warmUp()
 let focusStealProtectionAvailable = ComputerUseFocusProtection.warmUp()
