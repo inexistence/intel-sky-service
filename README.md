@@ -133,9 +133,9 @@ Scripts/install-launch-agent.sh
 
 This installer copies the App to `~/Applications` and creates the per-user LaunchAgent
 `dev.huangjianbin.intel-sky-service`. It is not the recommended full Computer Use installation and
-does not provide the native status item or Remote Hosted PIP. The service uses its own bundle
-identity; it does not impersonate OpenAI's `com.openai.sky.CUAService` or request OpenAI's
-application-group entitlement.
+starts the service with `--disable-pip`, so it does not initialize the native status item or Remote
+Hosted PIP path. The service uses its own bundle identity; it does not impersonate OpenAI's
+`com.openai.sky.CUAService` or request OpenAI's application-group entitlement.
 
 The App bundle intentionally installs its executable as `Contents/MacOS/SkyComputerUseService`.
 The current ChatGPT managed-service host requires that exact basename. ChatGPT also supports a

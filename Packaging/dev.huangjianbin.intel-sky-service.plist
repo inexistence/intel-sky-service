@@ -11,6 +11,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__EXECUTABLE_PATH__</string>
+    <string>--disable-pip</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
