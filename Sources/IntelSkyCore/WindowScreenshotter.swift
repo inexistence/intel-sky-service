@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+@preconcurrency import ScreenCaptureKit
 
 public enum WindowScreenshotError: Error, CustomStringConvertible {
   case permissionRequired
@@ -35,7 +36,11 @@ public struct CapturedWindowScreenshot: Sendable, Equatable {
 public struct WindowScreenshotter: Sendable {
   public init() {}
 
-  public func capture(windowID: CGWindowID) throws -> CapturedWindowScreenshot {
+  public func capture(
+    windowID: CGWindowID,
+    processIdentifier: pid_t? = nil,
+    screenFrame: CGRect? = nil
+  ) throws -> CapturedWindowScreenshot {
     guard CGPreflightScreenCaptureAccess() else {
       throw WindowScreenshotError.permissionRequired
     }
@@ -47,6 +52,35 @@ public struct WindowScreenshotter: Sendable {
     purgeExpiredScreenshots(in: directory)
 
     let output = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+    if let processIdentifier, let screenFrame,
+      let additionalWindowIDs = additionalWindowIDs(
+        primaryWindowID: windowID,
+        processIdentifier: processIdentifier,
+        primaryFrame: screenFrame
+      ),
+      !additionalWindowIDs.isEmpty
+    {
+      do {
+        return try captureComposite(
+          primaryWindowID: windowID,
+          additionalWindowIDs: additionalWindowIDs,
+          screenFrame: screenFrame,
+          output: output
+        )
+      } catch {
+        // Transient UI is additive context. Never drop the primary screenshot
+        // if a menu disappears between discovery and ScreenCaptureKit setup.
+        try? FileManager.default.removeItem(at: output)
+      }
+    }
+
+    return try captureSingleWindow(windowID: windowID, output: output)
+  }
+
+  private func captureSingleWindow(
+    windowID: CGWindowID,
+    output: URL
+  ) throws -> CapturedWindowScreenshot {
     let errorPipe = Pipe()
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
@@ -81,6 +115,85 @@ public struct WindowScreenshotter: Sendable {
     )
   }
 
+  private func captureComposite(
+    primaryWindowID: CGWindowID,
+    additionalWindowIDs: [CGWindowID],
+    screenFrame: CGRect,
+    output: URL
+  ) throws -> CapturedWindowScreenshot {
+    guard #available(macOS 14.0, *) else { throw WindowScreenshotError.invalidImage }
+    let image = try ScreenCaptureKitScreenshot.capture(
+      windowIDs: additionalWindowIDs + [primaryWindowID],
+      screenFrame: screenFrame
+    )
+    return try write(image: image, to: output)
+  }
+
+  private func write(image: CGImage, to output: URL) throws -> CapturedWindowScreenshot {
+    guard
+      let destination = CGImageDestinationCreateWithURL(
+        output as CFURL,
+        "public.png" as CFString,
+        1,
+        nil
+      )
+    else {
+      throw WindowScreenshotError.invalidImage
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+      try? FileManager.default.removeItem(at: output)
+      throw WindowScreenshotError.invalidImage
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
+    return CapturedWindowScreenshot(
+      url: output,
+      pixelSize: CGSize(width: image.width, height: image.height)
+    )
+  }
+
+  private func additionalWindowIDs(
+    primaryWindowID: CGWindowID,
+    processIdentifier: pid_t,
+    primaryFrame: CGRect
+  ) -> [CGWindowID]? {
+    guard
+      let rawWindows = CGWindowListCopyWindowInfo(
+        [.optionOnScreenOnly, .excludeDesktopElements],
+        kCGNullWindowID
+      ) as? [[CFString: Any]]
+    else {
+      return nil
+    }
+    return Self.additionalWindowIDs(
+      in: rawWindows.compactMap(WindowCaptureCandidate.init),
+      primaryWindowID: primaryWindowID,
+      processIdentifier: processIdentifier,
+      primaryFrame: primaryFrame
+    )
+  }
+
+  static func additionalWindowIDs(
+    in windows: [WindowCaptureCandidate],
+    primaryWindowID: CGWindowID,
+    processIdentifier: pid_t,
+    primaryFrame: CGRect
+  ) -> [CGWindowID] {
+    windows.compactMap { window in
+      guard window.windowID != primaryWindowID,
+        window.processIdentifier == processIdentifier,
+        window.layer != 0,
+        window.alpha > 0,
+        window.frame.width > 1,
+        window.frame.height > 1,
+        window.frame.intersects(primaryFrame)
+      else {
+        return nil
+      }
+      return window.windowID
+    }
+  }
+
   private func purgeExpiredScreenshots(in directory: URL) {
     let expiration = Date().addingTimeInterval(-24 * 60 * 60)
     guard
@@ -105,5 +218,127 @@ public struct WindowScreenshotter: Sendable {
       }
       try? FileManager.default.removeItem(at: file)
     }
+  }
+}
+
+@available(macOS 14.0, *)
+private enum ScreenCaptureKitScreenshot {
+  static func capture(windowIDs: [CGWindowID], screenFrame: CGRect) throws -> CGImage {
+    let contentBox = SendableResultBox<SCShareableContent>()
+    SCShareableContent.getExcludingDesktopWindows(
+      true,
+      onScreenWindowsOnly: true
+    ) { content, error in
+      contentBox.finish(value: content, error: error)
+    }
+    let content = try contentBox.wait()
+    let requestedIDs = Set(windowIDs)
+    let windows = content.windows.filter { requestedIDs.contains($0.windowID) }
+    guard windows.contains(where: { $0.windowID == windowIDs.last }),
+      windows.count > 1,
+      let display = content.displays.first(where: { $0.frame.contains(screenFrame.center) })
+    else {
+      throw WindowScreenshotError.invalidImage
+    }
+
+    let filter = SCContentFilter(display: display, including: windows)
+    let scale = max(1, CGFloat(filter.pointPixelScale))
+    let configuration = SCStreamConfiguration()
+    configuration.width = max(1, Int(ceil(screenFrame.width * scale)))
+    configuration.height = max(1, Int(ceil(screenFrame.height * scale)))
+    configuration.sourceRect = CGRect(
+      x: screenFrame.minX - display.frame.minX,
+      y: screenFrame.minY - display.frame.minY,
+      width: screenFrame.width,
+      height: screenFrame.height
+    )
+    configuration.showsCursor = false
+    configuration.scalesToFit = false
+    configuration.ignoreShadowsDisplay = true
+    let backgroundColor = CGColor(gray: 1, alpha: 1)
+    configuration.backgroundColor = backgroundColor
+
+    let imageBox = SendableResultBox<CGImage>()
+    SCScreenshotManager.captureImage(
+      contentFilter: filter,
+      configuration: configuration
+    ) { image, error in
+      imageBox.finish(value: image, error: error)
+    }
+    return try imageBox.wait()
+  }
+}
+
+private final class SendableResultBox<Value>: @unchecked Sendable {
+  private let condition = NSCondition()
+  private var value: Value?
+  private var error: Error?
+  private var isFinished = false
+
+  func finish(value: Value?, error: Error?) {
+    condition.lock()
+    self.value = value
+    self.error = error
+    isFinished = true
+    condition.broadcast()
+    condition.unlock()
+  }
+
+  func wait() throws -> Value {
+    condition.lock()
+    defer { condition.unlock() }
+    let localDeadline = Date().addingTimeInterval(5)
+    while !isFinished {
+      _ = condition.wait(until: Date().addingTimeInterval(0.05))
+      try RequestDeadlineContext.check()
+      guard Date() < localDeadline else {
+        throw WindowScreenshotError.captureFailed(-1, "ScreenCaptureKit screenshot timed out")
+      }
+    }
+    if let error { throw error }
+    guard let value else { throw WindowScreenshotError.invalidImage }
+    return value
+  }
+}
+
+extension CGRect {
+  fileprivate var center: CGPoint { CGPoint(x: midX, y: midY) }
+}
+
+struct WindowCaptureCandidate: Sendable, Equatable {
+  let windowID: CGWindowID
+  let processIdentifier: pid_t
+  let layer: Int
+  let alpha: Double
+  let frame: CGRect
+
+  init?(_ raw: [CFString: Any]) {
+    guard let windowID = raw[kCGWindowNumber] as? NSNumber,
+      let processIdentifier = raw[kCGWindowOwnerPID] as? NSNumber,
+      let layer = raw[kCGWindowLayer] as? NSNumber,
+      let bounds = raw[kCGWindowBounds] as? [String: Any],
+      let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+    else {
+      return nil
+    }
+    self.windowID = CGWindowID(windowID.uint32Value)
+    self.processIdentifier = processIdentifier.int32Value
+    self.layer = layer.intValue
+    self.alpha = (raw[kCGWindowAlpha] as? NSNumber)?.doubleValue ?? 1
+    self.frame = frame
+  }
+
+  init(
+    windowID: CGWindowID,
+    processIdentifier: pid_t,
+    layer: Int,
+    alpha: Double = 1,
+    frame: CGRect
+  ) {
+    self.windowID = windowID
+    self.processIdentifier = processIdentifier
+    self.layer = layer
+    self.alpha = alpha
+    self.frame = frame
   }
 }

@@ -80,7 +80,11 @@ public struct MacAppStateProvider: AppStateProviding {
     var coordinateSpace: WindowCoordinateSpace?
 
     if let window = try? resolver.frontWindow(for: app),
-      let screenshot = try? screenshots.capture(windowID: window.windowID)
+      let screenshot = try? screenshots.capture(
+        windowID: window.windowID,
+        processIdentifier: app.processIdentifier,
+        screenFrame: window.screenFrame
+      )
     {
       skyshot["screenshot"] = [
         "url": screenshot.url.absoluteString,

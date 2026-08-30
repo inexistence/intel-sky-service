@@ -29,7 +29,7 @@ replace when stronger evidence appears.
 | API | Wire action/request | Evidence | Intel state | Remaining work |
 | --- | --- | --- | --- | --- |
 | `list_apps` | `ComputerUseIPCListAppsRequest` | `CONFIRMED_CLIENT_SOURCE` | implemented | exact ARM filtering/dedup oracle |
-| `get_app_state` | `ComputerUseIPCAppGetSkyshotRequest` | `CONFIRMED_CLIENT_SOURCE` | partial | loading settle and exact AX rendering |
+| `get_app_state` | `ComputerUseIPCAppGetSkyshotRequest` | `CONFIRMED_CLIENT_SOURCE` | partial | exact AX rendering and transient-window oracle |
 | `click` | `click` | `CONFIRMED_CLIENT_SOURCE` | partial | AX/CG fallback and menu semantics |
 | `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` | partial | calibrate timing/path and official cursor animation |
 | `paste` | `paste` | `CONFIRMED_CLIENT_SOURCE` | partial | ARM format/error oracle and clipboard edge cases |
@@ -94,6 +94,16 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   then scales screenshot-local coordinates into global points. Missing screenshots and out-of-bounds
   coordinates fail closed. `CONFIRMED_INTEL_RUNTIME` for unit coverage; real multi-display smoke
   coverage remains `NEEDS_ARM_ORACLE` and pending Intel desktop automation.
+- ARM Skyshot context metadata contains `overrideScreenshotWindowID`,
+  `additionalScreenshotWindowIDs`, `screenshotIncludesWindowShadow`, and plural
+  `skyshotImageFiles`; the binary imports `SCScreenshotManager.captureImage` and both
+  `SCContentFilter.initWithDesktopIndependentWindow` and `initWithDisplay:includingWindows:`.
+  `CONFIRMED_STATIC_BINARY`. Intel now preserves the primary window's screenshot frame and Retina
+  dimensions while adding visible, intersecting non-normal-layer windows from the same process via
+  `SCScreenshotManager`; a five-second local timeout or any transient lookup/capture failure falls
+  back to the primary-window screenshot. An attended TextEdit secondary-action smoke showed the
+  context menu in both the AX tree and the 1322×866 screenshot, whereas the previous implementation
+  omitted it; the no-menu screenshot retained the same dimensions. `CONFIRMED_INTEL_RUNTIME`.
 
 ## Scroll
 
