@@ -137,6 +137,22 @@ import UniformTypeIdentifiers
     RemoteHostedPIPWindowCapture.refreshPlan(
       capturedWindowID: 42,
       configuredOutputSize: CGSize(width: 400, height: 200),
+      currentWindowID: nil,
+      desiredOutputSize: CGSize(width: 400, height: 200)
+    ) == .noChange
+  )
+  #expect(
+    RemoteHostedPIPWindowCapture.refreshPlan(
+      capturedWindowID: 42,
+      configuredOutputSize: CGSize(width: 400, height: 200),
+      currentWindowID: nil,
+      desiredOutputSize: CGSize(width: 400, height: 180)
+    ) == .updateConfiguration
+  )
+  #expect(
+    RemoteHostedPIPWindowCapture.refreshPlan(
+      capturedWindowID: 42,
+      configuredOutputSize: CGSize(width: 400, height: 200),
       currentWindowID: 43,
       desiredOutputSize: CGSize(width: 400, height: 200)
     ) == .reconcileWindow

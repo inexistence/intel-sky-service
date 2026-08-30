@@ -850,9 +850,13 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
 
   private static let sensitiveBundlePrefixes: Set<String> = [
     "com.1password.1password",
+    "com.1password.safari",
     "com.agilebits.onepassword",
     "com.apple.passwords",
     "com.apple.securityagent",
+    "com.bitwarden.desktop",
+    "com.dashlane.dashlanephonefinal",
+    "com.lastpass.lastpass",
     "com.openai.chat",
     "com.openai.codex",
     "dev.huangjianbin.intel-sky-service",

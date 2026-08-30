@@ -155,6 +155,23 @@ import Testing
   #expect(scrubbedText == "token=[REDACTED] safe words")
 }
 
+@Test(
+  arguments: [
+    "com.1password.1password",
+    "com.1password.safari",
+    "com.bitwarden.desktop",
+    "com.dashlane.dashlanephonefinal",
+    "com.lastpass.LastPass",
+  ]
+)
+func eventStreamSuppressesARMObservedCredentialManagers(bundleIdentifier: String) {
+  #expect(
+    EventStreamSessionManager.shouldSuppress([
+      "app": ["bundleIdentifier": bundleIdentifier, "secureInput": false]
+    ])
+  )
+}
+
 @Test func eventStreamDirectMouseEventsProduceClickAndDragRecords() throws {
   let root = temporaryEventStreamRoot()
   defer { try? FileManager.default.removeItem(at: root) }

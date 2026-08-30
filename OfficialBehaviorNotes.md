@@ -142,8 +142,11 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   own service. Suppressed records are structural only: text, key equivalents, values, selections,
   URLs, and AX text are replaced before serialization, and both normal and suppressed records scrub
   common password/token/API-key forms. Browser URLs retain only scheme and host with user info,
-  query, and fragment removed. `PARTIAL`: ARM's exact URL-policy database and every sensitive-App
-  category are not statically recoverable and need privacy-focused runtime oracle coverage.
+  query, and fragment removed. ARM-observed credential-manager IDs for 1Password, its Safari
+  extension, Bitwarden, Dashlane, and LastPass are all suppressed, alongside Intel's conservative
+  Passwords/SecurityAgent coverage. `PARTIAL`: ARM's complete URL-policy database and every dynamic
+  sensitive-App category are not statically recoverable and need privacy-focused runtime oracle
+  coverage.
 
 ## App catalog
 
@@ -758,8 +761,13 @@ path on Intel. The run also exposed that even a steady `SCShareableContent` re-e
 the current Intel stream with ScreenCaptureKit error `-3815`; the finite recovery restarted it, but
 added visible-risk and latency. Capture refresh now compares the front CGWindow ID first, skips
 ScreenCaptureKit entirely for an unchanged window and size, and updates only the stream configuration
-when the same window changes size. A decision regression locks those three branches. PID replacement,
-host reconnect, turn end, and long-running recovery stress remain pending attended verification.
+when the same window changes size. A first restart proved that background Notes can have no
+on-screen CGWindow descriptor even while its existing `SCStream` remains valid; treating that
+temporary absence as a replacement caused one more `-3815` followed by successful recovery. The
+refresh plan now preserves the captured window when no new front ID is observable and reconciles
+only when a different concrete ID appears. A decision regression locks the observable, absent, and
+replacement branches. Post-deployment steady-state confirmation, PID replacement, host reconnect,
+turn end, and long-running recovery stress remain pending attended verification.
 
 Direct inspection of the installed production ASAR narrows reconnect behavior further. The
 remote-hosted-PIP controller clears only its cached PID when the native host reports connection
@@ -857,7 +865,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, ViewBridge, organization-policy, capture, and managed-host
-  coverage brought that checkpoint to 173 tests; the current complete suite contains 258 tests.
+  coverage brought that checkpoint to 173 tests; the current complete suite contains 259 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
@@ -920,7 +928,10 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   locked or not on console. It also blocks `type_text` and `paste` while Secure Event Input is
   enabled. A lock rejection now safety-terminates the scoped turn, Capture/Event streams, cursor,
   PIP, and App/intervention baselines without attempting focus restoration; unlock therefore
-  requires fresh turn and state observation. The secure-input error mapping remains `PARTIAL`.
+  requires fresh turn and state observation. ARM field metadata confirms that the official client
+  exposes no dedicated secure-input server-error code or public error case, so this condition must
+  collapse into an existing error family. Intel uses `accessibilityError` (`-10008`); identifying the
+  exact ARM family remains `NEEDS_ARM_ORACLE`, rather than an undocumented Intel protocol extension.
 - ARM metadata for `ComputerUseAppInstanceManager` includes `userInteractionMonitor`,
   `userInterruptedControlledApp`, `interventionReasonByTargetIdentifier`, per-target debounce tasks,
   and a `requiresRequery` state. This shows that interruption is associated with a controlled target
@@ -939,7 +950,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 258 Swift tests and 13 Node protocol/reverse/oracle tests,
+- The current runtime checkpoint passes 259 Swift tests and 13 Node protocol/reverse/oracle tests,
   including the protocol-catalog verifier and soft-link hash coverage. It also passes the
   12-selector Intel PIP-host audit and an x86_64 release build compiled with warnings as errors.
 

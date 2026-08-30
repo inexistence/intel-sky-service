@@ -95,9 +95,10 @@ final class RemoteHostedPIPWindowCapture: NSObject, RemoteHostedPIPWindowCapturi
     currentWindowID: CGWindowID?,
     desiredOutputSize: CGSize
   ) -> RemoteHostedPIPCaptureRefreshPlan {
-    guard let capturedWindowID, let currentWindowID, capturedWindowID == currentWindowID else {
+    guard let capturedWindowID else {
       return .reconcileWindow
     }
+    if let currentWindowID, capturedWindowID != currentWindowID { return .reconcileWindow }
     return configuredOutputSize == desiredOutputSize ? .noChange : .updateConfiguration
   }
 
