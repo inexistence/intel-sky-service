@@ -112,6 +112,16 @@ import Testing
   )
 }
 
+@Test func safetyTerminationWithoutTurnStillRevokesUnscopedRuntime() {
+  let recorder = TurnEventRecorder()
+  let coordinator = ComputerUseTurnCoordinator { recorder.append($0) }
+
+  coordinator.terminateForSafety(.screenLocked)
+
+  #expect(recorder.events == [.safetyRevoked(.screenLocked)])
+  #expect(coordinator.currentIdentity == nil)
+}
+
 private final class TurnEventRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var stored: [ComputerUseTurnLifecycleEvent] = []

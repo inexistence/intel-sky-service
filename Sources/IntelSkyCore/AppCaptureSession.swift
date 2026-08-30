@@ -275,7 +275,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
     switch event {
     case .started: return
-    case .transitioned, .ended, .safetyTerminated:
+    case .transitioned, .ended, .safetyTerminated, .safetyRevoked:
       lock.withLock { lifecycleGeneration &+= 1 }
       terminateAllWithCompleted()
     }

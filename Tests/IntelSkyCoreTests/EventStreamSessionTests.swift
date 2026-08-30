@@ -109,6 +109,22 @@ import Testing
   #expect((try manager.eventStreamStatus(request: [:]))["endReason"] as? String == "toolStopped")
 }
 
+@Test func unscopedSafetyRevocationStopsEventStreamWithoutTurnMetadata() throws {
+  let root = temporaryEventStreamRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let manager = EventStreamSessionManager(
+    rootDirectoryURL: root,
+    inputMonitor: TestEventStreamInputMonitor()
+  )
+  _ = try manager.startEventStream(request: [:])
+
+  manager.handle(.safetyRevoked(.screenLocked))
+
+  let status = try manager.eventStreamStatus(request: [:])
+  #expect(status["isRecording"] as? Bool == false)
+  #expect(status["endReason"] as? String == "toolStopped")
+}
+
 @Test func eventStreamPrivacyFilterSuppressesSecureAndSensitiveApplicationRecords() {
   #expect(
     EventStreamSessionManager.shouldSuppress([

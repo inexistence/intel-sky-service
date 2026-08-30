@@ -222,6 +222,10 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     case .transitioned(let from, _): endedThreadID = from.threadID
     case .ended(let identity): endedThreadID = identity.threadID
     case .safetyTerminated(let identity, _): endedThreadID = identity.threadID
+    case .safetyRevoked:
+      guard lock.withLock({ activeSession != nil }) else { return }
+      _ = stop(reason: "toolStopped")
+      return
     }
     guard lock.withLock({ activeSession?.originatingThreadID == endedThreadID }) else { return }
     _ = stop(reason: "toolStopped")

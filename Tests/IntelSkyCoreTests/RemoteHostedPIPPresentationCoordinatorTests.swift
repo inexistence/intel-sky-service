@@ -162,6 +162,42 @@ import UniformTypeIdentifiers
   #expect(host.events.filter { $0 == "will-end:\(presentationID)" }.count == 1)
 }
 
+@Test func unscopedSafetyRevocationEndsEveryPIPPresentation() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let captures = RecordingPIPCaptureFactory()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(
+    host: host,
+    captureFactory: { pid, _, _ in captures.make(processIdentifier: pid) }
+  )
+  for (thread, turn, bundle, pid) in [
+    ("thread-1", "turn-1", "com.example.one", Int32(123)),
+    ("thread-2", "turn-2", "com.example.two", Int32(456)),
+  ] {
+    coordinator.observe(
+      requestType: "ComputerUseIPCAppGetSkyshotRequest",
+      request: ["app": bundle],
+      codexTurnMetadata: ["thread_id": thread, "turn_id": turn],
+      result: [
+        "app": ["bundleIdentifier": bundle, "pid": pid],
+        "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      ]
+    )
+  }
+  let presentationIDs = host.events.compactMap { event -> String? in
+    guard event.hasPrefix("publish:") else { return nil }
+    return event.split(separator: ":").dropFirst().first.map(String.init)
+  }
+
+  coordinator.handle(.safetyRevoked(.screenLocked))
+
+  #expect(presentationIDs.count == 2)
+  for presentationID in presentationIDs {
+    #expect(host.events.contains("will-end:\(presentationID)"))
+  }
+}
+
 @Test func appProcessReplacementUsesHostReplaceContextOperation() throws {
   let imageURL = try makePIPTestImage()
   defer { try? FileManager.default.removeItem(at: imageURL) }

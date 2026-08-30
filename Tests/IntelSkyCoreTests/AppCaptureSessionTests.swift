@@ -44,6 +44,25 @@ import Testing
   }
 }
 
+@Test func unscopedSafetyRevocationCompletesEveryCapture() throws {
+  let manager = AppCaptureSessionManager(
+    appStateProvider: CaptureStateProvider(),
+    permissionDiagnostics: ServicePermissionDiagnostics(
+      accessibilityCheck: { true },
+      screenRecordingCheck: { true }
+    )
+  )
+  try start(manager, requestID: "unscoped-safety")
+  for _ in 0..<3 {
+    _ = try manager.nextCaptureUpdate(request: ["requestId": "unscoped-safety"])
+  }
+
+  manager.handle(.safetyRevoked(.screenLocked))
+
+  let terminal = try manager.nextCaptureUpdate(request: ["requestId": "unscoped-safety"])
+  #expect(terminal["type"] as? String == "completed")
+}
+
 @Test func captureSessionLongPollEmitsChangedAccessibilityState() throws {
   let provider = ChangingCaptureStateProvider()
   let manager = AppCaptureSessionManager(

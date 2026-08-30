@@ -64,6 +64,11 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
         // has taken control. A subsequent request starts a fresh turn baseline.
         activeTurn = nil
         return nil
+      case .safetyRevoked:
+        // Unscoped safety revocation must also forget any partially reconstructed turn and must
+        // never restore focus while the screen is locked or the user has taken control.
+        activeTurn = nil
+        return nil
       }
     }
     if let turnToRestore { restoreIfSafe(turnToRestore) }

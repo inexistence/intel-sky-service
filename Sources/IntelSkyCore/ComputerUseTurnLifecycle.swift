@@ -34,6 +34,7 @@ enum ComputerUseTurnLifecycleEvent: Equatable, Sendable {
   case transitioned(from: ComputerUseTurnIdentity, to: ComputerUseTurnIdentity)
   case ended(ComputerUseTurnIdentity)
   case safetyTerminated(ComputerUseTurnIdentity, ComputerUseTurnSafetyTerminationReason)
+  case safetyRevoked(ComputerUseTurnSafetyTerminationReason)
 }
 
 protocol ComputerUseTurnLifecycleEventHandling: Sendable {
@@ -159,9 +160,16 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
 
   func terminateForSafety(_ reason: ComputerUseTurnSafetyTerminationReason) {
     let shouldDeliver = lock.withLock { () -> Bool in
-      guard let current else { return false }
-      self.current = nil
-      return enqueueLocked(.safetyTerminated(current, reason))
+      let event: ComputerUseTurnLifecycleEvent
+      if let current {
+        self.current = nil
+        event = .safetyTerminated(current, reason)
+      } else {
+        // Hidden/native callers can establish transient runtime state without Codex turn metadata.
+        // A global safety boundary must still revoke that state rather than becoming a no-op.
+        event = .safetyRevoked(reason)
+      }
+      return enqueueLocked(event)
     }
     if shouldDeliver { deliverPendingEvents() }
   }

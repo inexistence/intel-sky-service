@@ -812,7 +812,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   treats a missing session dictionary, screen lock, and switching away from the console user as
   locked, emits once per locked episode, and proactively safety-terminates the current turn. The
   established runtime ordering revokes Capture/Event streams, PIP, cursor, App/intervention state,
-  and only then releases synthetic focus. Request-time checks remain a second fail-closed boundary.
+  and only then releases synthetic focus. If native/hidden callers established transient state
+  without valid turn metadata, an unscoped safety event revokes every stream and presentation
+  instead of becoming a no-op. Request-time checks remain a second fail-closed boundary.
   Intel intentionally does not implement automatic login/unlock, so no Guardian helper or login
   authorization socket is needed for the supported locked-screen behavior. `HIGH_CONFIDENCE` for
   the state transition logic; an attended real lock/switch test remains `NEEDS_ARM_ORACLE`.
@@ -860,7 +862,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 226 Swift tests, the six-case Node oracle suite, the
+- The current runtime checkpoint passes 230 Swift tests, the six-case Node oracle suite, the
   soft-link hash test, the 12-selector Intel PIP-host audit, and an x86_64 release build compiled
   with warnings as errors.
 

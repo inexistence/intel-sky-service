@@ -25,6 +25,11 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     let bundleIdentifier: String
   }
 
+  private struct TurnScope: Hashable {
+    let threadID: String
+    let turnID: String
+  }
+
   private struct Presentation {
     let id: String
     let processIdentifier: pid_t
@@ -186,6 +191,8 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     case .transitioned(let previous, _), .ended(let previous),
       .safetyTerminated(let previous, _):
       beginEndingPresentations(threadID: previous.threadID, turnID: previous.turnID)
+    case .safetyRevoked:
+      beginEndingAllPresentations()
     }
   }
 
@@ -422,6 +429,15 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       } catch {
         invalidate(presentationID: presentation.id)
       }
+    }
+  }
+
+  private func beginEndingAllPresentations() {
+    let scopes = lock.withLock {
+      Set(presentations.keys.map { TurnScope(threadID: $0.threadID, turnID: $0.turnID) })
+    }
+    for scope in scopes {
+      beginEndingPresentations(threadID: scope.threadID, turnID: scope.turnID)
     }
   }
 
