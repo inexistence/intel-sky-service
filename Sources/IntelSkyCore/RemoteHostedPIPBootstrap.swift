@@ -58,35 +58,34 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   private static let errorNumberKeyword: AEKeyword = 0x6572_726E  // errn
   private static let errorStringKeyword: AEKeyword = 0x6572_7273  // errs
 
+  private struct Runtime {
+    let connectionController: RemoteHostedPIPConnectionController
+    let endpointSender: any RemoteHostedPIPEndpointSending
+    let hostAuthorizer: any ProcessAuthorizing
+    let presentationCoordinator: RemoteHostedPIPPresentationCoordinator
+  }
+
   private let lock = NSLock()
-  private let connectionController: RemoteHostedPIPConnectionController
-  private let endpointSender: any RemoteHostedPIPEndpointSending
-  private let hostAuthorizer: any ProcessAuthorizing
-  private let presentationCoordinator: RemoteHostedPIPPresentationCoordinator
+  private let runtimeLock = NSLock()
+  private let injectedConnectionController: RemoteHostedPIPConnectionController?
+  private let injectedEndpointSender: (any RemoteHostedPIPEndpointSending)?
+  private let injectedHostAuthorizer: (any ProcessAuthorizing)?
+  private let injectedPresentationCoordinator: RemoteHostedPIPPresentationCoordinator?
+  private let installsProductionCallbacks: Bool
   private let endpointRetrySleeper: @Sendable (TimeInterval) -> Void
   private let endpointMaximumAttempts: Int
   private var started = false
+  private var storedRuntime: Runtime?
 
-  public override convenience init() {
-    let connectionController = RemoteHostedPIPConnectionController()
-    let presentationCoordinator = RemoteHostedPIPPresentationCoordinator(
-      host: connectionController
-    )
-    presentationCoordinator.installProducerCallbacks(on: connectionController)
-    ComputerUseVisualCoordinator.shared.setRemoteCursorHandler {
-      [weak presentationCoordinator] point, isActive in
-      presentationCoordinator?.updateCursor(point: point, isActive: isActive)
-    }
-    ComputerUseSessionCoordinator.shared.setStopHandler {
-      [weak presentationCoordinator] bundleIdentifier in
-      presentationCoordinator?.stopApplication(bundleIdentifier: bundleIdentifier)
-    }
-    self.init(
-      connectionController: connectionController,
-      endpointSender: RemoteHostedPIPEndpointTransport(),
-      hostAuthorizer: OpenAIChatGPTHostAuthorizer(),
-      presentationCoordinator: presentationCoordinator
-    )
+  public override init() {
+    injectedConnectionController = nil
+    injectedEndpointSender = nil
+    injectedHostAuthorizer = nil
+    injectedPresentationCoordinator = nil
+    installsProductionCallbacks = true
+    endpointMaximumAttempts = 3
+    endpointRetrySleeper = { Thread.sleep(forTimeInterval: $0) }
+    super.init()
   }
 
   init(
@@ -99,15 +98,17 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
       Thread.sleep(forTimeInterval: $0)
     }
   ) {
-    self.connectionController = connectionController
-    self.endpointSender = endpointSender
-    self.hostAuthorizer = hostAuthorizer
-    self.presentationCoordinator =
-      presentationCoordinator ?? RemoteHostedPIPPresentationCoordinator(host: connectionController)
+    injectedConnectionController = connectionController
+    injectedEndpointSender = endpointSender
+    injectedHostAuthorizer = hostAuthorizer
+    injectedPresentationCoordinator = presentationCoordinator
+    installsProductionCallbacks = false
     self.endpointMaximumAttempts = max(1, endpointMaximumAttempts)
     self.endpointRetrySleeper = endpointRetrySleeper
     super.init()
   }
+
+  var hasInitializedRuntime: Bool { runtimeLock.withLock { storedRuntime != nil } }
 
   deinit {
     if started {
@@ -224,14 +225,18 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   }
 
   func process(_ request: RemoteHostedPIPBootstrapRequest) throws {
+    let runtime = runtime()
     RemoteHostedPIPDiagnostics.logger.notice(
       "processing bootstrap request from host pid=\(request.senderProcessIdentifier, privacy: .public)"
     )
-    try hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
+    try runtime.hostAuthorizer.authorize(processIdentifier: request.senderProcessIdentifier)
     var attempt = 1
     while true {
       do {
-        try endpointSender.send(endpoint: connectionController.endpoint, to: request.replyPort)
+        try runtime.endpointSender.send(
+          endpoint: runtime.connectionController.endpoint,
+          to: request.replyPort
+        )
         RemoteHostedPIPDiagnostics.logger.notice(
           "bootstrap endpoint sent to host pid=\(request.senderProcessIdentifier, privacy: .public) attempt=\(attempt, privacy: .public)"
         )
@@ -254,7 +259,7 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
     codexTurnMetadata: Any?,
     result: Any
   ) {
-    presentationCoordinator.observe(
+    runtime().presentationCoordinator.observe(
       requestType: requestType,
       request: request,
       codexTurnMetadata: codexTurnMetadata,
@@ -263,7 +268,39 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
-    presentationCoordinator.handle(event)
+    runtime().presentationCoordinator.handle(event)
+  }
+
+  private func runtime() -> Runtime {
+    runtimeLock.withLock {
+      if let storedRuntime { return storedRuntime }
+
+      let connectionController =
+        injectedConnectionController ?? RemoteHostedPIPConnectionController()
+      let presentationCoordinator =
+        injectedPresentationCoordinator
+        ?? RemoteHostedPIPPresentationCoordinator(host: connectionController)
+      if installsProductionCallbacks {
+        presentationCoordinator.installProducerCallbacks(on: connectionController)
+        ComputerUseVisualCoordinator.shared.setRemoteCursorHandler {
+          [weak presentationCoordinator] point, isActive in
+          presentationCoordinator?.updateCursor(point: point, isActive: isActive)
+        }
+        ComputerUseSessionCoordinator.shared.setStopHandler {
+          [weak presentationCoordinator] bundleIdentifier in
+          presentationCoordinator?.stopApplication(bundleIdentifier: bundleIdentifier)
+        }
+      }
+      let runtime = Runtime(
+        connectionController: connectionController,
+        endpointSender: injectedEndpointSender ?? RemoteHostedPIPEndpointTransport(),
+        hostAuthorizer: injectedHostAuthorizer ?? OpenAIChatGPTHostAuthorizer(),
+        presentationCoordinator: presentationCoordinator
+      )
+      storedRuntime = runtime
+      RemoteHostedPIPDiagnostics.logger.notice("bootstrap runtime initialized lazily")
+      return runtime
+    }
   }
 }
 

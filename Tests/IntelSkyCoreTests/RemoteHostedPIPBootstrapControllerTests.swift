@@ -4,6 +4,14 @@ import Testing
 
 @testable import IntelSkyCore
 
+@Test func pipBootstrapListenerStartsBeforeProductionRuntimeInitialization() {
+  let controller = RemoteHostedPIPBootstrapController()
+
+  #expect(!controller.hasInitializedRuntime)
+  controller.start()
+  #expect(!controller.hasInitializedRuntime)
+}
+
 @Test func pipBootstrapControllerAuthorizesBeforeSendingEndpoint() throws {
   let sender = RecordingEndpointSender()
   let controller = RemoteHostedPIPBootstrapController(

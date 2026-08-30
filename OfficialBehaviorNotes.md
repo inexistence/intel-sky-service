@@ -564,6 +564,16 @@ while retaining the same request parser, host code-signing authorization, and en
 The failure and the hidden AppKit initialization are `CONFIRMED_INTEL_RUNTIME`; the low-level
 registration correction remains `HIGH_CONFIDENCE` pending the next clean restart.
 
+A later cold launch showed the remaining pre-registration work: the default bootstrap-controller
+initializer constructed the anonymous XPC listener, presentation coordinator, and global cursor and
+stop integrations before `AEInstallEventHandler`. ChatGPT sent to the already-created service PID
+96 ms before registration and received `procNotFound`. A prestarted LaunchAgent was tested and
+rejected because ChatGPT still launches and targets its own managed child, which then exits on the
+occupied socket. The production controller now installs the raw Apple Event handler before creating
+any of the PIP runtime; the XPC endpoint and presentation/cursor integrations initialize lazily only
+when the bootstrap event is processed. The injected test initializer preserves deterministic unit
+tests, and a regression asserts that `start()` does not initialize production runtime.
+
 The 15:34 clean restart confirmed that correction on Intel: the listener received the bootstrap,
 sent its endpoint on the first attempt, accepted ChatGPT's XPC connection, and completed the
 producer `connect`/maximum-display-size exchange. A real Finder request then published the official
