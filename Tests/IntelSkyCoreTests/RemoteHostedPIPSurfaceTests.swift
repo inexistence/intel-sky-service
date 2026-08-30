@@ -88,6 +88,7 @@ import UniformTypeIdentifiers
 
   #expect(surface.enqueue(try #require(sampleBuffer)))
   #expect(surface.hasDisplayFrame)
+  #expect(surface.hasIOSurfaceContents)
   surface.resetToFallbackImage()
   #expect(!surface.hasDisplayFrame)
 }

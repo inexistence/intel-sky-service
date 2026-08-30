@@ -3,6 +3,7 @@ import CoreImage
 import CoreMedia
 import Foundation
 import ImageIO
+import IOSurface
 import ObjectiveC.runtime
 import QuartzCore
 
@@ -34,6 +35,10 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     let value: CMSampleBuffer
   }
 
+  private struct SendableIOSurface: @unchecked Sendable {
+    let value: IOSurface
+  }
+
   private struct LayerState: @unchecked Sendable {
     let context: NSObject
     let rootLayer: CALayer
@@ -47,15 +52,16 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private let rootLayer: CALayer
   private let imageLayer: CALayer
   private let displayLayer: AVSampleBufferDisplayLayer
-  private let imageContext = CIContext(options: [.cacheIntermediates: false])
   let contextID: UInt32
   private var storedSize: CGSize
   private var dumpedDiagnosticFrame = false
-  private var lastImageFrameTime: TimeInterval = 0
   private var showingDisplayFrame = false
   var size: CGSize { lock.withLock { storedSize } }
   var hasImageContents: Bool {
     Self.onMainThread { self.lock.withLock { self.imageLayer.contents != nil } }
+  }
+  var hasIOSurfaceContents: Bool {
+    Self.onMainThread { self.lock.withLock { self.imageLayer.contents is IOSurface } }
   }
   var hasDisplayFrame: Bool { lock.withLock { showingDisplayFrame } }
 
@@ -106,16 +112,19 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
         }
       }
 
-      let imageLayer = CALayer()
-      imageLayer.frame = layer.bounds
-      imageLayer.contentsGravity = .resizeAspect
-      layer.addSublayer(imageLayer)
-
       let displayLayer = AVSampleBufferDisplayLayer()
       displayLayer.frame = layer.bounds
       displayLayer.videoGravity = .resizeAspect
       displayLayer.isHidden = true
       layer.addSublayer(displayLayer)
+
+      // CAContext exports ordinary layer contents to CALayerHost. Keep that content above the local
+      // AV renderer and publish IOSurface objects there; CGImage and the renderer's private backing
+      // store are not reliably transported by the production remote-host path.
+      let imageLayer = CALayer()
+      imageLayer.frame = layer.bounds
+      imageLayer.contentsGravity = .resizeAspect
+      layer.addSublayer(imageLayer)
 
       let spi = unsafeBitCast(context, to: (any RemoteHostedPIPCAContextSPI).self)
       CATransaction.begin()
@@ -199,39 +208,25 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     guard CMSampleBufferDataIsReady(sampleBuffer), CMSampleBufferGetImageBuffer(sampleBuffer) != nil
     else { return false }
     dumpDiagnosticFrameIfRequested(sampleBuffer)
-    guard let displaySample = Self.makeDisplaySample(from: sampleBuffer) else { return false }
+    guard let displaySample = Self.makeDisplaySample(from: sampleBuffer),
+      let displayImageBuffer = CMSampleBufferGetImageBuffer(displaySample),
+      let surfaceReference = CVPixelBufferGetIOSurface(displayImageBuffer)
+    else { return false }
     let sendableDisplaySample = SendableSampleBuffer(value: displaySample)
+    let sendableSurface = SendableIOSurface(value: surfaceReference.takeUnretainedValue())
 
     Self.onMainThread {
       CATransaction.begin()
       CATransaction.setDisableActions(true)
       self.displayLayer.sampleBufferRenderer.enqueue(sendableDisplaySample.value)
       self.displayLayer.isHidden = false
+      self.imageLayer.contents = sendableSurface.value
       CATransaction.commit()
       CATransaction.flush()
       self.lock.withLock { self.showingDisplayFrame = true }
     }
 
-    // Keep a low-rate decoded image beneath the video layer. If capture is reset, this becomes the
-    // immediately visible fallback without requiring another state request.
-    let now = ProcessInfo.processInfo.systemUptime
-    let shouldRender = lock.withLock { () -> Bool in
-      guard now - lastImageFrameTime >= 0.1 else { return false }
-      lastImageFrameTime = now
-      return true
-    }
-    guard shouldRender, let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-      return true
-    }
-    let image = CIImage(cvImageBuffer: imageBuffer)
-    guard let cgImage = imageContext.createCGImage(image, from: image.extent) else { return false }
-    Self.onMainThread {
-      CATransaction.begin()
-      CATransaction.setDisableActions(true)
-      self.imageLayer.contents = cgImage
-      CATransaction.commit()
-      CATransaction.flush()
-    }
+    // The IOSurface remains the last-frame fallback if capture pauses or resets.
     return true
   }
 

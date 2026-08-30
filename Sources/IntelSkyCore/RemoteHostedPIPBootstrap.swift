@@ -164,6 +164,9 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
         )?.data
       )
       try process(request)
+      RemoteHostedPIPDiagnostics.logger.notice(
+        "bootstrap event handled for host pid=\(request.senderProcessIdentifier, privacy: .public)"
+      )
       return OSErr(noErr)
     } catch {
       RemoteHostedPIPDiagnostics.logger.error(

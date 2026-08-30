@@ -564,6 +564,18 @@ while retaining the same request parser, host code-signing authorization, and en
 The failure and the hidden AppKit initialization are `CONFIRMED_INTEL_RUNTIME`; the low-level
 registration correction remains `HIGH_CONFIDENCE` pending the next clean restart.
 
+The 15:34 clean restart confirmed that correction on Intel: the listener received the bootstrap,
+sent its endpoint on the first attempt, accepted ChatGPT's XPC connection, and completed the
+producer `connect`/maximum-display-size exchange. A real Finder request then published the official
+inline PIP and ScreenCaptureKit delivered valid BGRA frames; CoreMedia reported one frame displayed.
+The hosted thumbnail nevertheless remained gray while the independently returned Finder screenshot
+was complete. This isolates the remaining display defect to CAContext export rather than capture or
+host attachment. The surface now assigns each IOSurface-backed BGRA frame directly to an ordinary
+CALayer above the local sample-buffer renderer. This makes the actual frame, rather than the
+renderer-private backing store or a process-local CGImage, the object exported through CAContext.
+The diagnosis is `CONFIRMED_INTEL_RUNTIME`; direct IOSurface export is `HIGH_CONFIDENCE` pending the
+next official-host presentation.
+
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
 `setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore
