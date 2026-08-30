@@ -98,25 +98,29 @@ let nativeBridgeController = ComputerUseNativeBridgeController(
   appCaptureProvider: appCaptureProvider
 )
 nativeBridgeController.start()
-let server = SkyUnixServer(
-  socketPath: socketPath,
-  router: SkyRequestRouter(
-    appCatalog: WorkspaceAppCatalog(),
-    appStateProvider: appStateProvider,
-    appActionPerformer: MacAppActionPerformer(
-      resolver: resolver,
-      snapshotCache: snapshotCache,
-      interactionTracker: interactionTracker
-    ),
-    appCaptureProvider: appCaptureProvider,
-    appLifecycleProvider: MacAppLifecycleProvider(resolver: resolver),
-    eventStreamProvider: eventStreamProvider,
-    requestObserver: pipBootstrapController
-  )
+let router = SkyRequestRouter(
+  appCatalog: WorkspaceAppCatalog(),
+  appStateProvider: appStateProvider,
+  appActionPerformer: MacAppActionPerformer(
+    resolver: resolver,
+    snapshotCache: snapshotCache,
+    interactionTracker: interactionTracker
+  ),
+  appCaptureProvider: appCaptureProvider,
+  appLifecycleProvider: MacAppLifecycleProvider(resolver: resolver),
+  eventStreamProvider: eventStreamProvider,
+  requestObserver: pipBootstrapController
 )
+let screenLockMonitor = ComputerUseScreenLockMonitor {
+  fputs("screen locked or console session changed; revoking Computer Use runtime\n", stderr)
+  router.screenDidLock()
+}
+screenLockMonitor.start()
+let server = SkyUnixServer(socketPath: socketPath, router: router)
 let processIdentifier = ProcessInfo.processInfo.processIdentifier
 let launchParentProcessIdentifier = getppid()
 let cleanupRuntimeStatus: @Sendable () -> Void = {
+  screenLockMonitor.stop()
   do {
     try ServiceRuntimeStatusWriter.removeIfCurrent(
       processIdentifier: processIdentifier,

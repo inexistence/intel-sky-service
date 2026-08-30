@@ -168,6 +168,12 @@ public struct SkyRequestRouter: Sendable {
     handle(payload, clientIdentifier: "direct")
   }
 
+  /// Proactively revokes turn-scoped runtime state when macOS locks or switches away from the
+  /// console user. Request-time checks remain as a second fail-closed boundary.
+  public func screenDidLock() {
+    turnLifecycle.terminateForSafety(.screenLocked)
+  }
+
   func handle(_ payload: Data, clientIdentifier: String) -> Data {
     ComputerUseClientContext.withIdentifier(clientIdentifier) {
       if Self.isNextCaptureUpdate(payload) {

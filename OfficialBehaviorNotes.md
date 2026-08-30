@@ -799,6 +799,23 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
 - ARM includes `CUALockScreenGuardian.app`, lock-state monitoring, physical-input callbacks,
   secure-input checks, blocked URL state, user-stop/intervention errors, idle timeout, and hardened
   socket ownership checks. `CONFIRMED_STATIC_BINARY`.
+- Static inspection of the 26.828.1000919 ARM package narrows the Guardian boundary. The helper is
+  an `LSUIElement` App with bundle ID `com.openai.sky.CUAService.guardian`, an ordinary hardened
+  runtime signature, and no embedded entitlement payload. Its exported Objective-C/XPC surface is
+  `beginUnlockGuardForThreadID:withReply:`, `completeUnlockGuardForThreadID:didUnlock:`, and the
+  client callback `lockScreenGuardianDetectedPhysicalInput`. Service symbols independently place it
+  inside `LockScreenAutoUnlockCoordinator` and show a Mach-bootstrap rendezvous plus a separate
+  owner-local `LockScreenLoginAuthorization.sock`. This is evidence that the helper guards the
+  optional automatic-unlock interval against physical input; it is not required merely to read the
+  current lock state. `CONFIRMED_STATIC_BINARY` / `HIGH_CONFIDENCE`.
+- Intel now also runs a process-lifetime `CGSession` monitor, independent of request arrival. It
+  treats a missing session dictionary, screen lock, and switching away from the console user as
+  locked, emits once per locked episode, and proactively safety-terminates the current turn. The
+  established runtime ordering revokes Capture/Event streams, PIP, cursor, App/intervention state,
+  and only then releases synthetic focus. Request-time checks remain a second fail-closed boundary.
+  Intel intentionally does not implement automatic login/unlock, so no Guardian helper or login
+  authorization socket is needed for the supported locked-screen behavior. `HIGH_CONFIDENCE` for
+  the state transition logic; an attended real lock/switch test remains `NEEDS_ARM_ORACLE`.
 - ARM exposes `appStoppedByUser`, the public `userStoppedSession` code (`-10012`), and the exact
   instruction that an explicitly stopped App remains unavailable for the current turn and becomes
   available on the next assistant turn. Intel reproduces that turn-scoped latch and exact message,
@@ -843,7 +860,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 214 Swift tests, the six-case Node oracle suite, the
+- The current runtime checkpoint passes 226 Swift tests, the six-case Node oracle suite, the
   soft-link hash test, the 12-selector Intel PIP-host audit, and an x86_64 release build compiled
   with warnings as errors.
 
