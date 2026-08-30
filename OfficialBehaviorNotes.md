@@ -177,10 +177,30 @@ Targeted ARM symbol and disassembly analysis adds the following details:
   typing-focus, and lost/gained callback transitions are still under analysis.
 - The general subject mapper returns ordinary App PIDs unchanged. For an
   `NSRunningApplication` with activation policy `.prohibited (2)`, it creates that process's AX
-  Application, reads `AXFocusedUIElement`, and uses the focused AX element's own PID as a host
-  candidate. A separate specialized helper handles the currently discovered process named
-  `ViewBridgeAuxiliary` and appears to combine two AX-derived candidates; its exact fallback order
-  remains under analysis. `CONFIRMED_STATIC_BINARY`.
+  Application and examines `AXFocusedUIElement`. If that PID is still prohibited, it also probes
+  the focused and main windows, resolves their PIDs, and considers a localized-name match among
+  running non-prohibited Apps. A final branch reads
+  `NSWorkspace.shared.frontmostApplication.processIdentifier`; the exact Boolean gate on that
+  branch is not yet named, so Intel must not treat the frontmost App as an unconditional host.
+  `CONFIRMED_STATIC_BINARY` / `NEEDS_ARM_ORACLE` for the final gate.
+- A separate specialized helper handles the process currently discovered by executable name
+  `ViewBridgeAuxiliary`. It captures the helper's focused element and returns two optional PID
+  candidates. The first resolver refetches the focused element and retries every 15 ms for at most
+  one second before entering the general mapper; the second calls `actualPID` on the captured
+  focused element and accepts it only when that PID is itself `.prohibited`. The retry therefore
+  belongs to host-resolution state, not to the event-tap release operation itself. The exact
+  interpretation and preference order of the two packed candidates remains
+  `NEEDS_ARM_ORACLE`. `CONFIRMED_STATIC_BINARY`.
+- The specialized `AXUIElementRef.actualPID` getter calls the private C function
+  `_AXUIElementGetActualPid(AXUIElementRef, pid_t *)`. This spelling is confirmed by reproducing the
+  bundled `SoftLink` SipHash request: with the AccessibilitySPI salt, the candidate hashes to the
+  exact stored request `0x245daf9a4f1ec5dd`. The ARM call site initializes the output to `-1`,
+  returns it only for `kAXErrorSuccess`, and throws the AX error otherwise. The current Intel
+  HIServices image exports this exact leading-underscore spelling; a read-only runtime probe returned
+  each `ViewBridgeAuxiliary` application's own PID for its Application AX element, while both had no
+  focused AX element (`-25200`) at probe time. This confirms availability and ABI, but not the
+  specialized fallback's observable host-mapping result. `CONFIRMED_STATIC_BINARY` /
+  `CONFIRMED_INTEL_RUNTIME` / `NEEDS_ARM_ORACLE`.
 - The `KeyFocusTaken/Returned` helper passes the original event unless its tracked current-focus
   state is in the expected case and its stored PID equals raw field `40`. Only in that matched state
   does it return nil and set the adjacent `lastViewBridgeFocusStealWasSuppressed` state byte. It
@@ -253,7 +273,7 @@ serving requests. While a synthetic-focus action is in flight, it protects only 
 target PID. A direct protected subject in `NewFront` or `KeyFocusChanged` is passed to dynamically
 resolved `CPSReleaseKeyFocusWithID`; the notification is suppressed only after `noErr`. Missing or
 invalid fields, unavailable input monitoring/SPI, release failure, unrelated Apps, unsupported CPS
-subtypes, and any physical user input all pass through. The first implementation deliberately does
+subtypes, and any physical user input all pass through. The first implementation deliberately
 implements the confirmed generic prohibited-process `AXFocusedUIElement.pid` host mapping, but does
 not guess the specialized current-ViewBridge fallback or the separate `KeyFocusTaken/Returned`
 bookkeeping branch. Raw-field decoding, subtype classification, scoped registration, user-intervention

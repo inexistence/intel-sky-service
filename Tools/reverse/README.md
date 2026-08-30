@@ -10,3 +10,15 @@ node Tools/reverse/swift-field-metadata.mjs /path/to/SkyComputerUseService Refet
 
 The optional query matches both type names and field/case names. Mangled field types may contain
 Swift symbolic-reference bytes; field and enum-case names remain directly readable.
+
+`softlink-symbol-hash.mjs` reproduces the official `SoftLink` symbol-request hash. Supply the salt
+embedded at the relevant call site and one or more candidate Mach-O symbol names:
+
+```sh
+node Tools/reverse/softlink-symbol-hash.mjs SALT _AXUIElementGetActualPid
+node --test Tools/reverse/softlink-symbol-hash.test.mjs
+```
+
+The hash is SipHash-2-4 over UTF-8 `symbol + salt` with the fixed key recovered from the bundled
+implementation. A hash match proves the requested spelling; it does not by itself prove that the
+symbol exists on the running macOS release or that calling it is safe.
