@@ -771,13 +771,18 @@ restarted.
 
 A subsequent ChatGPT restart exposed a managed-lifecycle defect: the prior service survived its
 launching ChatGPT process, was reparented to PID 1, retained the Unix socket, and caused the next
-managed service to exit before the host's bootstrap Apple Event. Intel now installs a process-exit
-dispatch source for every non-launchd launch parent and shuts down the server when that exact parent
-exits; direct launchd/Finder launches with parent PID 1 remain supported. An isolated release-binary
-test confirmed that ending the launcher removes both the child process and its owned socket. The
-following clean ChatGPT launch produced exactly one managed child (PID 72508 of host PID 71959),
-completed endpoint bootstrap on attempt 1, connected XPC, received the 200-point maximum, and
-published the fitted Notes presentation. `CONFIRMED_INTEL_RUNTIME`.
+managed service to exit before the host's bootstrap Apple Event. Parent-PID observation alone was
+not sufficient because an inherited or already-reparented launch can erase that relationship before
+the observer is installed. The managed server now tracks authenticated socket clients and the
+native PIP host directly: without a PIP host it exits one second after its final authenticated
+client disconnects, with generation guards so a reconnect cancels the pending exit; after native
+PIP is established, host-XPC invalidation requests shutdown. Launchd/Finder launches remain usable
+while a client is connected, and an isolated runtime check confirmed that closing the final client
+removed both the helper and its socket within four seconds. The following clean ChatGPT launch
+produced exactly one managed child (PID 11022 of host PID 10484), received the bootstrap event,
+transferred the endpoint on attempt 1, connected XPC, received the 200-point maximum, and published
+the fitted 200x162 Notes presentation. A full official state and a safe coordinate click both
+refreshed that presentation without host-call errors. `CONFIRMED_INTEL_RUNTIME`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,
@@ -836,8 +841,8 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   window rejects an old-window element and that a dismissed “显示简介” menu item now fails with the
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
-  the later socket, lifecycle, PIP, focus, and ViewBridge coverage brought that checkpoint to 173
-  tests; the current complete suite contains 245 tests.
+  the later socket, lifecycle, PIP, focus, ViewBridge, organization-policy, capture, and managed-host
+  coverage brought that checkpoint to 173 tests; the current complete suite contains 256 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
@@ -919,9 +924,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 231 Swift tests, the six-case Node oracle suite, the
-  four-case protocol-catalog verifier, the soft-link hash test, the 12-selector Intel PIP-host
-  audit, and an x86_64 release build compiled with warnings as errors.
+- The current runtime checkpoint passes 256 Swift tests and 13 Node protocol/reverse/oracle tests,
+  including the protocol-catalog verifier and soft-link hash coverage. It also passes the
+  12-selector Intel PIP-host audit and an x86_64 release build compiled with warnings as errors.
 
 ## Oracle backlog
 
