@@ -724,8 +724,9 @@ On a subsequent attended click, the user confirmed that the hosted Notes picture
 live but that the SoftwareCursor artwork itself appeared vertically inverted. The embedded PNG was
 upright; a two-row asymmetric pixel regression proved that the PNG-to-IOSurface conversion reversed
 its top and bottom rows. Intel now draws the image into the BGRA pixel buffer without the redundant
-Core Graphics Y-axis flip. The regression passes and the corrected artifact is deployed;
-on-glass orientation confirmation remains pending the next clean managed restart.
+Core Graphics Y-axis flip. The regression passes. After deployment and a clean managed restart,
+the official client produced a full Notes state and coordinate click through the single managed
+service, and the user confirmed on glass that the cursor arrow was upright. `CONFIRMED_INTEL_RUNTIME`.
 
 Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
 producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
