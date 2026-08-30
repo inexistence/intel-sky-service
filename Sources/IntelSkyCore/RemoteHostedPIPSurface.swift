@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import CoreMedia
+import Darwin
 import Foundation
 import ImageIO
 import IOSurface
@@ -39,6 +40,11 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     let value: IOSurface
   }
 
+  private struct SendableLayerContents: @unchecked Sendable {
+    let value: AnyObject
+    let usesCAIOSurface: Bool
+  }
+
   private struct LayerState: @unchecked Sendable {
     let context: NSObject
     let rootLayer: CALayer
@@ -56,13 +62,15 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private var storedSize: CGSize
   private var dumpedDiagnosticFrame = false
   private var showingDisplayFrame = false
+  private var showingCAIOSurfaceContents = false
   var size: CGSize { lock.withLock { storedSize } }
   var hasImageContents: Bool {
     Self.onMainThread { self.lock.withLock { self.imageLayer.contents != nil } }
   }
   var hasIOSurfaceContents: Bool {
-    Self.onMainThread { self.lock.withLock { self.imageLayer.contents is IOSurface } }
+    Self.onMainThread { self.lock.withLock { self.imageLayer.contents != nil } }
   }
+  var usesCAIOSurfaceContents: Bool { lock.withLock { showingCAIOSurfaceContents } }
   var hasDisplayFrame: Bool { lock.withLock { showingDisplayFrame } }
 
   init(size: CGSize) throws {
@@ -214,16 +222,20 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     else { return false }
     let sendableDisplaySample = SendableSampleBuffer(value: displaySample)
     let sendableSurface = SendableIOSurface(value: surfaceReference.takeUnretainedValue())
+    let layerContents = Self.makeLayerContents(from: sendableSurface.value)
 
     Self.onMainThread {
       CATransaction.begin()
       CATransaction.setDisableActions(true)
       self.displayLayer.sampleBufferRenderer.enqueue(sendableDisplaySample.value)
       self.displayLayer.isHidden = false
-      self.imageLayer.contents = sendableSurface.value
+      self.imageLayer.contents = layerContents.value
       CATransaction.commit()
       CATransaction.flush()
-      self.lock.withLock { self.showingDisplayFrame = true }
+      self.lock.withLock {
+        self.showingDisplayFrame = true
+        self.showingCAIOSurfaceContents = layerContents.usesCAIOSurface
+      }
     }
 
     // The IOSurface remains the last-frame fallback if capture pauses or resets.
@@ -352,6 +364,25 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       )
     }
     return destination
+  }
+
+  private typealias CAIOSurfaceCreateFunction =
+    @convention(c) (IOSurface) -> Unmanaged<AnyObject>?
+
+  private static let caIOSurfaceCreate: CAIOSurfaceCreateFunction? = {
+    // Keep this private QuartzCore SPI soft-linked. WebKit uses the same wrapper for layer contents
+    // and falls back to the IOSurface itself when the symbol is unavailable.
+    guard let handle = dlopen(nil, RTLD_LAZY),
+      let symbol = dlsym(handle, "CAIOSurfaceCreate")
+    else { return nil }
+    return unsafeBitCast(symbol, to: CAIOSurfaceCreateFunction.self)
+  }()
+
+  private static func makeLayerContents(from surface: IOSurface) -> SendableLayerContents {
+    guard let contents = caIOSurfaceCreate?(surface)?.takeRetainedValue() else {
+      return SendableLayerContents(value: surface, usesCAIOSurface: false)
+    }
+    return SendableLayerContents(value: contents, usesCAIOSurface: true)
   }
 
   private func dumpDiagnosticFrameIfRequested(_ sampleBuffer: CMSampleBuffer) {

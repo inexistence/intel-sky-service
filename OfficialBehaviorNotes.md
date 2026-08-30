@@ -580,7 +580,13 @@ The IOSurface build completed the same official handshake and Finder presentatio
 Finder scroll produced six renderer frames, all six displayed with zero drops, confirming live
 capture rather than a one-shot state image. macOS `screencapture` still records the hosted thumbnail
 as gray; because the official host may disable sharing for that content, human on-glass confirmation
-is required before classifying this as a renderer failure. The scroll also exposed a Finder layer-0
+showed that direct IOSurface layer contents were also gray. A root-layer RGB stripe probe was visible
+through the same official presentation, proving CAContext publication, host attachment, geometry,
+and ordinary layer-tree export while isolating the defect to the surface contents object. Apple
+WebKit's `IOSurface::asCAIOSurfaceLayerContents()` uses dynamically available
+`CAIOSurfaceCreate(IOSurfaceRef)` for this exact purpose, falling back to the raw IOSurface only when
+the SPI is unavailable. Intel now follows that behavior through a soft-linked symbol with a safe raw
+surface fallback; no private symbol is hard-linked. The scroll also exposed a Finder layer-0
 tooltip (52x20 points) ahead of its 920x436 document window. Front-window resolution now skips a
 transient whose area is below both a small absolute floor and one percent of the largest candidate,
 while preserving front order and sole compact windows. The bootstrap handler now writes an explicit

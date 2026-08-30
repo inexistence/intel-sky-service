@@ -89,6 +89,7 @@ import UniformTypeIdentifiers
   #expect(surface.enqueue(try #require(sampleBuffer)))
   #expect(surface.hasDisplayFrame)
   #expect(surface.hasIOSurfaceContents)
+  #expect(surface.usesCAIOSurfaceContents)
   surface.resetToFallbackImage()
   #expect(!surface.hasDisplayFrame)
 }
