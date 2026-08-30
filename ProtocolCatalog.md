@@ -1,110 +1,170 @@
-# Intel Computer Use runtime protocol catalog
+# Computer Use Runtime protocol catalog
 
-This catalog is the request-by-request inventory for `CodexComputerUseIPC-5`. It is intentionally
-separate from the behavioral narrative in `OfficialBehaviorNotes.md`: this file answers what is on
-the wire and whether Intel implements it; the notes explain why each compatibility choice was made.
+This catalog is the machine-checked protocol index for `CodexComputerUseIPC-5`. The inspected
+baseline is Intel ChatGPT 26.825.41651 (build 7345), `@oai/sky`
+`0.6.24-premerge-pr-1369830-395ab116910c`, and ARM `SkyComputerUseService` 26.828.1000919. It records
+every request type present in that ARM binary's Swift field metadata. Behavioral evidence and
+experiment history remain in `OfficialBehaviorNotes.md`; this file is intentionally organized by
+wire surface.
 
-Catalog baseline: Intel ChatGPT `26.825.41651`, `@oai/sky`
-`0.6.24-premerge-pr-1369830-395ab116910c`, and ARM service
-`com.openai.sky.CUAService` build `26.828.1000919`, inspected 2026-08-30.
+## Evidence and shared rules
 
-## Common wire contract
+- `CONFIRMED_STATIC_BINARY`: request/type names and stored fields came from `__swift5_fieldmd` via
+  `Tools/reverse/swift-field-metadata.mjs`.
+- `CONFIRMED_CLIENT_SOURCE`: request construction or return shape is present in the installed
+  `@oai/sky` JavaScript/declaration output or Intel ChatGPT caller.
+- `CONFIRMED_INTEL_RUNTIME`: an unmodified official client exercised the installed Intel service.
+- `HIGH_CONFIDENCE`, `PARTIAL`, `NEEDS_ARM_ORACLE`, and `OUT_OF_SCOPE` have the meanings defined in
+  `OfficialBehaviorNotes.md`.
 
-| Property | Contract and evidence |
+Unless a row says otherwise, these common properties apply:
+
+| Property | Protocol rule |
 | --- | --- |
-| Socket transport | Owner-only Unix socket, 4-byte little-endian frame length, 8 MiB maximum, JSON-RPC 2.0. `CONFIRMED_CLIENT_SOURCE`, `CONFIRMED_INTEL_RUNTIME`. |
-| Socket request envelope | `method: "request"`, params `{ clientApiVersion, requestType, request, codexTurnMetadata?, deadlineUnixMilliseconds }`. `ping` uses `{ clientApiVersion }`. `CONFIRMED_CLIENT_SOURCE`. |
-| Socket response envelope | `{ jsonrpc: "2.0", id, result }` or `{ jsonrpc: "2.0", id, error: { code, message } }`. `CONFIRMED_CLIENT_SOURCE`. |
-| Deadline | Public client default 120 s; every socket request carries an absolute millisecond deadline. Intel checks before dispatch and at cooperative long-running checkpoints. `CONFIRMED_CLIENT_SOURCE`, `HIGH_CONFIDENCE`. |
-| Socket authorization | Direct peer plus parent/responsible/ancestor code identities; production accepts only the real signed ChatGPT → Codex → node_repl chain. Intel additionally validates socket directory, socket owner/mode, and peer UID. `CONFIRMED_STATIC_BINARY`, `CONFIRMED_INTEL_RUNTIME`. |
-| App approval | The public wrapper calls `ComputerUseIPCAppPolicyRequest` and the Codex host approval UI before target operations. Intel never bypasses this caller-side approval and independently rejects forbidden targets. `CONFIRMED_CLIENT_SOURCE`. |
-| Native Apple Event | `SkCu/SndR`, `RspT` request type, `ReqD` JSON data, `ClVn = CodexComputerUseNativeBridge-1`; response is JSON in direct-object `tdta`, errors in `errn/errs`. Sender PID must pass the signed ChatGPT host requirement. `CONFIRMED_CLIENT_SOURCE`, `CONFIRMED_INTEL_RUNTIME` for parsing/routing tests. |
-| Remote Hosted PIP bootstrap | `SkCu/PiPB`, version, sender PID, Mach reply port; reply-port XPC dictionary contains `endpoint: xpc_endpoint_t`. Signed ChatGPT is checked at Apple Event and XPC admission. `CONFIRMED_INTEL_STATIC_BINARY`, `CONFIRMED_INTEL_RUNTIME` for real endpoint/XPC tests. |
-| Special entitlement | No OpenAI entitlement is claimed or copied. Accessibility, Screen Recording, Input Monitoring, Secure Input, and App approval are ordinary OS/user policy boundaries. The PIP CAContext path uses dynamically checked private SPI but the cross-signature smoke disproves a Team-ID-only rendering restriction. `CONFIRMED_INTEL_RUNTIME`. |
+| Socket framing | Owner-only Unix socket; four-byte little-endian frame length; 8 MiB maximum. Intel additionally validates directory/socket ownership and mode plus the peer UID. |
+| API envelope | JSON-RPC 2.0 `request` with `clientApiVersion: CodexComputerUseIPC-5`, `requestType`, object `request`, optional `codexTurnMetadata`, and optional absolute `deadlineUnixMilliseconds`. Success is `{jsonrpc,id,result}`; failure is `{jsonrpc,id,error:{code,message}}`. |
+| Deadline | Checked before dispatch and before reply. Long-poll Capture updates additionally check while waiting. The ARM public code family has no dedicated deadline case; Intel returns `unknownError (-10005)` with `Request deadline exceeded`. Exact ARM deadline mapping is `NEEDS_ARM_ORACLE`. |
+| Socket authorization | Owner-only Unix socket and peer-token/process-chain authorization. The official ARM service has generic JSON-RPC socket and XPC sessions; per-request XPC caller coverage is not inferred from the generic dispatcher. |
+| Apple Event authorization | Intel native bridge `SkCu/SndR`, bridge version `CodexComputerUseNativeBridge-1`, signed OpenAI ChatGPT host only. Response is UTF-8 JSON in direct-object `tdta`; errors use `errn/errs`. |
+| PIP bootstrap | Intel `SkCu/PiPB` Apple Event carries bridge version, sender PID, and a Mach reply port. Its reply-port XPC dictionary transfers an anonymous endpoint under key `endpoint`; both Apple Event and XPC admission authenticate the ChatGPT host. |
+| Turn lifecycle | Valid `session_id/thread_id/turn_id` metadata starts or transitions the scoped runtime. Turn end, safety termination, lock, intervention, disconnect, App stop, and service shutdown revoke the applicable state. |
+| Entitlements | Core socket/AE requests need no private entitlement. Accessibility, Screen Recording, Input Monitoring, Secure Input, organization policy, and App approval are runtime/TCC or policy gates. Intel neither claims nor copies an OpenAI entitlement. Remote Hosted PIP uses dynamically checked private SPI, but the cross-signature CAContext smoke disproves a Team-ID-only render restriction. |
 
-The installed JavaScript maps server codes `-10000...-10020` to: unauthenticated sender, bad data,
-missing/unknown request type, unhandled/unknown error, App forbidden/not running, Accessibility,
-permissions, invalid/ambiguous App, no active session, user stop, incompatible version, permissions
-pending, blocked URL, user intervention, missing sender/bootstrap port, and screen locked. ARM metadata
-also contains newer turn-ended and Messages-specific cases; the installed Intel JS does not expose
-numeric mappings for those, so they remain `NEEDS_ARM_ORACLE`. Intel safely uses `-10003`
-(`couldNotResolveRequestType`) for every catalogued out-of-scope request.
+Transport abbreviations: `S` = JSON-RPC socket, `AE` = authenticated native Apple Event, and
+`XPC?` = the ARM generic XPC dispatcher exists but a caller for this individual request has not
+been proved. `AE` is listed only where the current Intel bridge accepts the request.
 
-## Visual/runtime requests implemented on Intel
+## In-scope request directory
 
-“Socket” below means the common authenticated JSON-RPC transport and common envelope above. Tests
-are relative to `Tests/IntelSkyCoreTests`.
+| Request | Stored request fields | Result fields / envelope | Transport | Approval and lifecycle | Intel implementation / tests | Evidence and remaining difference | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ComputerUseIPCListAppsRequest` | empty | array of `DiscoveredApp {displayName,bundleIdentifier,appPath,lastUsedDate,useCount,isRunning,isFrontmost}` | S, XPC? | Discovery only; no target approval | Workspace catalog; `SkyProtocolTests`, `WorkspaceAppCatalogTests`, official client smoke | Client source + ARM metadata; recent-use provenance is `HIGH_CONFIDENCE` | IMPLEMENTED |
+| `ComputerUseIPCAppPolicyRequest` | `app` | `AppPolicyResult {decision,target,allowPersistentApproval}`; target has `bundleIdentifier,displayName,appPath,risk,warningSubtitle` | S, XPC? | Preflight only; policy decides whether later approval/action is possible | Forbidden-target and risk classifier; `MacAppPolicyTests`, `SkyProtocolTests` | Dynamic organization allow/deny ingestion remains `KNOWN_DIFFERENCE` | IMPLEMENTED |
+| `ComputerUseIPCAppStartRequest` | `app` | `SkyshotResult {app,skyshot,appSpecificInstructions?}` | S, XPC? | Policy, user-stop latch, AX and screenshot TCC; starts App session and full baseline | Full initial state; `SkyProtocolTests`, official client | Already-running timing is `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCAppGetSkyshotRequest` | `app,disableDiff` | `SkyshotResult {app,skyshot,appSpecificInstructions?}` where `skyshot {text,screenshot?}` | S, AE, XPC? | Same gates as Start; refreshes action/intervention baseline | Full/diff AX plus screenshot; `SkyProtocolTests`, AX/tree/screenshot tests, official client | ARM loading/refetch constants remain partly oracle-dependent | IMPLEMENTED |
+| `ComputerUseIPCAppPerformActionRequest` | `app,action` | Public client returns void; Intel `{}`. ARM `ActionResult {app,skyshot}` metadata exists, but binding it to this handler is unproved | S, XPC? | Requires approved active target, fresh state, unlocked screen; text injection also rejects Secure Input | All action cases; `MacAppActionPerformerTests`, official client actions | Exact ignored ARM result payload is `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCAppStopRequest` | `app` | empty | S, AE, XPC? | User action; turn-scoped stop latch, cancels operations/streams/PIP | Session coordinator; `ComputerUseSessionCoordinatorTests`, bridge/router tests | Exact non-cooperative cancellation timing is `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCAppModifyRequest` | `app,modification` (`activate\|deactivate`) | `AppState {active,currentApp?}` | S, XPC? | Policy and stop latch on activate; deactivation ends app-scoped presentation without latching user stop | `MacAppLifecycleProvider`; lifecycle/router tests | No installed Intel caller; idempotence timing is `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCFrontmostWindowRequest` | empty | optional `FrontmostWindow {bundleIdentifier,name,windowTitle?}` or `null` | S, XPC? | Read-only | NSWorkspace + focused AX window; lifecycle/router tests | Exact official filtering/title choice is `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCCodexStatusItemMenuStateRequest` | empty | `CodexStatusItemMenuState {computerUse,computerHistory}` and nested active/recent App descriptors | S, AE, XPC? | Read-only status menu | Session registry; status/bridge tests | Installed Intel caller confirmed | IMPLEMENTED |
+| `ComputerUseIPCCodexTurnEndedRequest` | `threadID,turnID` | empty | S, XPC? | Ends only matching turn; revokes streams/PIP/cursor/session before focus restoration | Unified turn coordinator; lifecycle/router tests | Component ordering `HIGH_CONFIDENCE`; ARM runtime ordering needs oracle | IMPLEMENTED |
+| `ComputerUseIPCAppStartCaptureRequest` | `app,requestID,permissionRequestID,animationTarget,version` | `StartCaptureResponse {result,animationDuration?,transitionSnapshotHeight?,transitionSpringResponse?,transitionSpringDampingFraction?,permissionGrantState?}` | S, AE, XPC? | Policy, AX/Screen TCC; owns session by connection/AE sender and turn | Continuous socket producer; finite AE Appshot sequence; `AppCaptureSessionTests`, bridge tests | Producer is polling-based; official change/reliable-final-frame machinery is `PARTIAL` | IMPLEMENTED |
+| `ComputerUseIPCAppNextCaptureUpdateRequest` | `requestID` | `CaptureUpdate {type,app,text?,screenshot?,transitionSnapshotURL?,failureReason?}`; types `metadata\|axText\|screenshot\|completed\|failed` | S, AE, XPC? | Owner-only long poll; deadline, disconnect and lifecycle terminal behavior | Bounded/coalescing queue; `AppCaptureSessionTests`, router/bridge tests | Exact ARM backpressure and disconnect visibility are `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCEventStreamStartRequest` | empty | `EventStreamSessionStatus` | S, XPC? | Requires Input Monitoring; connection/thread owned; 30-minute maximum | Direct event tap + AX sampler + owner-only JSONL; `EventStreamSessionTests`, router tests | Exact debounce/buffering and URL policy database are `PARTIAL` | IMPLEMENTED |
+| `ComputerUseIPCEventStreamStatusRequest` | empty | `EventStreamSessionStatus {isRecording,sessionID?,sessionDirectoryPath?,eventsPath?,metadataPath?,suppressedEventsPath?,startedAt?,endedAt?,endReason?,maxDurationSeconds}` | S, XPC? | Read-only; latest session retained | `EventStreamSessionManager`; event/router tests | Cached MCP disconnect behavior remains `NEEDS_ARM_ORACLE` | IMPLEMENTED |
+| `ComputerUseIPCEventStreamStopRequest` | `reason` (`toolStopped\|debugUIStopped\|recordingControlsStopped\|recordingControlsCancelled\|maxDuration\|serviceTerminated`) | `EventStreamSessionStatus` | S, XPC? | Explicit terminal transition; drains/writes metadata and closes tap/files | `EventStreamSessionManager`; event/router tests | Exact caller-specific end-reason choice needs oracle | IMPLEMENTED |
 
-| Request type | Request fields | Response | Transport / observed caller | Lifecycle, approval, entitlement | Intel state and tests | Remaining difference / evidence |
-| --- | --- | --- | --- | --- | --- | --- |
-| `ComputerUseIPCListAppsRequest` | empty | `[ComputerUseIPCDiscoveredApp]`: `displayName, bundleIdentifier, appPath, lastUsedDate, useCount, isRunning, isFrontmost` | Socket; public `MacComputerUseClient.listApps` | No target approval; deadline only | Implemented; `WorkspaceAppCatalogTests`, `SkyProtocolTests` | Exact ARM filtering/dedup remains `NEEDS_ARM_ORACLE`; schema `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCAppPolicyRequest` | `app` | `ComputerUseIPCAppPolicyResult { decision, target, allowPersistentApproval }` | Socket; public wrapper before App operations | No mutation; local forbidden-target policy; organization approval remains caller-owned | Implemented; `MacAppPolicyTests`, `SkyProtocolTests` | Dynamic organization allow/deny ingestion is `KNOWN_DIFFERENCE`; schema `CONFIRMED_CLIENT_SOURCE`. |
-| `ComputerUseIPCAppStartRequest` | `app` | `ComputerUseIPCSkyshotResult { app, skyshot?, appSpecificInstructions? }` | Socket; public low-level client | App approval, policy, Accessibility/Screen Recording; starts a fresh full snapshot | Implemented; `SkyProtocolTests`, `MacAppStateProviderTests` coverage is in state/action suites | Already-running timing is `NEEDS_ARM_ORACLE`; fields `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCAppGetSkyshotRequest` | `app, disableDiff?` | `ComputerUseIPCSkyshotResult`; Skyshot is `text, screenshot? { url, mimeType }` | Socket and native Apple Event; public `get_app_state` and Appshot | App approval; policy; user-stop/intervention/requery; lock; turn-scoped session | Implemented; `SkyProtocolTests`, `ElementSnapshotCacheTests`, AX/diff/screenshot tests | Exact AX text/transient-window serialization is `PARTIAL` / `NEEDS_ARM_ORACLE`; public schema `CONFIRMED_CLIENT_SOURCE`. |
-| `ComputerUseIPCAppPerformActionRequest` | `app, action`; action cases `click, performSecondaryAction, setValue, selectText, scroll, drag, pressKey, type, paste` | empty | Socket; all 11 public window APIs | App approval/policy; current snapshot; target-scoped input; deadline/cancel; Secure Input/lock/intervention | Implemented; `MacAppActionPerformerTests`, keyboard/scroll/AX/paste/policy tests | Exact role fallbacks, timing, text markers, and layout semantics are `PARTIAL`; cases `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCAppStopRequest` | `app` | empty | Socket and native Apple Event; ChatGPT status item | Human stop latches App for current turn; cancels work/capture/PIP | Implemented; `ComputerUseSessionCoordinatorTests`, native bridge/PIP tests | Real status-item click remains `NEEDS_ARM_ORACLE`; caller `CONFIRMED_CLIENT_SOURCE`. |
-| `ComputerUseIPCAppModifyRequest` | `app, modification: activate \| deactivate` | `ComputerUseIPCAppState { active, currentApp? }` | Socket; no installed Intel caller located | Policy; session activation/deactivation; deactivation ends App presentation without macOS focus theft | Implemented; `SkyProtocolTests`, session tests | Exact idempotence/launch timing `NEEDS_ARM_ORACLE`; schema/handler `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCFrontmostWindowRequest` | empty | optional `ComputerUseIPCFrontmostWindow { bundleIdentifier, name, windowTitle? }` | Socket; no installed Intel caller located | Read-only; Accessibility title is optional; deadline | Implemented; `SkyProtocolTests` | Exact filtering/title selection `NEEDS_ARM_ORACLE`; schema `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCCodexStatusItemMenuStateRequest` | empty | `ComputerUseIPCCodexStatusItemMenuState { computerUse, computerHistory }` | Socket and native Apple Event; ChatGPT status item | Read-only current App/History state | Implemented; `ComputerUseSessionCoordinatorTests`, native bridge tests | Computer History intentionally reports stopped/unavailable; Skysight history is `OUT_OF_SCOPE`. Caller `CONFIRMED_CLIENT_SOURCE`. |
-| `ComputerUseIPCCodexTurnEndedRequest` | `threadID, turnID` | empty | Socket; host lifecycle caller | Ends matching capture/event/PIP/cursor/session/focus; ordered cleanup before safe focus restore | Implemented; `ComputerUseTurnLifecycleTests`, focus/capture/event/PIP tests | Dynamic host caller identity/timing `NEEDS_ARM_ORACLE`; fields `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCAppStartCaptureRequest` | `app, requestID, permissionRequestID, animationTarget, version` | `ComputerUseIPCAppStartCaptureResponse { result, animationDuration?, transitionSnapshotHeight?, transitionSpringResponse?, transitionSpringDampingFraction?, permissionGrantState? }` | Socket and native Apple Event; Intel ChatGPT Appshot worker | Per-client ownership; unique ID; policy/approval/TCC; lifecycle generation; async producer | Implemented as true async stream; `AppCaptureSessionTests`, native bridge tests | Polling instead of recovered official change notification/reliable-final-frame mechanism is `PARTIAL`; fields `CONFIRMED_STATIC_BINARY`, caller `CONFIRMED_CLIENT_SOURCE`. |
-| `ComputerUseIPCAppNextCaptureUpdateRequest` | `requestID` | `ComputerUseIPCCaptureUpdate { type, app, text?, screenshot?, transitionSnapshotURL?, failureReason? }` | Socket and native Apple Event; Appshot worker | Owner-only long poll; deadline; bounded/coalescing queue; disconnect/turn/stop/lock/shutdown cleanup | Implemented; `AppCaptureSessionTests`, `SkyProtocolTests` | Official disconnect terminal visibility and exact notification cadence `NEEDS_ARM_ORACLE`; union `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCEventStreamStartRequest` | empty | `ComputerUseIPCEventStreamSessionStatus` (10 fields) | Socket; Record & Replay controls | Explicit recording; Input Monitoring required; owner/thread scoped; 30-minute max | Implemented; `EventStreamSessionTests`, `SkyProtocolTests` | Exact official debounce, URL policy, and buffers `PARTIAL`; schema/lifecycle `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCEventStreamStatusRequest` | empty | same 10-field status | Socket; Record & Replay controls | Read-only latest/active session status | Implemented; Event Stream tests | Caller runtime remains `NEEDS_ARM_ORACLE`; fields `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCEventStreamStopRequest` | `reason` | same 10-field status | Socket; Record & Replay controls | Valid reason; drains records and atomically closes owner-only files | Implemented; Event Stream tests | Exact controls reason selection `NEEDS_ARM_ORACLE`; reason enum `CONFIRMED_STATIC_BINARY`. |
+### `ComputerUseIPCAction` payload cases
 
-Capture update types are exactly `metadata, axText, screenshot, completed, failed`; failure reasons
-are `blockedByPolicy, screenshotCaptureFailed, unknownCaptureFailed`. Event Stream end reasons are
-`toolStopped, debugUIStopped, recordingControlsStopped, recordingControlsCancelled, maxDuration,
-serviceTerminated`. These are `CONFIRMED_STATIC_BINARY`.
+ARM metadata confirms the cases `click`, `performSecondaryAction`, `setValue`, `selectText`,
+`scroll`, `drag`, `pressKey`, `type`, and `paste`. Location is either
+`coordinate { _0:[x,y] }` or `elementID { _0:String }`; scroll direction is
+`up|down|left|right`; paste format is `text|md|html`; selection is
+`text|cursorBefore|cursorAfter`. The installed public client confirms its concrete JSON spelling.
+Action-specific policy, coordinate, focus, cursor, intervention, deadline, and stale-element behavior
+is indexed in `OfficialBehaviorNotes.md` and covered by the action/AX/input test files.
 
-## Catalogued requests intentionally out of scope
+## Explicitly out-of-scope request directory
 
-These types are present in ARM field metadata and are not inferred from names alone: their fields
-below come from the emitted Swift field records. Intel explicitly keeps the exact 19 names in
-`SkyProtocol.outOfScopeRequestTypes`; socket tests send every one and require immediate `-10003`
-without invoking an App/state/action provider. They do not block the visual-runtime goal.
+These 19 types are retained in the protocol inventory but intentionally not implemented. Intel
+returns the protocol-compatible `couldNotResolveRequestType (-10003)` envelope before dispatching
+any provider, does not prompt, and produces no side effect (`SkyProtocolTests`). This is the safe
+behavior required by the goal; the request rows remain `OUT_OF_SCOPE`.
 
-| Request type | Request fields | Static response type / caller evidence | Transport, approval, entitlement | Intel state and test | Evidence / remaining work |
-| --- | --- | --- | --- | --- | --- |
-| `ComputerUseIPCStartAudioRecordingRequest` | `maxDurationMilliseconds` | empty; public JS validates 100...300000 ms and asks host audio approval | Socket; microphone/TCC and explicit audio approval | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_CLIENT_SOURCE`, `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCStopAudioRecordingRequest` | empty | `ComputerUseIPCAudio { url? }`; public JS requires local WAV URL | Socket; same audio approval domain | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_CLIENT_SOURCE`, `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightStartRequest` | empty | `ComputerUseIPCSkysightStatus` | Socket/XPC service dispatch; Skysight UI | Observation policy and history consent; exact entitlement `NEEDS_ARM_ORACLE` | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightStatusRequest` | empty | `ComputerUseIPCSkysightStatus` | same | read-only | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightStopRequest` | empty | `ComputerUseIPCSkysightStatus` | same | ends observation/history streams | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightPauseRequest` | `duration: thirtyMinutes \| oneHour \| untilTomorrow` | `ComputerUseIPCSkysightStatus` | same | observation lifecycle | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightResumeRequest` | empty | `ComputerUseIPCSkysightStatus` | same | observation lifecycle | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightClearHistoryRequest` | `scope, interval` | empty/status not uniquely recovered | same | destructive history operation would require explicit user intent | `OUT_OF_SCOPE`; safe unsupported test | Response is `NEEDS_ARM_ORACLE`; fields `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightGetSettingsRequest` | empty | `ComputerUseIPCSkysightSettings` | same | read-only settings | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightUpdateSettingsRequest` | `settings` | `ComputerUseIPCSkysightSettings`/empty not uniquely recovered | same | mutates observation settings | `OUT_OF_SCOPE`; safe unsupported test | Response `NEEDS_ARM_ORACLE`; fields `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCSkysightUpdateObservationPolicyRequest` | `target, observe` | status/empty not uniquely recovered | same | mutates target observation policy | `OUT_OF_SCOPE`; safe unsupported test | Response `NEEDS_ARM_ORACLE`; fields `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesPrepareSendRequest` | `chatGUID, recipients, text, attachments` | `ComputerUseIPCMessagesPreparedSend { planID, chatGUID, displayName, text, attachments }` | Socket/XPC service dispatch; Messages MCP approval path | Messages permission plus explicit send-plan approval; entitlement/database requirements `NEEDS_ARM_ORACLE` | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesCommitSendRequest` | `planID, text` | `ComputerUseIPCMessagesSendResult` | same | consumes approved plan; send side effect | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesFindChatsRequest` | `participants, exactParticipants, name, fromDate, toDate, unreadOnly, limit` | `ComputerUseIPCMessagesChatsPage` | same | Messages read permission | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesSearchChatsRequest` | `query, limit` | `ComputerUseIPCMessagesChatSearchPage` | same | Messages read permission | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesReadMessagesRequest` | `chatGUID, fromDate, toDate, unreadOnly, limit, cursor` | `ComputerUseIPCMessagesMessagesPage` | same | Messages read permission | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesSearchMessagesRequest` | `text, chatGUIDs, participants, exactParticipants, fromDate, toDate, limit, cursor` | `ComputerUseIPCMessagesMessagesPage` | same | Messages read permission | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesCountActivityRequest` | `fromDate, toDate, interval, chatType, chatGUIDs, breakdown, rankBy, chatLimit, cursor` | `ComputerUseIPCMessagesActivityResult` | same | Messages read permission | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`. |
-| `ComputerUseIPCMessagesReadImageRequest` | `id` | `ComputerUseIPCMessagesImage { data, mimeType, chatGUID, chatDisplayName }` | same | Messages attachment permission; bounded data policy not recovered | `OUT_OF_SCOPE`; safe unsupported test | `CONFIRMED_STATIC_BINARY`; bounds `NEEDS_ARM_ORACLE`. |
+| Request | Stored request fields | Known/expected ARM result fields | Transport / caller | Permission and lifecycle | Intel behavior / test | Evidence gap | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ComputerUseIPCStartAudioRecordingRequest` | `maxDurationMilliseconds` | empty | S, XPC?; public `@oai/sky` | Explicit host audio approval; client accepts integer 100...300000 ms (default 60000); exact TCC domain is out of scope | Safe unsupported; catalog test | Client source + metadata | OUT_OF_SCOPE |
+| `ComputerUseIPCStopAudioRecordingRequest` | empty | `Audio {url?}` (24 kHz stereo WAV in client docs) | S, XPC?; public `@oai/sky` | Ends current audio recording | Safe unsupported; catalog test | Client source + metadata | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightStartRequest` | empty | likely `SkysightStatus`; exact handler binding unproved | S, XPC?; ChatGPT history controls | Observation approval/settings; starts segment writer | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` result binding | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightStatusRequest` | empty | `SkysightStatus {state,eventStreamRootPath,currentSegmentEventsPath,currentSegmentMetadataPath,suppressedEventsPath,startedAt,endedAt}` | S, XPC? | Read-only | Safe unsupported; catalog test | Named response metadata; handler binding `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightStopRequest` | empty | likely `SkysightStatus` | S, XPC? | Ends observation/segments | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` exact payload | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightPauseRequest` | `duration` (`thirtyMinutes\|oneHour\|untilTomorrow`) | likely `SkysightStatus` | S, XPC? | Timed pause | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` exact payload | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightResumeRequest` | empty | likely `SkysightStatus` | S, XPC? | Resumes paused observation | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` exact payload | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightClearHistoryRequest` | `scope,interval`; interval is meaningful for scope `interval`; scope cases `applicationSession\|lastTenMinutes\|lastHour\|lastDay\|all\|interval` | exact result not recovered | S, XPC?; history controls | Destructive user-approved history operation | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightGetSettingsRequest` | empty | `SkysightSettings {observation}` with defaults/allowlist/blocklist | S, XPC? | Read-only | Safe unsupported; catalog test | Named response metadata; binding `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightUpdateSettingsRequest` | `settings` | likely `SkysightSettings` or empty | S, XPC? | User settings mutation | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` exact result | OUT_OF_SCOPE |
+| `ComputerUseIPCSkysightUpdateObservationPolicyRequest` | `target,observe` | likely `SkysightSettings` or empty | S, XPC? | User observation allow/block mutation | Safe unsupported; catalog test | `NEEDS_ARM_ORACLE` exact result | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesPrepareSendRequest` | `chatGUID,recipients,text,attachments` | `MessagesPreparedSend {planID,chatGUID,displayName,text,attachments}` | S, XPC?; Messages coordinator/MCP | Messages permission; prepares but does not send | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE`; runtime binding needs oracle | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesCommitSendRequest` | `planID,text` | `MessagesSendResult {destinationKind,chatGUID,displayName,participants,service,text,attachments,sentAt}` | S, XPC?; Messages coordinator/MCP | Explicit commit; rate limit and uncertain-outcome errors | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE`; runtime binding needs oracle | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesFindChatsRequest` | `participants,exactParticipants,name,fromDate,toDate,unreadOnly,limit` | `MessagesChatsPage {chats,participants,hasMore}` | S, XPC?; Messages MCP | Messages permission; query timeout | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesSearchChatsRequest` | `query,limit` | `MessagesChatSearchPage {chats,hasMore}` | S, XPC?; Messages MCP | Messages permission; query timeout | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesReadMessagesRequest` | `chatGUID,fromDate,toDate,unreadOnly,limit,cursor` | `MessagesMessagesPage {chats,senders,messages,nextCursor}` | S, XPC?; Messages MCP | Messages permission; query timeout | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesSearchMessagesRequest` | `text,chatGUIDs,participants,exactParticipants,fromDate,toDate,limit,cursor` | `MessagesMessagesPage {chats,senders,messages,nextCursor}` | S, XPC?; Messages MCP | Messages permission; query timeout | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesCountActivityRequest` | `fromDate,toDate,interval,chatType,chatGUIDs,breakdown,rankBy,chatLimit,cursor` | `MessagesActivityResult {breakdown,range,interval,timeZoneIdentifier,buckets,matchingChatCount,overallActivity,chats,participants,nextCursor}` | S, XPC?; Messages MCP | Messages permission; aggregate query | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
+| `ComputerUseIPCMessagesReadImageRequest` | `id` | `MessagesImage {data,mimeType,chatGUID,chatDisplayName}` | S, XPC?; Messages MCP | Messages permission; attachment read | Safe unsupported; catalog test | Named types `HIGH_CONFIDENCE` | OUT_OF_SCOPE |
 
-## Non-request lifecycle and presentation protocols
+## Asynchronous records and notifications
 
-| Surface | Wire members | Authorization / lifecycle | Intel state | Evidence / difference |
+| Type | Fields / cases | Transport and lifecycle | Intel status | Evidence |
 | --- | --- | --- | --- | --- |
-| Capture update union | types and failures listed above; owner uses `requestID` | Start/Next ownership, backpressure, deadline, disconnect, App stop/deactivate, turn, lock, intervention, shutdown | Implemented | `PARTIAL` polling producer. |
-| Status notification | `ComputerUseIPCCodexStatusItemStateNotification` | ChatGPT status item; observer lifecycle | Status is query-compatible; unsolicited notification transport is not implemented | `PARTIAL`, `NEEDS_ARM_ORACLE`. |
-| Intel Remote Hosted PIP host XPC | `publishPresentation`, `setSourceProcessIdentifier`, `prepareOperation`, `completeOperation`, `willEndStream`, `invalidatePresentation`, `noteInteraction`, `setComputerUseCursorLocation` | Bidirectional anonymous XPC endpoint; signed ChatGPT only; presentation keyed by thread/turn/App | Implemented, including fenced `resize` and `replace-context` | Selector ABI `CONFIRMED_INTEL_STATIC_BINARY`; managed live-frame verification pending. |
-| Intel PIP producer XPC | `connect`, `setMaxDisplaySize`, `performAction`, `didEndStream` | Host connection/reconnection; action is `focus-presentation` | Implemented; reconnect republishes live contexts | `HIGH_CONFIDENCE`; full host restart smoke pending. |
-| ChatGPT Appshot worker events | `computer-use-start-capture`, asynchronous `computer-use-capture-updated` | Renderer/worker bridge; permission request and turn-scoped task | Native Apple Event Start/Next path implemented | Caller `CONFIRMED_CLIENT_SOURCE`; attended run pending. |
-| Lock Screen Guardian | ARM XPC client/helper callbacks include physical input and connection loss | Independent helper, unlock task, fail-closed connection semantics | Intel uses direct session/console checks and Event Tap; no helper App | Necessity is `NEEDS_ARM_ORACLE`; helper is not required by current proven Intel behavior. |
+| `ComputerUseIPCCaptureUpdate` | `type,app,text?,screenshot?,transitionSnapshotURL?,failureReason?`; failure `blockedByPolicy\|screenshotCaptureFailed\|unknownCaptureFailed` | Pulled by `AppNextCaptureUpdate`; terminal on completed/failed/cancel/turn/lock/disconnect | Implemented, bounded/coalescing long-poll stream | ARM metadata + Intel tests/runtime |
+| `ComputerUseIPCCodexStatusItemStateNotification` | no stored fields; payload delivery schema not recovered | ARM notification publisher; exact socket/XPC subscription is `NEEDS_ARM_ORACLE` | Menu state is queryable; push subscription is `PARTIAL` | ARM metadata/static symbols |
+| Event Stream JSONL | kinds `session.started`, `session.ended`, `window.changed`, `mouse.click`, `mouse.context_menu`, `mouse.drag`, `keyboard.text_input`, `keyboard.submit`, `keyboard.shortcut`, `terminal.value_changed`, `selection.changed`, `debug.error` | Owner-only files; terminal on explicit stop, turn, disconnect, lock, duration or service exit | Implemented | ARM strings/metadata + Intel tests |
 
-## Coverage invariants
+## Remote Hosted PIP XPC protocol
 
-- Every implemented socket request has a routing/schema/error test; high-risk actions additionally
-  have snapshot, policy, intervention, lock, targeting, and cancellation tests.
-- All 19 `OUT_OF_SCOPE` request names are executable test data and must remain safe unsupported.
-- Private PIP SPI is dynamically checked. Missing CAContext/fence/host state degrades the optional
-  presentation and never changes the underlying Computer Use request result.
-- No code path modifies or resigns `/Applications/ChatGPT.app`, claims Team `2DC432GLL2`, moves the
-  physical pointer, globally broadcasts target input, accesses Messages, records audio, or starts
-  Skysight.
+PIP is not a JSON-RPC request type. Intel receives an authenticated `SkCu/PiPB` bootstrap Apple
+Event carrying bridge version, sender PID, and Mach reply port, then transfers an anonymous XPC
+endpoint. The Intel ChatGPT `sky.node` host is accepted only when it is x86_64, signed by Team ID
+`2DC432GLL2`, and exposes all selectors below. Replies are `NSError?` blocks.
+
+| Direction | Selector | Fields / operation | Intel status |
+| --- | --- | --- | --- |
+| Producer → host | `publishPresentationWithID:threadID:turnID:contextID:width:height:withReply:` | presentation/turn identity, CAContext ID, logical size | Implemented |
+| Producer → host | `setSourceProcessIdentifier:forPresentationWithID:withReply:` | target PID and presentation | Implemented |
+| Producer → host | `prepareOperationWithPresentationID:operationID:kind:contextID:width:height:fencePayload:withReply:` | resize or context replacement plus XPC Mach-send fence | Implemented |
+| Producer → host | `completeOperationWithPresentationID:operationID:withReply:` | operation commit | Implemented |
+| Producer → host | `willEndStreamWithPresentationID:withReply:` | graceful end handshake | Implemented |
+| Producer → host | `invalidatePresentationWithID:withReply:` | final invalidation | Implemented |
+| Producer → host | `noteInteractionWithPresentationID:withReply:` | user interaction notification | Implemented |
+| Producer → host | `setComputerUseCursorLocationWithX:y:isActive:withReply:` | global virtual cursor position/active state | Implemented; pressed style is producer-layer state |
+| Host → producer | `connectWithReply:` | host connection readiness | Implemented |
+| Host → producer | `setMaxDisplaySize:withReply:` | maximum logical display dimension | Implemented |
+| Host → producer | `performActionWithPresentationID:kind:withReply:` | currently confirmed `focus-presentation` | Implemented |
+| Host → producer | `didEndStreamWithPresentationID:withReply:` | host completed graceful end | Implemented |
+
+The ABI encodings and XPC fence-class configuration are asserted by
+`RemoteHostedPIPProtocolsTests`, `RemoteHostedPIPConnectionTests`, and
+`Scripts/audit-pip-host.sh`. Continuous first-frame, resize, cursor, window/PID replacement and
+stale-presentation visual acceptance still require the attended matrix in `OfficialBehaviorNotes.md`.
+
+## Safety invariants
+
+- Every implemented socket request has a routing/schema/error test; high-risk operations also have
+  snapshot, policy, intervention, lock, targeting, cancellation, stream, or presentation tests as
+  appropriate.
+- All 19 `OUT_OF_SCOPE` names are executable test data and must return before any provider runs,
+  permission prompt appears, or side effect occurs.
+- Missing CAContext, fence, PIP host, or private SPI state degrades only the optional presentation;
+  it cannot change the underlying Computer Use request result.
+- No implementation path modifies or resigns `/Applications/ChatGPT.app`, claims Team ID
+  `2DC432GLL2`, moves the physical pointer, globally broadcasts target input, accesses Messages,
+  records audio, or starts Skysight.
+
+## Error directory
+
+The confirmed service codes are `senderProcessNotAuthenticated -10000`, `couldNotGetRequestData
+-10001`, `couldNotGetRequestTypeName -10002`, `couldNotResolveRequestType -10003`, `unhandledEvent
+-10004`, `unknownError -10005`, `appNotAllowed -10006`, `runningApplicationNotFound -10007`,
+`accessibilityError -10008`, `permissionsNotGranted -10009`, `invalidApp -10010`,
+`noActiveSession -10011`, `userStoppedSession -10012`, `incompatibleClientVersion -10013`,
+`permissionsPending -10014`, `blockedURL -10015`, `userIntervened -10016`,
+`couldNotGetSenderPID -10017`, `ambiguousApp -10018`, `couldNotGetBootstrapPort -10019`, and
+`screenLocked -10020`. ARM metadata additionally contains post-baseline Messages/turn-ended cases;
+they remain catalogued but are not emitted by the Intel IPC-5 implementation. JSON-RPC parse,
+invalid-request and unknown-method errors retain standard `-32700`, `-32600`, and `-32601` codes.
+
+## Catalog verification
+
+Run:
+
+```sh
+node --test Tools/reverse/protocol-catalog.test.mjs
+ARM_SKY_BINARY=/path/to/SkyComputerUseService \
+  node --test Tools/reverse/protocol-catalog.test.mjs
+```
+
+The first command proves that the 34 document rows exactly partition the Swift implemented and
+OUT_OF_SCOPE sets, match router dispatch, and mark the five Intel Apple Event request types. When
+an ARM binary is supplied (or the standard mounted reference exists), the same test extracts its
+field metadata and proves that no ARM request is absent or invented.

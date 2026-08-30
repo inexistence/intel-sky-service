@@ -27,6 +27,9 @@ replace when stronger evidence appears.
 - The x86_64 and ARM64 bundles inspected on 2026-08-30 contain byte-identical macOS
   `client.js` files.
 - ARM service bundle: `com.openai.sky.CUAService`, build `26.828.1000919`, arm64.
+- `ProtocolCatalog.md` is the request-by-request wire index. Its machine check proves that the 15
+  implemented and 19 `OUT_OF_SCOPE` requests exactly match all 34 ARM request descriptors, router
+  dispatch, and the five authenticated Intel Apple Event cases. `CONFIRMED_STATIC_BINARY`.
 
 ## Public Window API matrix
 
@@ -862,9 +865,9 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 230 Swift tests, the six-case Node oracle suite, the
-  soft-link hash test, the 12-selector Intel PIP-host audit, and an x86_64 release build compiled
-  with warnings as errors.
+- The current runtime checkpoint passes 231 Swift tests, the six-case Node oracle suite, the
+  four-case protocol-catalog verifier, the soft-link hash test, the 12-selector Intel PIP-host
+  audit, and an x86_64 release build compiled with warnings as errors.
 
 ## Oracle backlog
 

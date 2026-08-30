@@ -2,6 +2,23 @@ import Foundation
 
 public enum SkyProtocol {
   public static let apiVersion = "CodexComputerUseIPC-5"
+  public static let implementedRequestTypes: Set<String> = [
+    "ComputerUseIPCAppGetSkyshotRequest",
+    "ComputerUseIPCAppModifyRequest",
+    "ComputerUseIPCAppNextCaptureUpdateRequest",
+    "ComputerUseIPCAppPerformActionRequest",
+    "ComputerUseIPCAppPolicyRequest",
+    "ComputerUseIPCAppStartCaptureRequest",
+    "ComputerUseIPCAppStartRequest",
+    "ComputerUseIPCAppStopRequest",
+    "ComputerUseIPCCodexStatusItemMenuStateRequest",
+    "ComputerUseIPCCodexTurnEndedRequest",
+    "ComputerUseIPCEventStreamStartRequest",
+    "ComputerUseIPCEventStreamStatusRequest",
+    "ComputerUseIPCEventStreamStopRequest",
+    "ComputerUseIPCFrontmostWindowRequest",
+    "ComputerUseIPCListAppsRequest",
+  ]
   public static let outOfScopeRequestTypes: Set<String> = [
     "ComputerUseIPCStartAudioRecordingRequest",
     "ComputerUseIPCStopAudioRecordingRequest",

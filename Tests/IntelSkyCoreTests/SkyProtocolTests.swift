@@ -389,6 +389,17 @@ private func requestPayload(id: Int, type: String, request: [String: Any]) throw
   }
 }
 
+@Test func protocolRequestCatalogPartitionsEveryKnownARMRequest() {
+  #expect(SkyProtocol.implementedRequestTypes.count == 15)
+  #expect(SkyProtocol.outOfScopeRequestTypes.count == 19)
+  #expect(
+    SkyProtocol.implementedRequestTypes.isDisjoint(with: SkyProtocol.outOfScopeRequestTypes)
+  )
+  #expect(
+    SkyProtocol.implementedRequestTypes.union(SkyProtocol.outOfScopeRequestTypes).count == 34
+  )
+}
+
 @Test func appRequestRequiresObjectPayload() throws {
   let request = try JSONSerialization.data(withJSONObject: [
     "jsonrpc": "2.0",
