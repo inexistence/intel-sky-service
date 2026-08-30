@@ -655,9 +655,10 @@ frames with zero drops. A timed action capture then exposed that a plain `CGImag
 content did not traverse the cross-process CAContext even though cursor position/state updated.
 The cursor rendition is therefore now copied into an IOSurface-backed BGRA pixel buffer and wrapped
 with the same `CAIOSurfaceCreate` path proven by live frames. Unit coverage asserts both cursor
-contents and the IOSurface transport. Final deployed cursor appearance remains pending the next
-managed restart and attended verification. `CONFIRMED_INTEL_RUNTIME` for geometry/live content;
-`PARTIAL` for cursor presentation.
+contents and the IOSurface transport. After deployment and a clean managed restart, an official
+coordinate scroll followed by an action-synchronized screen capture showed the ARM SoftwareCursor
+inside the Notes PIP at the mapped source coordinate; no separate cursor panel appeared outside the
+PIP. `CONFIRMED_INTEL_RUNTIME` for geometry, live content, and cursor presentation.
 
 Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
 producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
@@ -681,17 +682,19 @@ The Mach-send fence envelope is covered by a real bidirectional XPC test. Authen
 enabled for argument-free managed launches; `--disable-pip` is the explicit rollback switch and the
 old `--experimental-pip` flag is a compatibility alias. PIP failure remains isolated from the
 Computer Use response. `HIGH_CONFIDENCE` for the implemented protocol and local/cross-signature
-smokes. Dynamic managed-host initial/live frames and fitted geometry are now confirmed. Cursor,
-resize, PID replacement, host reconnect, turn end, and long-running recovery stress remain pending
-attended verification.
+smokes. Dynamic managed-host initial/live frames, fitted geometry, and internal cursor composition
+are now confirmed. Resize, PID replacement, host reconnect, turn end, and long-running recovery
+stress remain pending attended verification.
 
 A subsequent ChatGPT restart exposed a managed-lifecycle defect: the prior service survived its
 launching ChatGPT process, was reparented to PID 1, retained the Unix socket, and caused the next
 managed service to exit before the host's bootstrap Apple Event. Intel now installs a process-exit
 dispatch source for every non-launchd launch parent and shuts down the server when that exact parent
 exits; direct launchd/Finder launches with parent PID 1 remain supported. An isolated release-binary
-test confirmed that ending the launcher removes both the child process and its owned socket.
-`CONFIRMED_INTEL_RUNTIME`; the next full ChatGPT restart remains the managed-host verification.
+test confirmed that ending the launcher removes both the child process and its owned socket. The
+following clean ChatGPT launch produced exactly one managed child (PID 72508 of host PID 71959),
+completed endpoint bootstrap on attempt 1, connected XPC, received the 200-point maximum, and
+published the fitted Notes presentation. `CONFIRMED_INTEL_RUNTIME`.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,
