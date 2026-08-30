@@ -58,6 +58,8 @@ import UniformTypeIdentifiers
 
 @Test func pipSurfaceMapsGlobalCursorIntoPresentationAndTracksPressedState() throws {
   let surface = try RemoteHostedPIPSurface(size: CGSize(width: 1_000, height: 500))
+  #expect(surface.hasCursorContents)
+  #expect(surface.usesCAIOSurfaceCursorContents)
   surface.setMaximumDisplayDimension(200)
   surface.updateTargetBounds(CGRect(x: 100, y: 200, width: 1_000, height: 500))
 

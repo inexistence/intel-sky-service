@@ -643,12 +643,21 @@ explain both attended failures: Intel had published the full source pixel size a
 for a 200-point maximum, and its fallback `NSPanel` cursor remained outside the official PIP.
 `CONFIRMED_STATIC_BINARY` / `CONFIRMED_INTEL_RUNTIME`.
 
-The pending Intel correction now separates source, presentation, and 2x capture sizes, fits the
-CAContext root to the host maximum, tracks the selected `SCWindow.frame`, and composites an ARM
+The Intel correction now separates source, presentation, and 2x capture sizes, fits the CAContext
+root to the host maximum, tracks the selected `SCWindow.frame`, and composites an ARM
 SoftwareCursor rendition plus click/drag pressed state above the live and fallback layers. When a
 hosted presentation accepts cursor state, the separate local cursor panel is immediately hidden.
-This implementation has unit coverage but remains pending deployment and attended verification.
-`PARTIAL`.
+After a clean ChatGPT-managed restart, the official `@oai/sky` client published Notes through the
+authenticated XPC host as a complete 200x162-point presentation backed by a 400x324 capture; a
+screen capture confirmed the whole 851x689 source window and a common four-corner mask rather than
+the previously cropped lower-left source region. The stream enqueued and displayed 18 initial
+frames with zero drops. A timed action capture then exposed that a plain `CGImage` cursor-layer
+content did not traverse the cross-process CAContext even though cursor position/state updated.
+The cursor rendition is therefore now copied into an IOSurface-backed BGRA pixel buffer and wrapped
+with the same `CAIOSurfaceCreate` path proven by live frames. Unit coverage asserts both cursor
+contents and the IOSurface transport. Final deployed cursor appearance remains pending the next
+managed restart and attended verification. `CONFIRMED_INTEL_RUNTIME` for geometry/live content;
+`PARTIAL` for cursor presentation.
 
 Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
 producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
@@ -672,8 +681,9 @@ The Mach-send fence envelope is covered by a real bidirectional XPC test. Authen
 enabled for argument-free managed launches; `--disable-pip` is the explicit rollback switch and the
 old `--experimental-pip` flag is a compatibility alias. PIP failure remains isolated from the
 Computer Use response. `HIGH_CONFIDENCE` for the implemented protocol and local/cross-signature
-smokes. Dynamic managed-host continuous frames, cursor, resize, PID replacement, host reconnect,
-turn end, and long-running recovery stress remain pending attended verification.
+smokes. Dynamic managed-host initial/live frames and fitted geometry are now confirmed. Cursor,
+resize, PID replacement, host reconnect, turn end, and long-running recovery stress remain pending
+attended verification.
 
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,

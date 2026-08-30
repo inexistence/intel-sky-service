@@ -52,6 +52,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     let displayLayer: AVSampleBufferDisplayLayer
     let cursorLayer: CALayer
     let cursorPressedLayer: CAShapeLayer
+    let cursorUsesCAIOSurfaceContents: Bool
     let contextID: UInt32
   }
 
@@ -62,6 +63,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private let displayLayer: AVSampleBufferDisplayLayer
   private let cursorLayer: CALayer
   private let cursorPressedLayer: CAShapeLayer
+  private let cursorUsesCAIOSurfaceContents: Bool
   let contextID: UInt32
   private var storedSize: CGSize
   private var storedSourceSize: CGSize
@@ -84,6 +86,10 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   var cursorFrame: CGRect? { lock.withLock { storedCursorFrame } }
   var isCursorVisible: Bool { lock.withLock { storedCursorVisible } }
   var isCursorPressed: Bool { lock.withLock { storedCursorPressed } }
+  var hasCursorContents: Bool {
+    Self.onMainThread { self.lock.withLock { self.cursorLayer.contents != nil } }
+  }
+  var usesCAIOSurfaceCursorContents: Bool { cursorUsesCAIOSurfaceContents }
   var hasImageContents: Bool {
     Self.onMainThread { self.lock.withLock { self.imageLayer.contents != nil } }
   }
@@ -161,7 +167,10 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       // both live video and the last-frame fallback so it is exported through the same CAContext.
       let cursorPressedLayer = CAShapeLayer()
       cursorPressedLayer.bounds = CGRect(x: 0, y: 0, width: 20, height: 20)
-      cursorPressedLayer.path = CGPath(ellipseIn: cursorPressedLayer.bounds.insetBy(dx: 2, dy: 2), transform: nil)
+      cursorPressedLayer.path = CGPath(
+        ellipseIn: cursorPressedLayer.bounds.insetBy(dx: 2, dy: 2),
+        transform: nil
+      )
       cursorPressedLayer.fillColor = CGColor(red: 1, green: 0.49, blue: 0.12, alpha: 0.28)
       cursorPressedLayer.strokeColor = CGColor(red: 1, green: 0.49, blue: 0.12, alpha: 0.95)
       cursorPressedLayer.lineWidth = 2
@@ -171,7 +180,8 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
       let cursorLayer = CALayer()
       cursorLayer.bounds = CGRect(x: 0, y: 0, width: 20, height: 23)
       cursorLayer.anchorPoint = CGPoint(x: 0.2, y: 0.88)
-      cursorLayer.contents = Self.softwareCursorImage
+      let cursorContents = Self.softwareCursorLayerContents
+      cursorLayer.contents = cursorContents?.value
       cursorLayer.contentsGravity = .resizeAspect
       cursorLayer.contentsScale = 2
       cursorLayer.shadowColor = CGColor(gray: 0, alpha: 0.55)
@@ -198,6 +208,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
         displayLayer: displayLayer,
         cursorLayer: cursorLayer,
         cursorPressedLayer: cursorPressedLayer,
+        cursorUsesCAIOSurfaceContents: cursorContents?.usesCAIOSurface ?? false,
         contextID: contextID
       )
     }
@@ -208,6 +219,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     displayLayer = state.displayLayer
     cursorLayer = state.cursorLayer
     cursorPressedLayer = state.cursorPressedLayer
+    cursorUsesCAIOSurfaceContents = state.cursorUsesCAIOSurfaceContents
     contextID = state.contextID
     storedSize = size
     storedSourceSize = size
@@ -311,7 +323,8 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         self.cursorLayer.position = contentPoint
-        self.cursorLayer.transform = isPressed
+        self.cursorLayer.transform =
+          isPressed
           ? CATransform3DMakeScale(0.88, 0.88, 1)
           : CATransform3DIdentity
         self.cursorLayer.isHidden = false
@@ -358,6 +371,54 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     else { return nil }
     return CGImageSourceCreateImageAtIndex(source, 0, nil)
   }()
+
+  private static let softwareCursorLayerContents: SendableLayerContents? = {
+    guard let image = softwareCursorImage,
+      let pixelBuffer = makeCursorPixelBuffer(from: image),
+      let surfaceReference = CVPixelBufferGetIOSurface(pixelBuffer)
+    else { return nil }
+    return makeLayerContents(from: surfaceReference.takeUnretainedValue())
+  }()
+
+  private static func makeCursorPixelBuffer(from image: CGImage) -> CVPixelBuffer? {
+    let width = image.width
+    let height = image.height
+    guard width > 0, height > 0 else { return nil }
+    let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary
+    var pixelBuffer: CVPixelBuffer?
+    guard
+      CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width,
+        height,
+        kCVPixelFormatType_32BGRA,
+        attributes,
+        &pixelBuffer
+      ) == kCVReturnSuccess,
+      let pixelBuffer,
+      CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess
+    else { return nil }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+    memset(baseAddress, 0, CVPixelBufferGetDataSize(pixelBuffer))
+    let bitmapInfo =
+      CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    guard
+      let context = CGContext(
+        data: baseAddress,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: bitmapInfo
+      )
+    else { return nil }
+    context.translateBy(x: 0, y: CGFloat(height))
+    context.scaleBy(x: 1, y: -1)
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return pixelBuffer
+  }
 
   func createFencePort() throws -> mach_port_t {
     try Self.onMainThread {
