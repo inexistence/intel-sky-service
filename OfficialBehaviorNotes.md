@@ -769,8 +769,23 @@ only when a different concrete ID appears. A decision regression locks the obser
 replacement branches. After deployment and a clean managed restart, six consecutive official Notes
 state refreshes retained one presentation and one `SCStream`: capture started only once, every state
 returned a screenshot, and the service logged no `-3815`, fallback, recovery, or capture restart.
-`CONFIRMED_INTEL_RUNTIME` for steady background refresh. PID replacement, host reconnect, turn end,
-and long-running recovery stress remain pending attended verification.
+`CONFIRMED_INTEL_RUNTIME` for steady background refresh.
+
+An attended disposable-App test then launched Calculator through the official client, published PID
+19587, terminated only that verified process, and fetched the same target again as PID 19637. Intel
+retained presentation `1B1BED12-3012-4613-8191-D5120F92F937`; the host prepared and completed
+operation 1, and the service logged the context replacement with the exact old/new PIDs. The first
+post-launch response arrived in 611 ms and a following full state showed the complete Calculator
+frame. The target was returned to its initial not-running state afterward.
+`CONFIRMED_INTEL_RUNTIME` for App PID/context replacement.
+
+Three consecutive managed-service termination/recovery cycles reused one persistent official
+client and returned complete 21,780-character Notes states with screenshots in 1,339 ms, 1,145 ms,
+and 1,186 ms. Each successor was a direct ChatGPT child, transferred its bootstrap endpoint on the
+first attempt, accepted XPC, received the 200-point maximum, and published a new complete Notes
+presentation. The final state had one managed service, one socketless watchdog, and a single
+mode-0600 socket owner. `CONFIRMED_INTEL_RUNTIME` for bounded reconnect stress. Explicit turn-end
+and longer-duration recovery stress remain pending attended verification.
 
 Direct inspection of the installed production ASAR narrows reconnect behavior further. The
 remote-hosted-PIP controller clears only its cached PID when the native host reports connection
