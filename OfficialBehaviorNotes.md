@@ -766,8 +766,11 @@ on-screen CGWindow descriptor even while its existing `SCStream` remains valid; 
 temporary absence as a replacement caused one more `-3815` followed by successful recovery. The
 refresh plan now preserves the captured window when no new front ID is observable and reconciles
 only when a different concrete ID appears. A decision regression locks the observable, absent, and
-replacement branches. Post-deployment steady-state confirmation, PID replacement, host reconnect,
-turn end, and long-running recovery stress remain pending attended verification.
+replacement branches. After deployment and a clean managed restart, six consecutive official Notes
+state refreshes retained one presentation and one `SCStream`: capture started only once, every state
+returned a screenshot, and the service logged no `-3815`, fallback, recovery, or capture restart.
+`CONFIRMED_INTEL_RUNTIME` for steady background refresh. PID replacement, host reconnect, turn end,
+and long-running recovery stress remain pending attended verification.
 
 Direct inspection of the installed production ASAR narrows reconnect behavior further. The
 remote-hosted-PIP controller clears only its cached PID when the native host reports connection
