@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import IntelSkyCore
 
@@ -88,6 +89,7 @@ let server = SkyUnixServer(
   )
 )
 let processIdentifier = ProcessInfo.processInfo.processIdentifier
+let launchParentProcessIdentifier = getppid()
 let cleanupRuntimeStatus: @Sendable () -> Void = {
   do {
     try ServiceRuntimeStatusWriter.removeIfCurrent(
@@ -109,6 +111,23 @@ let terminationSources = [SIGTERM, SIGINT].map { signalNumber in
   source.resume()
   return source
 }
+let managedParentExitSource: DispatchSourceProcess? = {
+  guard launchParentProcessIdentifier > 1 else { return nil }
+  let source = DispatchSource.makeProcessSource(
+    identifier: launchParentProcessIdentifier,
+    eventMask: .exit,
+    queue: .main
+  )
+  source.setEventHandler {
+    fputs(
+      "managed parent exited pid=\(launchParentProcessIdentifier); shutting down service\n",
+      stderr
+    )
+    server.shutdown()
+  }
+  source.resume()
+  return source
+}()
 
 fputs("intel-sky-service starting at \(socketPath)\n", stderr)
 DispatchQueue.global(qos: .userInitiated).async {
@@ -145,6 +164,7 @@ DispatchQueue.global(qos: .userInitiated).async {
   }
 }
 application.run()
+managedParentExitSource?.cancel()
 for source in terminationSources { source.cancel() }
 server.shutdown()
 cleanupRuntimeStatus()

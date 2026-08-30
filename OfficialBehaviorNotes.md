@@ -685,6 +685,14 @@ smokes. Dynamic managed-host initial/live frames and fitted geometry are now con
 resize, PID replacement, host reconnect, turn end, and long-running recovery stress remain pending
 attended verification.
 
+A subsequent ChatGPT restart exposed a managed-lifecycle defect: the prior service survived its
+launching ChatGPT process, was reparented to PID 1, retained the Unix socket, and caused the next
+managed service to exit before the host's bootstrap Apple Event. Intel now installs a process-exit
+dispatch source for every non-launchd launch parent and shuts down the server when that exact parent
+exits; direct launchd/Finder launches with parent PID 1 remain supported. An isolated release-binary
+test confirmed that ending the launcher removes both the child process and its owned socket.
+`CONFIRMED_INTEL_RUNTIME`; the next full ChatGPT restart remains the managed-host verification.
+
 ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `pasteboardReadTimedOut`, `pasteboardChangedDuringPaste`, `invalidSecondaryActionForElement`,
 `cannotSetValueForNonSettableElement`, `cannotSelectTextForElement`, and
