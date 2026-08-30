@@ -576,6 +576,17 @@ renderer-private backing store or a process-local CGImage, the object exported t
 The diagnosis is `CONFIRMED_INTEL_RUNTIME`; direct IOSurface export is `HIGH_CONFIDENCE` pending the
 next official-host presentation.
 
+The IOSurface build completed the same official handshake and Finder presentation. A synthetic
+Finder scroll produced six renderer frames, all six displayed with zero drops, confirming live
+capture rather than a one-shot state image. macOS `screencapture` still records the hosted thumbnail
+as gray; because the official host may disable sharing for that content, human on-glass confirmation
+is required before classifying this as a renderer failure. The scroll also exposed a Finder layer-0
+tooltip (52x20 points) ahead of its 920x436 document window. Front-window resolution now skips a
+transient whose area is below both a small absolute floor and one percent of the largest candidate,
+while preserving front order and sole compact windows. The bootstrap handler now writes an explicit
+standard success reply (`errn=0`) so the already-successful endpoint exchange does not leave the
+sender waiting for an empty raw reply.
+
 The supplied ARM service is not protocol-identical to the installed Intel host: its producer
 protocol metadata has five methods rather than four, and its strings include the newer
 `setPetLocationWithX:y:available:withReply:` selector. Any native PIP implementation must therefore

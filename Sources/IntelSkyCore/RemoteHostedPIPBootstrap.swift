@@ -144,7 +144,10 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
     RemoteHostedPIPDiagnostics.logger.notice("bootstrap listener started")
   }
 
-  fileprivate func handleBootstrapEvent(_ event: UnsafePointer<AppleEvent>) -> OSErr {
+  fileprivate func handleBootstrapEvent(
+    _ event: UnsafePointer<AppleEvent>,
+    reply: UnsafeMutablePointer<AppleEvent>?
+  ) -> OSErr {
     do {
       let request = try RemoteHostedPIPBootstrapRequest(
         version: descriptor(
@@ -164,15 +167,46 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
         )?.data
       )
       try process(request)
+      let replyStatus = Self.writeReply(error: nil, to: reply)
       RemoteHostedPIPDiagnostics.logger.notice(
-        "bootstrap event handled for host pid=\(request.senderProcessIdentifier, privacy: .public)"
+        "bootstrap event handled for host pid=\(request.senderProcessIdentifier, privacy: .public) replyStatus=\(replyStatus, privacy: .public)"
       )
       return OSErr(noErr)
     } catch {
+      _ = Self.writeReply(error: error, to: reply)
       RemoteHostedPIPDiagnostics.logger.error(
         "bootstrap rejected: \(String(describing: error), privacy: .public)"
       )
       return OSErr(errAEEventNotHandled)
+    }
+  }
+
+  private static func writeReply(
+    error: Error?,
+    to reply: UnsafeMutablePointer<AppleEvent>?
+  ) -> OSErr {
+    guard let reply else { return OSErr(errAENoSuchObject) }
+    var errorNumber = error == nil ? Int32(noErr) : Int32(errAEEventNotHandled)
+    let errorNumberSize = MemoryLayout.size(ofValue: errorNumber)
+    let numberStatus = withUnsafePointer(to: &errorNumber) { pointer in
+      AEPutParamPtr(
+        reply,
+        Self.errorNumberKeyword,
+        typeSInt32,
+        pointer,
+        errorNumberSize
+      )
+    }
+    guard numberStatus == noErr, let error else { return numberStatus }
+    let message = Data(String(describing: error).utf8)
+    return message.withUnsafeBytes { bytes in
+      AEPutParamPtr(
+        reply,
+        Self.errorStringKeyword,
+        typeUTF8Text,
+        bytes.baseAddress,
+        bytes.count
+      )
     }
   }
 
@@ -234,10 +268,10 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
 }
 
 private let remoteHostedPIPBootstrapEventHandler: AEEventHandlerUPP = {
-  event, _, reference in
+  event, reply, reference in
   guard let event, let reference else { return OSErr(errAEEventNotHandled) }
   let controller = Unmanaged<RemoteHostedPIPBootstrapController>
     .fromOpaque(reference)
     .takeUnretainedValue()
-  return controller.handleBootstrapEvent(event)
+  return controller.handleBootstrapEvent(event, reply: reply)
 }

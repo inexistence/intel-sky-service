@@ -227,12 +227,25 @@ public struct MacAppResolver: MacAppResolving {
       )
     }
 
-    // CGWindowListCopyWindowInfo is front-to-back, so the first normal,
-    // non-empty window best matches the AX focused window.
-    guard let result = candidates.first else {
+    // CGWindowListCopyWindowInfo is front-to-back, but applications such as Finder may temporarily
+    // publish a tiny layer-0 tooltip ahead of their document windows after a remote pointer action.
+    // Prefer the first window with at least one percent of the largest candidate's area (and a
+    // small absolute floor), falling back to the sole tiny window for genuinely compact apps.
+    guard let result = Self.preferredFrontWindow(in: candidates) else {
       throw MacAppResolutionError.noWindow(app.displayName)
     }
     return result
+  }
+
+  static func preferredFrontWindow(in candidates: [ResolvedMacWindow]) -> ResolvedMacWindow? {
+    guard let first = candidates.first else { return nil }
+    let largestArea = candidates.reduce(CGFloat.zero) { maximum, candidate in
+      max(maximum, candidate.screenFrame.width * candidate.screenFrame.height)
+    }
+    let minimumSubstantialArea = min(largestArea, max(4_096, largestArea * 0.01))
+    return candidates.first { candidate in
+      candidate.screenFrame.width * candidate.screenFrame.height >= minimumSubstantialArea
+    } ?? first
   }
 
   private func resolvedRunningApplication(_ app: NSRunningApplication) throws -> ResolvedMacApp {
