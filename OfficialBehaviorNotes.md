@@ -485,6 +485,12 @@ matching Appshot's finite consumer contract; socket capture clients retain the c
 stream until a lifecycle terminal event. It never launches the ARM service. `HIGH_CONFIDENCE`; a
 real Appshot run against an already approved target remains pending.
 
+The bootstrap is idempotent once ChatGPT's process-wide native host has connected. ChatGPT may send
+another bootstrap event for a later window or worker; Intel authenticates it but does not repeat the
+request/reply endpoint transfer against the stale Mach reply port, which would otherwise block the
+Apple Event main thread and starve Appshot and direct state requests. A disconnected host remains
+eligible for a fresh endpoint transfer. `CONFIRMED_RUNTIME_INTEL` / `HIGH_CONFIDENCE`.
+
 Intel now also tracks successfully captured Apps as turn-scoped sessions, returns the current
 ChatGPT status-menu schema (with Computer History truthfully reported unavailable/stopped), and
 handles the authenticated App-stop request. A stop immediately removes the App from status state,

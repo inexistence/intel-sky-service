@@ -65,6 +65,27 @@ import Testing
   #expect(sender.sentPorts == [99, 99, 99])
 }
 
+@Test func pipBootstrapDoesNotResendEndpointAfterNativeHostConnected() throws {
+  let sender = RecordingEndpointSender()
+  let producer = RemoteHostedPIPContentProducer()
+  let controller = RemoteHostedPIPBootstrapController(
+    connectionController: RemoteHostedPIPConnectionController(
+      producer: producer,
+      hostAuthorizer: AllowBootstrapHost(),
+      enforceConnectionCodeSigningRequirement: false
+    ),
+    endpointSender: sender,
+    hostAuthorizer: AllowBootstrapHost()
+  )
+  producer.connect { error in
+    #expect(error == nil)
+  }
+
+  try controller.process(bootstrapRequest(pid: 42, port: 99))
+
+  #expect(sender.sentPorts.isEmpty)
+}
+
 private struct AllowBootstrapHost: ProcessAuthorizing {
   func authorize(processIdentifier: pid_t) throws {}
 }

@@ -20,6 +20,7 @@ import Testing
   let metadataPath = try #require(started["metadataPath"] as? String)
 
   let key = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+  key.flags = []
   key.setIntegerValueField(
     .eventTargetUnixProcessID,
     value: Int64(ProcessInfo.processInfo.processIdentifier)
