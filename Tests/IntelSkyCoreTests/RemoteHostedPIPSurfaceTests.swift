@@ -84,6 +84,38 @@ import UniformTypeIdentifiers
   #expect(surface.cursorFrame == nil)
 }
 
+@Test func pipSurfaceCursorPixelBufferPreservesTopToBottomImageOrientation() throws {
+  let rgba: [UInt8] = [
+    255, 0, 0, 255,  // top: red
+    0, 0, 255, 255,  // bottom: blue
+  ]
+  let provider = try #require(CGDataProvider(data: Data(rgba) as CFData))
+  let image = try #require(
+    CGImage(
+      width: 1,
+      height: 2,
+      bitsPerComponent: 8,
+      bitsPerPixel: 32,
+      bytesPerRow: 4,
+      space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+      provider: provider,
+      decode: nil,
+      shouldInterpolate: false,
+      intent: .defaultIntent
+    )
+  )
+  let buffer = try #require(RemoteHostedPIPSurface.makeCursorPixelBuffer(from: image))
+  #expect(CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess)
+  defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+  let bytes = try #require(CVPixelBufferGetBaseAddress(buffer))
+    .assumingMemoryBound(to: UInt8.self)
+  let stride = CVPixelBufferGetBytesPerRow(buffer)
+
+  #expect(Array(UnsafeBufferPointer(start: bytes, count: 4)) == [0, 0, 255, 255])
+  #expect(Array(UnsafeBufferPointer(start: bytes + stride, count: 4)) == [255, 0, 0, 255])
+}
+
 @Test func pipSurfaceEnqueuesShareableVideoAndRestoresFallbackVisibility() throws {
   let surface = try RemoteHostedPIPSurface(size: CGSize(width: 8, height: 6))
   var pixelBuffer: CVPixelBuffer?

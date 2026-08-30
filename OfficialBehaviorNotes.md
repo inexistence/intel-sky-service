@@ -720,6 +720,13 @@ coordinate scroll followed by an action-synchronized screen capture showed the A
 inside the Notes PIP at the mapped source coordinate; no separate cursor panel appeared outside the
 PIP. `CONFIRMED_INTEL_RUNTIME` for geometry, live content, and cursor presentation.
 
+On a subsequent attended click, the user confirmed that the hosted Notes picture was complete and
+live but that the SoftwareCursor artwork itself appeared vertically inverted. The embedded PNG was
+upright; a two-row asymmetric pixel regression proved that the PNG-to-IOSurface conversion reversed
+its top and bottom rows. Intel now draws the image into the BGRA pixel buffer without the redundant
+Core Graphics Y-axis flip. The regression passes and the corrected artifact is deployed;
+on-glass orientation confirmation remains pending the next clean managed restart.
+
 Intel now implements the version-gated bootstrap and endpoint wire format, the exact Intel host and
 producer selector ABI, a real local CAContext surface, presentation publication/source-PID binding,
 `focus-presentation`, cursor forwarding, and turn-scoped end/invalidation. Each presentation starts
@@ -842,7 +849,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   official no-longer-valid message instead of reporting false success. Five repeated Finder captures
   with node-level notification registration took 173–197 ms. Seven monitor/refetch regressions and
   the later socket, lifecycle, PIP, focus, ViewBridge, organization-policy, capture, and managed-host
-  coverage brought that checkpoint to 173 tests; the current complete suite contains 256 tests.
+  coverage brought that checkpoint to 173 tests; the current complete suite contains 257 tests.
   `CONFIRMED_INTEL_RUNTIME`.
   The official pre-refetch ambiguity criterion remains `NEEDS_ARM_ORACLE`.
 
@@ -924,7 +931,7 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
   resolution, debounce, and whether some intervention reasons persist for the entire turn remain
   `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 256 Swift tests and 13 Node protocol/reverse/oracle tests,
+- The current runtime checkpoint passes 257 Swift tests and 13 Node protocol/reverse/oracle tests,
   including the protocol-catalog verifier and soft-link hash coverage. It also passes the
   12-selector Intel PIP-host audit and an x86_64 release build compiled with warnings as errors.
 

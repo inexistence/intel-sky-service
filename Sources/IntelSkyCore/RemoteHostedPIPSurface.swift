@@ -3,8 +3,8 @@ import CoreImage
 import CoreMedia
 import Darwin
 import Foundation
-import ImageIO
 import IOSurface
+import ImageIO
 import ObjectiveC.runtime
 import QuartzCore
 
@@ -380,7 +380,7 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     return makeLayerContents(from: surfaceReference.takeUnretainedValue())
   }()
 
-  private static func makeCursorPixelBuffer(from image: CGImage) -> CVPixelBuffer? {
+  static func makeCursorPixelBuffer(from image: CGImage) -> CVPixelBuffer? {
     let width = image.width
     let height = image.height
     guard width > 0, height > 0 else { return nil }
@@ -414,8 +414,6 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
         bitmapInfo: bitmapInfo
       )
     else { return nil }
-    context.translateBy(x: 0, y: CGFloat(height))
-    context.scaleBy(x: 1, y: -1)
     context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
     return pixelBuffer
   }
