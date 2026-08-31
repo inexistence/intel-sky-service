@@ -432,7 +432,7 @@ The final error-classified build repeated the same production path with Notes pr
 before stopping/finalizing/deallocating capture at 01:00:00.801–00.803. Ordinary unavailable or
 timeout failures do not count as retirement, and a republish generation invalidates already queued
 probes. The final installed executable SHA-256 is
-`959b2b1169041d5ab13908d5ac4f0a1bb2846f3105d182fec3fe0d694b977dc3`.
+`16ef59e1bb7e60fdcdb92886ef7ea635681dd22af16f4362f73c4f0348bb4575`.
 
 The socket server now accepts up to eight clients concurrently while serializing Computer Use
 request execution. This prevents a persistent node_repl transport from blocking a separate trusted
@@ -537,9 +537,32 @@ real Appshot run against an already approved target remains pending.
 The installed Codex renderer uses the primary screenshot data URL for the lightbox and submitted
 attachment, but the compact composer card renders only `transitionSnapshotDataURL`. The Intel main
 process derives that data URL from the capture update's `transitionSnapshotURL`, subject to the
-same temporary-directory, file-type, and size checks as the primary screenshot. Intel therefore
-reuses the initial captured frame as the transition snapshot instead of leaving the completed card
-on its black empty surface. `CONFIRMED_CLIENT_SOURCE` / `HIGH_CONFIDENCE`.
+same temporary-directory, file-type, and size checks as the primary screenshot. Static inspection
+of the ARM Appshot package confirms that its transition owns separate background, shadow, image,
+gradient-mask, App-icon, and title layers and returns transition height and spring metadata. Intel
+now preserves the primary frame for the attachment while generating a separate Retina-aware
+232-by-160-point composer artwork from the requested destination geometry/text color, faded
+window preview, localized App icon, and localized title. Capture Start publishes the matching
+height, duration, spring response, and damping fraction; a rendering failure safely falls back to
+the primary frame. Structural and rendered-PNG tests cover the separate URLs, response metadata,
+pixel dimensions, and owner-only file mode. An attended deployment against the production Intel
+client confirmed the same 232-point card width, approximately 168-point rendered height, rounded
+material, close-button placement, faded aspect-fit preview, localized App icon/title, and bottom
+spacing visible in the ARM reference. The narrower preview in that run followed the narrower live
+Notes window's source aspect ratio rather than a layout difference. `CONFIRMED_STATIC_BINARY` /
+`CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_INTEL_RUNTIME` / `HIGH_CONFIDENCE`; exact frame-by-frame ARM
+animation timing remains pending.
+
+Follow-up ARM disassembly resolves the preview scaling policy directly: the snapshot image layer
+loads `_kCAGravityResizeAspect`, not `_kCAGravityResizeAspectFill`. Intel therefore retains the
+complete source window without cropping. Visual calibration uses a lower-contrast 0.52 preview,
+0.14 shadow alpha, and a broader alpha-mask fade to match the ARM material hierarchy while leaving
+the full-resolution primary attachment unchanged. The presentation bitmap keeps its empty material
+transparent rather than baking an opaque white canvas. This lets the client's shared hover surface
+show through both the image area and its fixed eight-point bottom padding, avoiding the Intel-only
+gray seam. The fade reaches fully transparent above the App icon and explicitly clears its final
+sub-pixel fringe, so neither the captured window's bottom border nor its shadow remains between the
+icon and title. `CONFIRMED_STATIC_BINARY` / `CONFIRMED_CLIENT_SOURCE` / `HIGH_CONFIDENCE`.
 
 The bootstrap is idempotent once ChatGPT's process-wide native host has connected. ChatGPT may send
 another bootstrap event for a later window or worker; Intel authenticates it but does not repeat the

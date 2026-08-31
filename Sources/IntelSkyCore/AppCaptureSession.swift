@@ -86,7 +86,8 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       app: String,
       appMetadata: [String: Any],
       text: String,
-      screenshot: [String: Any]?
+      screenshot: [String: Any]?,
+      transitionSnapshotURL: URL?
     ) {
       self.requestID = requestID
       self.owner = owner
@@ -100,7 +101,12 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
         ["type": "axText", "app": appMetadata, "text": text],
       ]
       if let screenshot {
-        updates.append(Self.screenshotUpdate(app: appMetadata, screenshot: screenshot))
+        updates.append(
+          Self.screenshotUpdate(
+            app: appMetadata,
+            screenshot: screenshot,
+            transitionSnapshotURL: transitionSnapshotURL
+          ))
       }
     }
 
@@ -125,19 +131,16 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
 
     static func screenshotUpdate(
       app: [String: Any],
-      screenshot: [String: Any]
+      screenshot: [String: Any],
+      transitionSnapshotURL: URL? = nil
     ) -> [String: Any] {
       var update: [String: Any] = [
         "type": "screenshot",
         "app": app,
         "screenshot": screenshot,
       ]
-      // Codex's composer card renders the transition snapshot; the primary
-      // screenshot is retained for the lightbox and the submitted attachment.
-      // Reusing the captured frame gives both consumers the same valid image
-      // without introducing a second capture or a divergent crop.
-      if let url = screenshot["url"] as? String, !url.isEmpty {
-        update["transitionSnapshotURL"] = url
+      if let transitionSnapshotURL {
+        update["transitionSnapshotURL"] = transitionSnapshotURL.absoluteString
       }
       return update
     }
@@ -167,6 +170,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   private let pollInterval: TimeInterval
   private let maximumQueuedUpdates: Int
   private let changeMonitorFactory: AppCaptureChangeMonitorFactory?
+  private let transitionSnapshotRenderer: any AppshotTransitionSnapshotRendering
   private let producerQueue = DispatchQueue(
     label: "dev.huangjianbin.intel-sky-service.capture-stream",
     qos: .userInitiated,
@@ -181,13 +185,16 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     permissionDiagnostics: ServicePermissionDiagnostics = .init(),
     pollInterval: TimeInterval = 2,
     maximumQueuedUpdates: Int = 32,
-    changeMonitorFactory: AppCaptureChangeMonitorFactory? = nil
+    changeMonitorFactory: AppCaptureChangeMonitorFactory? = nil,
+    transitionSnapshotRenderer: any AppshotTransitionSnapshotRendering =
+      AppshotTransitionSnapshotRenderer()
   ) {
     self.appStateProvider = appStateProvider
     self.permissionDiagnostics = permissionDiagnostics
     self.pollInterval = max(0.01, pollInterval)
     self.maximumQueuedUpdates = max(4, maximumQueuedUpdates)
     self.changeMonitorFactory = changeMonitorFactory
+    self.transitionSnapshotRenderer = transitionSnapshotRenderer
   }
 
   public func installSessionStopHandling() {
@@ -203,7 +210,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       request["permissionRequestId"],
       named: "permissionRequestId"
     )
-    guard request["animationTarget"] is [String: Any] else {
+    guard let animationTarget = request["animationTarget"] as? [String: Any] else {
       throw AppCaptureSessionError.invalidRequest("Capture animationTarget must be an object")
     }
     guard let version = Self.integer(request["version"]), version == Self.currentVersion else {
@@ -224,16 +231,32 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       let skyshot = state["skyshot"] as? [String: Any],
       let text = skyshot["text"] as? String
     else {
-      throw AppCaptureSessionError.invalidRequest("Capture state provider returned an invalid state")
+      throw AppCaptureSessionError.invalidRequest(
+        "Capture state provider returned an invalid state")
     }
 
+    let screenshot = skyshot["screenshot"] as? [String: Any]
+    let transitionSnapshot = screenshot.flatMap {
+      transitionSnapshotRenderer.render(
+        screenshot: $0,
+        bundleIdentifier: (appMetadata["bundleIdentifier"] as? String) ?? app,
+        animationTarget: animationTarget
+      )
+    }
+    var transitionSnapshotIsOwnedBySession = false
+    defer {
+      if !transitionSnapshotIsOwnedBySession, let transitionSnapshot {
+        Self.removeUnusedGeneratedImage(transitionSnapshot.url)
+      }
+    }
     let session = Session(
       requestID: requestID,
       owner: ComputerUseClientContext.identifier,
       app: app,
       appMetadata: appMetadata,
       text: text,
-      screenshot: skyshot["screenshot"] as? [String: Any]
+      screenshot: screenshot,
+      transitionSnapshotURL: transitionSnapshot?.url ?? Session.screenshotURL(screenshot)
     )
 
     try lock.withLock {
@@ -245,6 +268,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       }
       sessions[requestID] = session
     }
+    transitionSnapshotIsOwnedBySession = true
     if !session.owner.hasPrefix("native:"),
       let processIdentifier = (appMetadata["pid"] as? NSNumber)?.int32Value,
       processIdentifier > 0,
@@ -258,10 +282,17 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     }
     beginProducing(session)
 
-    return [
+    var response: [String: Any] = [
       "result": "started",
       "permissionGrantState": permissionGrantState(),
     ]
+    if let transitionSnapshot {
+      response["animationDuration"] = 0.35
+      response["transitionSnapshotHeight"] = transitionSnapshot.height
+      response["transitionSpringResponse"] = 0.35
+      response["transitionSpringDampingFraction"] = 0.73
+    }
+    return response
   }
 
   public func nextCaptureUpdate(request: [String: Any]) throws -> [String: Any] {
@@ -329,10 +360,13 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   public func stopApplication(bundleIdentifier: String) {
     let matches = lock.withLock {
       sessions.values.filter {
-        ($0.appMetadata["bundleIdentifier"] as? String) == bundleIdentifier || $0.app == bundleIdentifier
+        ($0.appMetadata["bundleIdentifier"] as? String) == bundleIdentifier
+          || $0.app == bundleIdentifier
       }
     }
-    for session in matches { terminate(session, update: terminalUpdate(type: "completed", session: session)) }
+    for session in matches {
+      terminate(session, update: terminalUpdate(type: "completed", session: session))
+    }
   }
 
   func shutdown() {
@@ -391,7 +425,8 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       let skyshot = state["skyshot"] as? [String: Any],
       let text = skyshot["text"] as? String
     else {
-      throw AppCaptureSessionError.invalidRequest("Capture state provider returned an invalid state")
+      throw AppCaptureSessionError.invalidRequest(
+        "Capture state provider returned an invalid state")
     }
     session.condition.lock()
     guard !session.terminalQueued, !session.disconnected else {
@@ -417,7 +452,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       } else if let unusedURL = Session.screenshotURL(screenshot),
         unusedURL != session.lastScreenshotURL
       {
-        Self.removeUnusedGeneratedScreenshot(unusedURL)
+        Self.removeUnusedGeneratedImage(unusedURL)
       }
     }
     session.condition.broadcast()
@@ -460,7 +495,9 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
 
   private func terminateAllWithCompleted() {
     let values = lock.withLock { Array(sessions.values) }
-    for session in values { terminate(session, update: terminalUpdate(type: "completed", session: session)) }
+    for session in values {
+      terminate(session, update: terminalUpdate(type: "completed", session: session))
+    }
   }
 
   private func terminate(_ session: Session, update: [String: Any]) {
@@ -505,7 +542,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     return type == "completed" || type == "failed"
   }
 
-  private static func removeUnusedGeneratedScreenshot(_ url: URL) {
+  private static func removeUnusedGeneratedImage(_ url: URL) {
     let expectedDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("com.openai.sky.CUAService", isDirectory: true)
       .appendingPathComponent("skyshots", isDirectory: true)

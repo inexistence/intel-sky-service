@@ -246,7 +246,22 @@ import Testing
 
 @Test func turnEndRacingInitialCaptureCannotCreateOrphanedSession() throws {
   let provider = BlockingInitialCaptureStateProvider()
-  let manager = AppCaptureSessionManager(appStateProvider: provider)
+  let transitionDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("com.openai.sky.CUAService", isDirectory: true)
+    .appendingPathComponent("skyshots", isDirectory: true)
+  try SecureDirectoryPreparer.prepare(transitionDirectory)
+  let transitionURL =
+    transitionDirectory
+    .appendingPathComponent(UUID().uuidString)
+    .appendingPathExtension("png")
+  try Data("transition".utf8).write(to: transitionURL)
+  defer { try? FileManager.default.removeItem(at: transitionURL) }
+  let manager = AppCaptureSessionManager(
+    appStateProvider: provider,
+    transitionSnapshotRenderer: FixedCaptureTransitionRenderer(
+      result: AppshotTransitionSnapshot(url: transitionURL, height: 160)
+    )
+  )
   let result = CaptureStartResult()
   let finished = DispatchSemaphore(value: 0)
   DispatchQueue.global(qos: .userInitiated).async {
@@ -268,8 +283,21 @@ import Testing
 
   #expect(finished.wait(timeout: .now() + 1) == .success)
   #expect(result.error is AppCaptureSessionError)
+  #expect(!FileManager.default.fileExists(atPath: transitionURL.path))
   #expect(throws: AppCaptureSessionError.self) {
     try manager.nextCaptureUpdate(request: ["requestId": "racing"])
+  }
+}
+
+private struct FixedCaptureTransitionRenderer: AppshotTransitionSnapshotRendering {
+  let result: AppshotTransitionSnapshot?
+
+  func render(
+    screenshot: [String: Any],
+    bundleIdentifier: String,
+    animationTarget: [String: Any]
+  ) -> AppshotTransitionSnapshot? {
+    result
   }
 }
 
