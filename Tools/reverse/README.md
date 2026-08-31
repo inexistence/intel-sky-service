@@ -35,3 +35,22 @@ node --test Tools/reverse/asar-search.test.mjs
 
 Unpacked entries are listed by the parser but skipped by the search because their bytes live next
 to, rather than inside, the ASAR archive.
+
+`swift-type-descriptors.mjs` and `swift-conformance-descriptors.mjs` inspect the corresponding
+Swift reflection sections in a 64-bit little-endian Mach-O. They report descriptor file offsets,
+virtual addresses, relative words, and any type names that can be resolved without loading the
+target binary. The optional query is a case-insensitive type-name substring.
+
+```sh
+node Tools/reverse/swift-type-descriptors.mjs /path/to/SkyComputerUseService CursorView
+node Tools/reverse/swift-conformance-descriptors.mjs /path/to/SkyComputerUseService CursorView
+```
+
+`annotate-otool-stubs.mjs` annotates direct ARM64 calls in an address range with symbols recovered
+from the Mach-O bind fixups and `__stubs` section. Addresses use the same half-open range shown by
+`otool -tvV`.
+
+```sh
+node Tools/reverse/annotate-otool-stubs.mjs /path/to/SkyComputerUseService \
+  0x10013d800 0x10013dc00
+```

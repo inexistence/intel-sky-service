@@ -155,8 +155,8 @@ struct NoopComputerUseVisualizer: ComputerUseVisualizing {
 private final class VirtualCursorOverlay {
   static let shared = VirtualCursorOverlay()
 
-  private let size = CGSize(width: 30, height: 34)
-  private let hotspot = CGPoint(x: 4, y: 29)
+  private let size = FogCursorMetrics.canvasSize
+  private let hotspot = FogCursorMetrics.windowHotspot
   private let panel: NSPanel
   private let cursorView: VirtualCursorView
   private var hideGeneration: UInt64 = 0
@@ -172,7 +172,7 @@ private final class VirtualCursorOverlay {
     )
     panel.backgroundColor = .clear
     panel.isOpaque = false
-    panel.hasShadow = true
+    panel.hasShadow = false
     panel.ignoresMouseEvents = true
     panel.hidesOnDeactivate = false
     panel.level = .statusBar
@@ -183,14 +183,23 @@ private final class VirtualCursorOverlay {
   func move(to screenPoint: CGPoint) {
     hideGeneration &+= 1
     let destination = windowOrigin(for: screenPoint)
-    if panel.isVisible, currentPoint != nil {
+    if panel.isVisible, let currentPoint {
       let distance = hypot(
         panel.frame.origin.x - destination.x,
         panel.frame.origin.y - destination.y
       )
+      let duration = min(0.42, max(0.1, TimeInterval(distance / 1_650)))
+      if distance > 0.5 {
+        cursorView.beginMotion(from: currentPoint, to: screenPoint, duration: duration)
+      }
       NSAnimationContext.runAnimationGroup { context in
-        context.duration = min(0.35, max(0.08, TimeInterval(distance / 1_800)))
-        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        context.duration = duration
+        context.timingFunction = CAMediaTimingFunction(
+          controlPoints: 0.2,
+          0.82,
+          0.2,
+          1
+        )
         panel.animator().setFrameOrigin(destination)
       }
     } else {
@@ -231,14 +240,30 @@ private final class VirtualCursorOverlay {
     hideGeneration &+= 1
     currentPoint = nil
     cursorView.isPressed = false
+    cursorView.endMotion()
     panel.alphaValue = 0
     panel.orderOut(nil)
   }
 
   private func windowOrigin(for quartzPoint: CGPoint) -> CGPoint {
-    let mainDisplayHeight = CGDisplayBounds(CGMainDisplayID()).height
-    let cocoaPoint = CGPoint(x: quartzPoint.x, y: mainDisplayHeight - quartzPoint.y)
+    let cocoaPoint = Self.cocoaPoint(fromQuartzPoint: quartzPoint)
     return CGPoint(x: cocoaPoint.x - hotspot.x, y: cocoaPoint.y - hotspot.y)
+  }
+
+  private static func cocoaPoint(fromQuartzPoint point: CGPoint) -> CGPoint {
+    for screen in NSScreen.screens {
+      guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+        as? NSNumber
+      else { continue }
+      let displayBounds = CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
+      guard displayBounds.contains(point) else { continue }
+      return CGPoint(
+        x: screen.frame.minX + point.x - displayBounds.minX,
+        y: screen.frame.maxY - (point.y - displayBounds.minY)
+      )
+    }
+    let mainDisplayHeight = CGDisplayBounds(CGMainDisplayID()).height
+    return CGPoint(x: point.x, y: mainDisplayHeight - point.y)
   }
 
   private func scheduleHide() {
@@ -262,28 +287,61 @@ private final class VirtualCursorOverlay {
 
 @MainActor
 private final class VirtualCursorView: NSView {
-  var isPressed = false {
-    didSet { needsDisplay = true }
+  private var styleState = FogCursorStyleState()
+  private var motionGeneration: UInt64 = 0
+
+  var isPressed: Bool {
+    get { styleState.isPressed }
+    set {
+      guard newValue != styleState.isPressed else { return }
+      styleState.isPressed = newValue
+      needsDisplay = true
+    }
   }
 
   override var isFlipped: Bool { true }
 
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
-    let path = NSBezierPath()
-    path.move(to: CGPoint(x: 4, y: 3))
-    path.line(to: CGPoint(x: 4, y: 25))
-    path.line(to: CGPoint(x: 10, y: 19))
-    path.line(to: CGPoint(x: 15, y: 30))
-    path.line(to: CGPoint(x: 20, y: 27))
-    path.line(to: CGPoint(x: 15, y: 17))
-    path.line(to: CGPoint(x: 24, y: 17))
-    path.close()
-    path.lineJoinStyle = .round
-    (isPressed ? NSColor.systemOrange : NSColor.white).setFill()
-    NSColor.black.withAlphaComponent(0.9).setStroke()
-    path.lineWidth = 2
-    path.fill()
-    path.stroke()
+    guard let image = FogCursorRenderer.makeImage(state: styleState) else { return }
+    NSImage(cgImage: image, size: bounds.size).draw(
+      in: bounds,
+      from: .zero,
+      operation: .sourceOver,
+      fraction: 1,
+      respectFlipped: true,
+      hints: [.interpolation: NSImageInterpolation.high]
+    )
+  }
+
+  func beginMotion(from start: CGPoint, to end: CGPoint, duration: TimeInterval) {
+    motionGeneration &+= 1
+    let generation = motionGeneration
+    let dx = end.x - start.x
+    let dy = end.y - start.y
+    let seconds = max(0.001, duration)
+    styleState.velocity = CGVector(dx: dx / seconds, dy: dy / seconds)
+    styleState.angle = atan2(-dy, dx) * 0.055
+    styleState.scootStretchXScale = 1.07
+    styleState.scootStretchScale = 0.97
+    styleState.scootStretchPivotX = dx < 0 ? 0.7 : 0.3
+    needsDisplay = true
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+      guard let self, generation == motionGeneration else { return }
+      endMotion()
+    }
+  }
+
+  func endMotion() {
+    motionGeneration &+= 1
+    styleState.velocity = .zero
+    styleState.angle = 0
+    styleState.scootStretchXScale = 1
+    styleState.scootStretchScale = 1
+    styleState.scootStretchPivotX = 0.5
+    styleState.scootStretchAngle = 0
+    styleState.scootTiltAngle = 0
+    needsDisplay = true
   }
 }

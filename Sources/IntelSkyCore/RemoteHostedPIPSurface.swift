@@ -51,7 +51,6 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     let imageLayer: CALayer
     let displayLayer: AVSampleBufferDisplayLayer
     let cursorLayer: CALayer
-    let cursorPressedLayer: CAShapeLayer
     let cursorUsesCAIOSurfaceContents: Bool
     let contextID: UInt32
   }
@@ -62,7 +61,6 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
   private let imageLayer: CALayer
   private let displayLayer: AVSampleBufferDisplayLayer
   private let cursorLayer: CALayer
-  private let cursorPressedLayer: CAShapeLayer
   private let cursorUsesCAIOSurfaceContents: Bool
   let contextID: UInt32
   private var storedSize: CGSize
@@ -165,29 +163,13 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
 
       // ARM uses a separate cursor display layer and cursor capture stream. Keep the cursor above
       // both live video and the last-frame fallback so it is exported through the same CAContext.
-      let cursorPressedLayer = CAShapeLayer()
-      cursorPressedLayer.bounds = CGRect(x: 0, y: 0, width: 20, height: 20)
-      cursorPressedLayer.path = CGPath(
-        ellipseIn: cursorPressedLayer.bounds.insetBy(dx: 2, dy: 2),
-        transform: nil
-      )
-      cursorPressedLayer.fillColor = CGColor(red: 1, green: 0.49, blue: 0.12, alpha: 0.28)
-      cursorPressedLayer.strokeColor = CGColor(red: 1, green: 0.49, blue: 0.12, alpha: 0.95)
-      cursorPressedLayer.lineWidth = 2
-      cursorPressedLayer.isHidden = true
-      layer.addSublayer(cursorPressedLayer)
-
       let cursorLayer = CALayer()
-      cursorLayer.bounds = CGRect(x: 0, y: 0, width: 20, height: 23)
-      cursorLayer.anchorPoint = CGPoint(x: 0.2, y: 0.88)
-      let cursorContents = Self.softwareCursorLayerContents
+      cursorLayer.bounds = CGRect(origin: .zero, size: FogCursorMetrics.canvasSize)
+      cursorLayer.anchorPoint = FogCursorMetrics.layerAnchorPoint
+      let cursorContents = Self.fogCursorLayerContents
       cursorLayer.contents = cursorContents?.value
       cursorLayer.contentsGravity = .resizeAspect
-      cursorLayer.contentsScale = 2
-      cursorLayer.shadowColor = CGColor(gray: 0, alpha: 0.55)
-      cursorLayer.shadowOpacity = 0.55
-      cursorLayer.shadowRadius = 1.5
-      cursorLayer.shadowOffset = CGSize(width: 0, height: -1)
+      cursorLayer.contentsScale = 1
       cursorLayer.isHidden = true
       layer.addSublayer(cursorLayer)
 
@@ -207,7 +189,6 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
         imageLayer: imageLayer,
         displayLayer: displayLayer,
         cursorLayer: cursorLayer,
-        cursorPressedLayer: cursorPressedLayer,
         cursorUsesCAIOSurfaceContents: cursorContents?.usesCAIOSurface ?? false,
         contextID: contextID
       )
@@ -218,7 +199,6 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     imageLayer = state.imageLayer
     displayLayer = state.displayLayer
     cursorLayer = state.cursorLayer
-    cursorPressedLayer = state.cursorPressedLayer
     cursorUsesCAIOSurfaceContents = state.cursorUsesCAIOSurfaceContents
     contextID = state.contextID
     storedSize = size
@@ -305,7 +285,6 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
           CATransaction.begin()
           CATransaction.setDisableActions(true)
           self.cursorLayer.isHidden = true
-          self.cursorPressedLayer.isHidden = true
           CATransaction.commit()
           CATransaction.flush()
           self.storedCursorFrame = nil
@@ -323,13 +302,9 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         self.cursorLayer.position = contentPoint
-        self.cursorLayer.transform =
-          isPressed
-          ? CATransform3DMakeScale(0.88, 0.88, 1)
-          : CATransform3DIdentity
+        self.cursorLayer.contents =
+          (isPressed ? Self.pressedFogCursorLayerContents : Self.fogCursorLayerContents)?.value
         self.cursorLayer.isHidden = false
-        self.cursorPressedLayer.position = contentPoint
-        self.cursorPressedLayer.isHidden = !isPressed
         CATransaction.commit()
         CATransaction.flush()
         self.storedCursorFrame = self.cursorLayer.frame
@@ -360,20 +335,18 @@ final class RemoteHostedPIPSurface: @unchecked Sendable {
     )
   }
 
-  private static let softwareCursorImage: CGImage? = {
-    // Downsampled 2x rendition of the ARM Package_ComputerUse `SoftwareCursor` asset. Keeping the
-    // reference pixels here makes the Intel compatibility bundle self-contained at runtime.
-    let encoded = """
-      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
-      """
-    guard let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters),
-      let source = CGImageSourceCreateWithData(data as CFData, nil)
+  private static let fogCursorLayerContents: SendableLayerContents? = {
+    guard let image = FogCursorRenderer.makeImage(),
+      let pixelBuffer = makeCursorPixelBuffer(from: image),
+      let surfaceReference = CVPixelBufferGetIOSurface(pixelBuffer)
     else { return nil }
-    return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    return makeLayerContents(from: surfaceReference.takeUnretainedValue())
   }()
 
-  private static let softwareCursorLayerContents: SendableLayerContents? = {
-    guard let image = softwareCursorImage,
+  private static let pressedFogCursorLayerContents: SendableLayerContents? = {
+    var state = FogCursorStyleState()
+    state.isPressed = true
+    guard let image = FogCursorRenderer.makeImage(state: state),
       let pixelBuffer = makeCursorPixelBuffer(from: image),
       let surfaceReference = CVPixelBufferGetIOSurface(pixelBuffer)
     else { return nil }
