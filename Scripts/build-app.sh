@@ -7,7 +7,12 @@ output_directory="${OUTPUT_DIRECTORY:-$project_directory/dist}"
 app_path="$output_directory/Intel Sky Service.app"
 temporary_directory="$(mktemp -d)"
 temporary_app="$temporary_directory/Intel Sky Service.app"
-requested_identity="${CODESIGN_IDENTITY:-Apple Development: 510229374@qq.com (YP98F3PUMT)}"
+identity_file="${CODESIGN_IDENTITY_FILE:-$project_directory/.codesign-identity}"
+requested_identity="${CODESIGN_IDENTITY:-}"
+
+if [[ -z "$requested_identity" && -f "$identity_file" ]]; then
+  IFS= read -r requested_identity < "$identity_file" || true
+fi
 
 cleanup() {
   rm -rf "$temporary_directory"
@@ -24,7 +29,9 @@ cp "$project_directory/.build/x86_64-apple-macosx/release/intel-sky-service" \
 chmod 755 "$temporary_app/Contents/MacOS/SkyComputerUseService"
 
 signing_identity="-"
-if security find-identity -v -p codesigning | grep -Fq "\"$requested_identity\""; then
+if [[ -z "$requested_identity" || "$requested_identity" == "-" ]]; then
+  echo "No signing identity configured; using ad-hoc signing" >&2
+elif security find-identity -v -p codesigning | grep -Fq "\"$requested_identity\""; then
   signing_identity="$requested_identity"
 else
   echo "warning: requested signing identity is unavailable; using ad-hoc signing" >&2

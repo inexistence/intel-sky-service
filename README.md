@@ -196,9 +196,21 @@ Build a signed x86_64 App bundle:
 Scripts/build-app.sh
 ```
 
-The build script prefers `Apple Development: 510229374@qq.com (YP98F3PUMT)` and falls back to
-ad-hoc signing if that identity is unavailable. Set `CODESIGN_IDENTITY` to select another installed
-identity. External distribution should use a Developer ID Application signature and notarization.
+The build script uses `CODESIGN_IDENTITY` when it is set. For a persistent machine-local default,
+put the exact identity name on one line in `.codesign-identity`; that file is ignored by Git. The
+environment variable takes precedence over the local file. If neither is configured, or if the
+configured identity is unavailable, the script uses ad-hoc signing. Ad-hoc builds can be installed
+and deployed, but rebuilding them may cause macOS to request permissions again.
+
+For example:
+
+```sh
+security find-identity -v -p codesigning
+printf '%s\n' 'Apple Development: Your Name (TEAMID)' > .codesign-identity
+```
+
+Set `CODESIGN_IDENTITY_FILE` to use a different local identity file. External distribution should
+use a Developer ID Application signature and notarization.
 
 For isolated socket development:
 
