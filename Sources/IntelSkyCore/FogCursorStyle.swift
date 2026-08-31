@@ -32,21 +32,27 @@ enum FogCursorMetrics {
   static let cursorScaleAnchorPoint = CGPoint(x: 0.1, y: 0.1)
   static let fogScaleAnchorPoint = CGPoint(x: 0.25, y: 0.25)
 
-  // AgentCursor is a 12 x 14 path at (60, 58). Its first path point is the click tip.
+  // AgentCursor is a 12 x 14 path at (60, 58). Keep its tip available for artwork-level tests,
+  // but FogCursorStyle.hotSpot in the ARM64 service is the center of hostingView's intrinsic
+  // content size, not the arrow tip.
   static let artworkHotspot = CGPoint(
     x: 60 + 12 * 0.00599,
     y: 58 + 14 * 0.15864
+  )
+  static let interactionHotspot = CGPoint(
+    x: canvasSize.width * 0.5,
+    y: canvasSize.height * 0.5
   )
 
   // SwiftUI artwork uses top-left coordinates, while CALayer anchors and NSWindow origins use
   // bottom-left coordinates on macOS.
   static let layerAnchorPoint = CGPoint(
-    x: artworkHotspot.x / canvasSize.width,
-    y: 1 - artworkHotspot.y / canvasSize.height
+    x: interactionHotspot.x / canvasSize.width,
+    y: 1 - interactionHotspot.y / canvasSize.height
   )
   static let windowHotspot = CGPoint(
-    x: artworkHotspot.x,
-    y: canvasSize.height - artworkHotspot.y
+    x: interactionHotspot.x,
+    y: canvasSize.height - interactionHotspot.y
   )
 
   static let effectiveFogScaleAnchor = centeredAnchor(
@@ -69,6 +75,108 @@ enum FogCursorMetrics {
     CGPoint(
       x: (canvasSize.width - diameter) * 0.5 + diameter * unitPoint.x,
       y: (canvasSize.height - diameter) * 0.5 + diameter * unitPoint.y
+    )
+  }
+}
+
+struct FogCursorMotionConfiguration: Equatable, Sendable {
+  var clickAngleDegrees: CGFloat
+  var candidateCount: Int
+  var boundsMargin: CGFloat
+  var startHandle: CGFloat
+  var endpointHandle: CGFloat
+  var arcSize: CGFloat
+  var arcFlow: CGFloat
+  var straightPathDistanceThreshold: CGFloat
+  var springResponseScaler: Double
+  var springResponseMin: Double
+  var springResponseMax: Double
+  var springDampingFraction: Double
+  var scootDistanceThreshold: CGFloat
+  var scootPositionResponse: Double
+  var scootPositionDampingFraction: Double
+  var scootPositionSettleVelocity: CGFloat
+  var scootAxisResponse: Double
+  var scootAxisDampingFraction: Double
+  var scootBaseRotationResponse: Double
+  var scootBaseRotationDampingFraction: Double
+  var scootStretchResponse: Double
+  var scootStretchDampingFraction: Double
+  var scootStretchMin: CGFloat
+  var scootStretchPivotX: CGFloat
+  var scootStretchXAmount: CGFloat
+  var scootSquashYAmount: CGFloat
+  var scootRotationResponse: Double
+  var scootRotationDampingFraction: Double
+  var scootRotationMaxDegrees: CGFloat
+  var terminalTangentBlendStart: CGFloat
+
+  // Byte-for-byte values recovered from MotionConfiguration.live in the arm64 service.
+  static let arm64 = FogCursorMotionConfiguration(
+    clickAngleDegrees: -44,
+    candidateCount: 20,
+    boundsMargin: 20,
+    startHandle: 0.419_602_950_316,
+    endpointHandle: 0.15,
+    arcSize: 0.276_552_318_806,
+    arcFlow: 0.578_355_532_787,
+    straightPathDistanceThreshold: 10,
+    springResponseScaler: 0.9,
+    springResponseMin: 0.12,
+    springResponseMax: 2.2,
+    springDampingFraction: 0.9,
+    scootDistanceThreshold: 196,
+    scootPositionResponse: 0.24,
+    scootPositionDampingFraction: 0.84,
+    scootPositionSettleVelocity: 12,
+    scootAxisResponse: 0.07,
+    scootAxisDampingFraction: 0.82,
+    scootBaseRotationResponse: 0.09,
+    scootBaseRotationDampingFraction: 0.86,
+    scootStretchResponse: 0.095,
+    scootStretchDampingFraction: 0.72,
+    scootStretchMin: 0,
+    scootStretchPivotX: 0.5,
+    scootStretchXAmount: 0.38,
+    scootSquashYAmount: 0.18,
+    scootRotationResponse: 0.055,
+    scootRotationDampingFraction: 0.76,
+    scootRotationMaxDegrees: 76,
+    terminalTangentBlendStart: 0.99
+  )
+
+  func springResponse(
+    for path: FogCursorMotionPath,
+    constrainedTo bounds: CGRect?
+  ) -> TimeInterval {
+    let metrics = path.metrics(constrainedTo: bounds, margin: boundsMargin)
+    let straightDistance = max(1, hypot(path.end.x - path.start.x, path.end.y - path.start.y))
+    let detour = max(0, metrics.length / straightDistance - 1)
+    let lengthProgress = min(1, max(0, (metrics.length - 180) / 760))
+    let detourProgress = min(1, detour / 0.55)
+    let turningProgress = min(1, metrics.totalTurning / (1.4 * .pi))
+    let squaredTurningProgress = min(1, metrics.squaredTurning / 1.25)
+    let clickRadians = clickAngleDegrees * .pi / 180
+    let deltaLength = max(
+      0.001,
+      hypot(path.end.x - path.start.x, path.end.y - path.start.y)
+    )
+    let alignment =
+      (path.end.x - path.start.x) / deltaLength * sin(clickRadians)
+      + (path.end.y - path.start.y) / deltaLength * cos(clickRadians)
+    let reverseAlignment = min(1, max(0, (-0.08 - alignment) / 0.92))
+    let complexity = max(
+      0,
+      detourProgress * 0.42 + turningProgress * 0.38 + squaredTurningProgress * 0.2
+    )
+    let containedMultiplier = metrics.isContained ? 1.0 : 0.9
+    let containmentAdjustment = metrics.isContained ? 0.0 : 0.04
+    let unscaled =
+      reverseAlignment * 0.28 + 0.42 + lengthProgress * 0.22
+      + min(complexity, 1) * 0.12 + containmentAdjustment
+    return min(
+      springResponseMax,
+      max(springResponseMin, springResponseScaler * containedMultiplier * unscaled)
     )
   }
 }

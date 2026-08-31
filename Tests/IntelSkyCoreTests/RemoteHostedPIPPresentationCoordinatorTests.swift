@@ -6,6 +6,55 @@ import UniformTypeIdentifiers
 
 @testable import IntelSkyCore
 
+@Test func pipRequiresAWindowBackedSkyshot() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(host: host)
+  coordinator.handle(
+    .started(
+      try #require(
+        ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+      )
+    )
+  )
+
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+    ]
+  )
+
+  #expect(host.presentationID == nil)
+}
+
+@Test func staleTurnSkyshotCannotRecreatePIP() throws {
+  let imageURL = try makePIPTestImage()
+  defer { try? FileManager.default.removeItem(at: imageURL) }
+  let host = RecordingPIPHostCaller()
+  let coordinator = RemoteHostedPIPPresentationCoordinator(host: host)
+  let active = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "active"])
+  )
+  coordinator.handle(.started(active))
+
+  coordinator.observe(
+    requestType: "ComputerUseIPCAppGetSkyshotRequest",
+    request: ["app": "com.example.fixture"],
+    codexTurnMetadata: ["thread_id": "thread", "turn_id": "stale"],
+    result: [
+      "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
+    ]
+  )
+
+  #expect(host.presentationID == nil)
+}
+
 @Test func pipCoordinatorPublishesStateAndBeginsTurnScopedEnd() throws {
   let imageURL = try makePIPTestImage()
   let resizedImageURL = try makePIPTestImage(width: 3, height: 4)
@@ -29,13 +78,16 @@ import UniformTypeIdentifiers
       "app": ["bundleIdentifier": "com.apple.finder", "pid": 123],
       "skyshot": [
         "text": "Finder",
-        "screenshot": ["url": imageURL.absoluteString, "mimeType": "image/png"],
+        "screenshot": [
+          "url": imageURL.absoluteString, "mimeType": "image/png", "windowID": 41,
+        ],
       ],
     ]
   )
 
   let presentationID = try #require(host.presentationID)
   #expect(host.events.prefix(2) == ["publish:\(presentationID):thread:turn:2x2", "source:123"])
+  #expect(host.events.contains("interaction:\(presentationID)"))
   #expect(capture.started)
 
   coordinator?.observe(
@@ -46,11 +98,14 @@ import UniformTypeIdentifiers
       "app": ["bundleIdentifier": "com.apple.finder", "pid": 123],
       "skyshot": [
         "text": "Finder refreshed",
-        "screenshot": ["url": resizedImageURL.absoluteString, "mimeType": "image/png"],
+        "screenshot": [
+          "url": resizedImageURL.absoluteString, "mimeType": "image/png", "windowID": 41,
+        ],
       ],
     ]
   )
   #expect(capture.refreshCount == 1)
+  #expect(host.events.filter { $0 == "interaction:\(presentationID)" }.count == 2)
   #expect(capture.outputSize == CGSize(width: 3, height: 4))
   #expect(host.events.contains("prepare:\(presentationID):1:3x4"))
   #expect(host.events.contains("complete:\(presentationID):1"))
@@ -84,7 +139,9 @@ import UniformTypeIdentifiers
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
       "skyshot": [
         "text": "Fixture",
-        "screenshot": ["url": imageURL.absoluteString, "mimeType": "image/png"],
+        "screenshot": [
+          "url": imageURL.absoluteString, "mimeType": "image/png", "windowID": 41,
+        ],
       ],
     ]
   )
@@ -113,7 +170,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   let presentationID = try #require(host.presentationID)
@@ -140,7 +197,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn-1"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   let first = try #require(
@@ -172,8 +229,8 @@ import UniformTypeIdentifiers
     captureFactory: { pid, _, _ in captures.make(processIdentifier: pid) }
   )
   for (thread, turn, bundle, pid) in [
-    ("thread-1", "turn-1", "com.example.one", Int32(123)),
-    ("thread-2", "turn-2", "com.example.two", Int32(456)),
+    ("thread", "turn", "com.example.one", Int32(123)),
+    ("thread", "turn", "com.example.two", Int32(456)),
   ] {
     coordinator.observe(
       requestType: "ComputerUseIPCAppGetSkyshotRequest",
@@ -181,7 +238,7 @@ import UniformTypeIdentifiers
       codexTurnMetadata: ["thread_id": thread, "turn_id": turn],
       result: [
         "app": ["bundleIdentifier": bundle, "pid": pid],
-        "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+        "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": pid]],
       ]
     )
   }
@@ -214,7 +271,7 @@ import UniformTypeIdentifiers
       codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
       result: [
         "app": ["bundleIdentifier": "com.example.fixture", "pid": pid],
-        "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+        "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
       ]
     )
   }
@@ -246,7 +303,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   let presentationID = try #require(host.presentationID)
@@ -277,7 +334,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
 
@@ -308,7 +365,7 @@ import UniformTypeIdentifiers
       codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
       result: [
         "app": ["bundleIdentifier": "com.example.fixture", "pid": pid],
-        "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+        "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
       ]
     )
   }
@@ -345,7 +402,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   #expect(!capture.started)
@@ -374,7 +431,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   let presentationID = try #require(host.presentationID)
@@ -411,7 +468,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
 
@@ -444,7 +501,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   let presentationID = try #require(host.presentationID)
@@ -481,7 +538,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   host.connected = false
@@ -518,7 +575,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   host.failNextSourceCallsAsUnavailable(count: 2)
@@ -550,7 +607,7 @@ import UniformTypeIdentifiers
     codexTurnMetadata: ["thread_id": "thread", "turn_id": "turn"],
     result: [
       "app": ["bundleIdentifier": "com.example.fixture", "pid": 123],
-      "skyshot": ["screenshot": ["url": imageURL.absoluteString]],
+      "skyshot": ["screenshot": ["url": imageURL.absoluteString, "windowID": 41]],
     ]
   )
   coordinator.hostDidReconnect()

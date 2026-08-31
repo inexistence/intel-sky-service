@@ -262,12 +262,33 @@ private func decode(_ data: Data) throws -> [String: Any] {
     #expect({ if case .started = lifecycleEvents.events[0] { true } else { false } }())
     #expect(
       {
-        if case .safetyTerminated(_, .screenLocked) = lifecycleEvents.events[1] { true } else {
+        if case .safetyTerminated(_, .screenLocked) = lifecycleEvents.events[1] {
+          true
+        } else {
           false
         }
       }()
     )
   }
+}
+
+@Test func appServerTurnCompletionEndsOnlyTheMatchingThread() {
+  let lifecycle = ComputerUseTurnCoordinator(eventHandler: { _ in })
+  lifecycle.observe(metadata: [
+    "session_id": "session", "thread_id": "thread", "turn_id": "turn",
+  ])
+  let router = SkyRequestRouter(
+    appCatalog: StubCatalog(),
+    appStateProvider: nil,
+    appActionPerformer: nil,
+    turnLifecycle: lifecycle
+  )
+
+  router.codexTurnDidEnd(threadID: "other-thread")
+  #expect(lifecycle.currentIdentity?.threadID == "thread")
+
+  router.codexTurnDidEnd(threadID: "thread")
+  #expect(lifecycle.currentIdentity == nil)
 }
 
 @Test func forbiddenTargetUsesOfficialAppNotAllowedErrorCode() throws {

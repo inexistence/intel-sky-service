@@ -154,6 +154,13 @@ canonical Codex-home location, starts its `SkyComputerUseService` executable, va
 and passes it to the native PIP host. This variable belongs to the ChatGPT main process, not to
 `node_repl` or the Computer Use MCP environment.
 
+Like the ARM service, the managed service observes Codex App Server `turn/completed` broadcasts
+through `${CODEX_HOME:-~/.codex}/ipc/ipc.sock` (or `SKY_CUA_SERVICE_NATIVE_PIPE_PATH` when set).
+That thread-scoped event is the authoritative cleanup boundary for desktop cursor, PIP, capture,
+status-menu application state, and focus protection; cleanup does not depend on whether a turn
+created a PIP window. The public `ComputerUseIPCCodexTurnEndedRequest` remains supported as a
+compatible secondary path.
+
 ## Troubleshooting
 
 Check permissions directly:

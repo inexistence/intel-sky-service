@@ -28,7 +28,7 @@ import UniformTypeIdentifiers
   #expect(coolRim.b > coolRim.r)
 }
 
-@Test func fogCursorPressedArtworkChangesShellWithoutChangingCanvasOrHotspot() throws {
+@Test func fogCursorPressedArtworkChangesShellWithoutChangingCanvasOrCenteredHotspot() throws {
   let idle = try #require(FogCursorRenderer.makeImage())
   var state = FogCursorStyleState()
   state.isPressed = true
@@ -38,9 +38,9 @@ import UniformTypeIdentifiers
   #expect(pressed.height == idle.height)
   #expect(abs(FogCursorMetrics.artworkHotspot.x - 60.07188) < 0.000_01)
   #expect(abs(FogCursorMetrics.artworkHotspot.y - 60.22096) < 0.000_01)
-  #expect(
-    abs(FogCursorMetrics.layerAnchorPoint.y - (1 - 60.22096 / 126)) < 0.000_01
-  )
+  #expect(FogCursorMetrics.interactionHotspot == CGPoint(x: 63, y: 63))
+  #expect(FogCursorMetrics.layerAnchorPoint == CGPoint(x: 0.5, y: 0.5))
+  #expect(FogCursorMetrics.windowHotspot == CGPoint(x: 63, y: 63))
   #expect(idle.dataProvider?.data != pressed.dataProvider?.data)
 }
 
@@ -75,6 +75,130 @@ import UniformTypeIdentifiers
   #expect(state.scootStretchPivotX == 0.5)
   #expect(state.scootStretchAngle == 0)
   #expect(state.scootTiltAngle == 0)
+}
+
+@Test func fogCursorMotionConfigurationMatchesRecoveredARM64Values() {
+  let configuration = FogCursorMotionConfiguration.arm64
+  #expect(configuration.clickAngleDegrees == -44)
+  #expect(configuration.candidateCount == 20)
+  #expect(configuration.boundsMargin == 20)
+  #expect(configuration.springResponseMin == 0.12)
+  #expect(configuration.springResponseMax == 2.2)
+  #expect(configuration.springDampingFraction == 0.9)
+  #expect(configuration.scootDistanceThreshold == 196)
+  #expect(configuration.scootStretchXAmount == 0.38)
+  #expect(configuration.scootSquashYAmount == 0.18)
+  #expect(configuration.scootRotationMaxDegrees == 76)
+  #expect(configuration.terminalTangentBlendStart == 0.99)
+}
+
+@Test func fogCursorSpringStartsAtCurrentValueAndSettlesAtTarget() {
+  let initial = FogCursorSpringSample.sample(
+    elapsed: 0,
+    response: 0.4,
+    dampingFraction: 0.9
+  )
+  let settled = FogCursorSpringSample.sample(
+    elapsed: 3.2,
+    response: 0.4,
+    dampingFraction: 0.9
+  )
+  #expect(abs(initial.value) < 0.000_001)
+  #expect(abs(1 - settled.value) < 0.000_001)
+}
+
+@Test func fogCursorScalarSpringPreservesPresentationVelocityWhenRetargeted() {
+  var spring = FogCursorScalarSpring(value: 0)
+  spring.set(value: 0, velocity: 2, at: 10)
+  spring.retarget(to: 1, at: 10, response: 0.4, dampingFraction: 0.9)
+  let initial = spring.sample(at: 10)
+  let moving = spring.sample(at: 10.02)
+  spring.retarget(to: -1, at: 10.02, response: 0.4, dampingFraction: 0.9)
+  let redirected = spring.sample(at: 10.02)
+
+  #expect(abs(initial.value) < 0.000_001)
+  #expect(abs(initial.velocity - 2) < 0.000_001)
+  #expect(abs(redirected.value - moving.value) < 0.000_001)
+  #expect(abs(redirected.velocity - moving.velocity) < 0.000_001)
+}
+
+@Test func fogCursorScootGeometryMatchesRecoveredARM64Formula() {
+  #expect(FogCursorMotionGeometry.scootEnvelope(progress: 0) == 0)
+  #expect(FogCursorMotionGeometry.scootEnvelope(progress: 1) == 0)
+  let peakRegion = FogCursorMotionGeometry.scootEnvelope(progress: 0.22)
+  #expect(abs(peakRegion - pow(0.78, 0.62)) < 0.000_001)
+
+  let left = FogCursorMotionGeometry.scootAxis(for: CGVector(dx: -1, dy: 0))
+  #expect(abs(left.angleDegrees) < 0.000_001)
+  #expect(left.pivot == 0)
+  let down = FogCursorMotionGeometry.scootAxis(for: CGVector(dx: 0, dy: -1))
+  #expect(down.angleDegrees == -90)
+  #expect(down.pivot == 1)
+
+  let tilt = FogCursorMotionGeometry.scootTiltDegrees(
+    direction: CGVector(dx: 3, dy: 4),
+    envelope: 1,
+    maxDegrees: 76
+  )
+  #expect(abs(tilt - (0.75 * 0.6 + 0.62 * 0.8) * 76) < 0.000_001)
+}
+
+@Test func fogCursorTerminalTangentAlignsCursorAtDestination() {
+  let configuration = FogCursorMotionConfiguration.arm64
+  let tangent = FogCursorMotionGeometry.terminalTangent(
+    pathTangent: CGVector(dx: 1, dy: 0),
+    progress: 1,
+    configuration: configuration
+  )
+  let angle = FogCursorMotionGeometry.cursorAngle(
+    for: tangent,
+    clickAngleDegrees: configuration.clickAngleDegrees
+  )
+
+  #expect(abs(angle) < 0.000_001)
+}
+
+@Test func fogCursorMotionPathPreservesEndpointsAndStraightensShortMoves() {
+  let path = FogCursorMotionPath.make(
+    start: CGPoint(x: 10, y: 20),
+    end: CGPoint(x: 15, y: 24),
+    configuration: .arm64,
+    constrainedTo: nil
+  )
+  #expect(path.point(at: 0) == CGPoint(x: 10, y: 20))
+  #expect(path.point(at: 1) == CGPoint(x: 15, y: 24))
+  #expect(path.point(at: 0.5) == CGPoint(x: 12.5, y: 22))
+}
+
+@Test func fogCursorSpringResponseMatchesRecoveredARM64Weighting() {
+  let configuration = FogCursorMotionConfiguration.arm64
+  let path = FogCursorMotionPath.line(
+    start: .zero,
+    end: CGPoint(x: 1_000, y: 0)
+  )
+  let response = configuration.springResponse(for: path, constrainedTo: nil)
+  let reverseAlignment = (-0.08 - sin(-44 * .pi / 180)) / 0.92
+  let expected = 0.9 * (0.42 + 0.22 + reverseAlignment * 0.28)
+
+  #expect(abs(response - expected) < 0.000_001)
+}
+
+@Test func fogCursorLongPathUsesRecoveredTwentyCandidateEnvelope() {
+  let path = FogCursorMotionPath.make(
+    start: CGPoint(x: 100, y: 100),
+    end: CGPoint(x: 900, y: 600),
+    configuration: .arm64,
+    constrainedTo: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+  )
+  let metrics = path.metrics(
+    constrainedTo: CGRect(x: 0, y: 0, width: 1_200, height: 800),
+    margin: FogCursorMotionConfiguration.arm64.boundsMargin
+  )
+
+  #expect(path.start == CGPoint(x: 100, y: 100))
+  #expect(path.end == CGPoint(x: 900, y: 600))
+  #expect(metrics.length >= hypot(800, 500))
+  #expect(metrics.isContained)
 }
 
 @Test func fogCursorUsesRecoveredARMVelocityComponentAverage() {
@@ -195,13 +319,8 @@ private struct CursorPixels {
   let frame = try #require(surface.cursorFrame)
   #expect(surface.isCursorVisible)
   #expect(surface.isCursorPressed)
-  #expect(abs(frame.minX - (100 - FogCursorMetrics.artworkHotspot.x)) < 0.000_01)
-  #expect(
-    abs(
-      frame.minY
-        - (50 - (FogCursorMetrics.canvasSize.height - FogCursorMetrics.artworkHotspot.y))
-    ) < 0.000_01
-  )
+  #expect(abs(frame.minX - (100 - FogCursorMetrics.interactionHotspot.x)) < 0.000_01)
+  #expect(abs(frame.minY - (50 - FogCursorMetrics.windowHotspot.y)) < 0.000_01)
 
   surface.updateCursor(
     screenPoint: CGPoint(x: 50, y: 50),

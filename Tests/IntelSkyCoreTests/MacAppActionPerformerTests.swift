@@ -940,9 +940,11 @@ private final class RecordingComputerUseVisualizer: ComputerUseVisualizing,
   private(set) var clicks: [CGPoint] = []
   private(set) var drags: [(CGPoint, CGPoint)] = []
 
-  func moveCursor(to point: CGPoint) { moves.append(point) }
-  func showClick(at point: CGPoint) { clicks.append(point) }
-  func showDrag(from start: CGPoint, to end: CGPoint) { drags.append((start, end)) }
+  func moveCursor(to point: CGPoint, target: ComputerUseVisualTarget) { moves.append(point) }
+  func showClick(at point: CGPoint, target: ComputerUseVisualTarget) { clicks.append(point) }
+  func showDrag(from start: CGPoint, to end: CGPoint, target: ComputerUseVisualTarget) {
+    drags.append((start, end))
+  }
 }
 
 private struct RecordedPaste: Equatable {

@@ -151,6 +151,14 @@ let router = SkyRequestRouter(
   eventStreamProvider: eventStreamProvider,
   requestObserver: pipBootstrapController
 )
+let appServerThreadEventObserver = CodexAppServerThreadEventObserver(
+  turnEnded: { threadID in
+    fputs("Codex turn completed for thread \(threadID); revoking Computer Use runtime\n", stderr)
+    router.codexTurnDidEnd(threadID: threadID)
+  },
+  diagnostic: { message in fputs("warning: \(message)\n", stderr) }
+)
+appServerThreadEventObserver.start()
 let screenLockMonitor = ComputerUseScreenLockMonitor {
   fputs("screen locked or console session changed; revoking Computer Use runtime\n", stderr)
   router.screenDidLock()
@@ -172,6 +180,7 @@ pipBootstrapController?.setHostInvalidationHandler { [weak server] in
   server?.shutdown()
 }
 let cleanupRuntimeStatus: @Sendable () -> Void = {
+  appServerThreadEventObserver.stop()
   screenLockMonitor.stop()
   do {
     try ServiceRuntimeStatusWriter.removeIfCurrent(

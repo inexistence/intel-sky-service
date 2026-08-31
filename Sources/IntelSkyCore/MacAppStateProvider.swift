@@ -89,6 +89,9 @@ public struct MacAppStateProvider: AppStateProviding {
       skyshot["screenshot"] = [
         "url": screenshot.url.absoluteString,
         "mimeType": "image/png",
+        // The native PIP controller publishes streams by the skyshot's owner window,
+        // not merely by application. Keep the capture identity alongside the image.
+        "windowID": Int(window.windowID),
       ]
       coordinateSpace = WindowCoordinateSpace(
         windowID: window.windowID,

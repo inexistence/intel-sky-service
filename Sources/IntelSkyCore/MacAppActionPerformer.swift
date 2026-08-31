@@ -358,7 +358,14 @@ public struct MacAppActionPerformer: AppActionPerforming {
     let screenStart = try snapshotCache.screenPoint(for: start, in: app)
     let screenEnd = try snapshotCache.screenPoint(for: end, in: app)
     let target = try snapshotCache.eventTarget(for: app)
-    visualizer.showDrag(from: screenStart, to: screenEnd)
+    visualizer.showDrag(
+      from: screenStart,
+      to: screenEnd,
+      target: ComputerUseVisualTarget(
+        processIdentifier: target.processIdentifier,
+        windowID: target.windowID
+      )
+    )
     try mouseDragPoster.drag(from: screenStart, to: screenEnd, target: target)
   }
 
@@ -431,7 +438,16 @@ public struct MacAppActionPerformer: AppActionPerforming {
     case .coordinate(let coordinate):
       visualizationPoint = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
-    if let visualizationPoint { visualizer.showClick(at: visualizationPoint) }
+    if let visualizationPoint {
+      let visualTarget = try? snapshotCache.eventTarget(for: app)
+      visualizer.showClick(
+        at: visualizationPoint,
+        target: ComputerUseVisualTarget(
+          processIdentifier: app.processIdentifier,
+          windowID: visualTarget?.windowID
+        )
+      )
+    }
     if let element, button == .left, count == 1,
       try accessibilityPrimaryClicker.click(element: element.value)
     {
@@ -489,7 +505,14 @@ public struct MacAppActionPerformer: AppActionPerforming {
     case .coordinate(let coordinate):
       point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
-    visualizer.moveCursor(to: point)
+    let visualTarget = try? snapshotCache.eventTarget(for: app)
+    visualizer.moveCursor(
+      to: point,
+      target: ComputerUseVisualTarget(
+        processIdentifier: app.processIdentifier,
+        windowID: visualTarget?.windowID
+      )
+    )
     let requestedPages = number.doubleValue
     let wholePages = min(240, Int(min(Double(Int.max), requestedPages.rounded(.down))))
     let axPages: Int

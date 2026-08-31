@@ -199,6 +199,12 @@ public struct SkyRequestRouter: Sendable {
     turnLifecycle.terminateForSafety(.screenLocked)
   }
 
+  /// Applies the thread-scoped turn completion published by the Codex App Server. ARM uses this
+  /// event as its authoritative cleanup boundary; the turn ID is intentionally not required.
+  public func codexTurnDidEnd(threadID: String) {
+    turnLifecycle.end(request: ["threadID": threadID])
+  }
+
   func handle(_ payload: Data, clientIdentifier: String) -> Data {
     ComputerUseClientContext.withIdentifier(clientIdentifier) {
       if Self.isNextCaptureUpdate(payload) {

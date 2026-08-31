@@ -22,7 +22,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private struct Key: Hashable {
     let threadID: String
     let turnID: String
-    let bundleIdentifier: String
+    let windowID: CGWindowID
   }
 
   private struct TurnScope: Hashable {
@@ -38,6 +38,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     }
 
     let id: String
+    let bundleIdentifier: String
     let processIdentifier: pid_t
     let surface: RemoteHostedPIPSurface
     let capture: any RemoteHostedPIPWindowCapturing
@@ -53,11 +54,14 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private let host: any RemoteHostedPIPHostCalling
   private let surfaceFactory: @Sendable (URL) throws -> RemoteHostedPIPSurface
   private let captureFactory:
-    @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) -> any RemoteHostedPIPWindowCapturing
+    @Sendable (pid_t, CGWindowID, CGSize, RemoteHostedPIPSurface) ->
+      any RemoteHostedPIPWindowCapturing
   private let hostLivenessProbeInterval: TimeInterval
   private let hostLivenessScheduler:
     @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
   private var presentations: [Key: Presentation] = [:]
+  private var activeTurn: ComputerUseTurnIdentity?
+  private var hasReceivedLifecycleEvent = false
   private var maximumDisplayDimension: CGFloat?
 
   init(
@@ -65,9 +69,14 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     surfaceFactory: @escaping @Sendable (URL) throws -> RemoteHostedPIPSurface = {
       try RemoteHostedPIPSurface(imageURL: $0)
     },
-    captureFactory: @escaping @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) ->
+    captureFactory: @escaping @Sendable (pid_t, CGWindowID, CGSize, RemoteHostedPIPSurface) ->
       any RemoteHostedPIPWindowCapturing = {
-        RemoteHostedPIPWindowCapture(processIdentifier: $0, outputSize: $1, surface: $2)
+        RemoteHostedPIPWindowCapture(
+          processIdentifier: $0,
+          windowID: $1,
+          outputSize: $2,
+          surface: $3
+        )
       },
     hostLivenessProbeInterval: TimeInterval = 2,
     hostLivenessScheduler: @escaping @Sendable (
@@ -84,6 +93,35 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     self.captureFactory = captureFactory
     self.hostLivenessProbeInterval = hostLivenessProbeInterval
     self.hostLivenessScheduler = hostLivenessScheduler
+  }
+
+  /// Source-compatible injection point for capture test doubles that do not need the window ID.
+  convenience init(
+    host: any RemoteHostedPIPHostCalling,
+    surfaceFactory: @escaping @Sendable (URL) throws -> RemoteHostedPIPSurface = {
+      try RemoteHostedPIPSurface(imageURL: $0)
+    },
+    captureFactory: @escaping @Sendable (pid_t, CGSize, RemoteHostedPIPSurface) ->
+      any RemoteHostedPIPWindowCapturing,
+    hostLivenessProbeInterval: TimeInterval = 2,
+    hostLivenessScheduler: @escaping @Sendable (
+      TimeInterval, @escaping @Sendable () -> Void
+    ) -> Void = { delay, operation in
+      DispatchQueue.global(qos: .utility).asyncAfter(
+        deadline: .now() + delay,
+        execute: operation
+      )
+    }
+  ) {
+    self.init(
+      host: host,
+      surfaceFactory: surfaceFactory,
+      captureFactory: { processIdentifier, _, size, surface in
+        captureFactory(processIdentifier, size, surface)
+      },
+      hostLivenessProbeInterval: hostLivenessProbeInterval,
+      hostLivenessScheduler: hostLivenessScheduler
+    )
   }
 
   deinit {
@@ -173,20 +211,27 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   func stopApplication(bundleIdentifier: String) {
     let presentationIDs = lock.withLock {
       presentations.compactMap { key, presentation in
-        key.bundleIdentifier == bundleIdentifier ? presentation.id : nil
+        presentation.bundleIdentifier == bundleIdentifier ? presentation.id : nil
       }
     }
     for presentationID in presentationIDs { invalidate(presentationID: presentationID) }
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    lock.withLock { hasReceivedLifecycleEvent = true }
     switch event {
-    case .started:
-      break
-    case .transitioned(let previous, _), .ended(let previous),
-      .safetyTerminated(let previous, _):
+    case .started(let identity):
+      lock.withLock { activeTurn = identity }
+    case .transitioned(let previous, let next):
+      lock.withLock { activeTurn = next }
+      beginEndingPresentations(threadID: previous.threadID, turnID: previous.turnID)
+    case .ended(let previous), .safetyTerminated(let previous, _):
+      lock.withLock {
+        if activeTurn == previous { activeTurn = nil }
+      }
       beginEndingPresentations(threadID: previous.threadID, turnID: previous.turnID)
     case .safetyRevoked:
+      lock.withLock { activeTurn = nil }
       beginEndingAllPresentations()
     }
   }
@@ -197,20 +242,21 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     codexTurnMetadata: Any?,
     result: Any
   ) {
-    switch requestType {
-    case "ComputerUseIPCAppGetSkyshotRequest", "ComputerUseIPCAppStartRequest":
-      publishOrUpdate(codexTurnMetadata: codexTurnMetadata, result: result)
-    case "ComputerUseIPCCodexTurnEndedRequest":
+    if requestType == "ComputerUseIPCCodexTurnEndedRequest" {
       endPresentations(request: request)
-    default:
-      break
+    } else {
+      publishOrUpdate(codexTurnMetadata: codexTurnMetadata, result: result)
     }
   }
 
   private func publishOrUpdate(codexTurnMetadata: Any?, result: Any) {
-    guard let metadata = codexTurnMetadata as? [String: Any],
-      let threadID = Self.nonempty(metadata["thread_id"]),
-      let turnID = Self.nonempty(metadata["turn_id"]),
+    guard let identity = ComputerUseTurnIdentity(metadata: codexTurnMetadata),
+      lock.withLock({
+        // Direct embedders predating lifecycle callbacks can still establish their first turn.
+        // The production protocol always delivers `.started` before this path.
+        if !hasReceivedLifecycleEvent, activeTurn == nil { activeTurn = identity }
+        return activeTurn == identity
+      }),
       let result = result as? [String: Any],
       let app = result["app"] as? [String: Any],
       let bundleIdentifier = Self.nonempty(app["bundleIdentifier"]),
@@ -218,16 +264,19 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       processIdentifier > 0,
       let skyshot = result["skyshot"] as? [String: Any],
       let screenshot = skyshot["screenshot"] as? [String: Any],
+      let rawWindowID = screenshot["windowID"] as? NSNumber,
+      rawWindowID.uint64Value > 0, rawWindowID.uint64Value <= UInt64(UInt32.max),
       let rawURL = Self.nonempty(screenshot["url"]),
       let imageURL = URL(string: rawURL), imageURL.isFileURL
     else {
       return
     }
 
+    let windowID = CGWindowID(rawWindowID.uint32Value)
     let key = Key(
-      threadID: threadID,
-      turnID: turnID,
-      bundleIdentifier: bundleIdentifier
+      threadID: identity.threadID,
+      turnID: identity.turnID,
+      windowID: windowID
     )
     if let existing = lock.withLock({ presentations[key] }), !existing.ending {
       RemoteHostedPIPDiagnostics.logger.notice(
@@ -288,6 +337,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         }
       }
       existing.capture.refresh(outputSize: existing.surface.captureOutputSize)
+      try? host.noteInteraction(presentationID: existing.id)
       return
     }
 
@@ -298,10 +348,16 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       RemoteHostedPIPDiagnostics.logger.notice(
         "publishing presentation id=\(presentationID, privacy: .public) app=\(bundleIdentifier, privacy: .public) pid=\(processIdentifier, privacy: .public) size=\(surface.size.width, privacy: .public)x\(surface.size.height, privacy: .public)"
       )
-      let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
+      let capture = captureFactory(
+        processIdentifier,
+        windowID,
+        surface.captureOutputSize,
+        surface
+      )
       lock.withLock {
         presentations[key] = Presentation(
           id: presentationID,
+          bundleIdentifier: bundleIdentifier,
           processIdentifier: processIdentifier,
           surface: surface,
           capture: capture,
@@ -337,7 +393,12 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     do {
       let surface = try surfaceFactory(imageURL)
       surface.setMaximumDisplayDimension(lock.withLock { maximumDisplayDimension })
-      let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
+      let capture = captureFactory(
+        processIdentifier,
+        key.windowID,
+        surface.captureOutputSize,
+        surface
+      )
       let fencePort = try surface.createFencePort()
       defer { mach_port_deallocate(remoteHostedPIPTaskPort(), fencePort) }
       try host.prepareContextReplacement(
@@ -358,6 +419,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         else { return false }
         presentations[key] = Presentation(
           id: existing.id,
+          bundleIdentifier: existing.bundleIdentifier,
           processIdentifier: processIdentifier,
           surface: surface,
           capture: capture,
@@ -377,6 +439,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       }
       existing.capture.stop()
       capture.start()
+      try? host.noteInteraction(presentationID: existing.id)
       RemoteHostedPIPDiagnostics.logger.notice(
         "replaced presentation context id=\(existing.id, privacy: .public) oldPID=\(existing.processIdentifier, privacy: .public) newPID=\(processIdentifier, privacy: .public)"
       )
@@ -397,7 +460,12 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     do {
       let surface = try surfaceFactory(imageURL)
       surface.setMaximumDisplayDimension(lock.withLock { maximumDisplayDimension })
-      let capture = captureFactory(processIdentifier, surface.captureOutputSize, surface)
+      let capture = captureFactory(
+        processIdentifier,
+        key.windowID,
+        surface.captureOutputSize,
+        surface
+      )
       let didReplace = lock.withLock { () -> Bool in
         guard let current = presentations[key], current.id == existing.id,
           current.processIdentifier == existing.processIdentifier, !current.ending,
@@ -405,6 +473,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         else { return false }
         presentations[key] = Presentation(
           id: existing.id,
+          bundleIdentifier: existing.bundleIdentifier,
           processIdentifier: processIdentifier,
           surface: surface,
           capture: capture,
@@ -570,6 +639,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       } else if captureWasStarted {
         presentation.capture.refresh(outputSize: presentation.surface.captureOutputSize)
       }
+      try? host.noteInteraction(presentationID: presentation.id)
       scheduleHostLivenessProbe(
         presentationID: presentation.id,
         generation: publication.generation
