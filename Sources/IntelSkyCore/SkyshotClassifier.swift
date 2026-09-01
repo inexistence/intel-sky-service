@@ -14,9 +14,36 @@ public struct SkyshotClassifier: Sendable {
     "AXWebArea",
   ]
 
+  private static let structuralRoles: Set<String> = [
+    kAXWindowRole as String,
+    kAXGroupRole as String,
+  ]
+
+  private static let textRoles: Set<String> = [
+    kAXStaticTextRole as String,
+    kAXTextFieldRole as String,
+    kAXTextAreaRole as String,
+  ]
+
   public init() {}
 
   func containsImage(_ snapshot: CapturedAccessibilitySnapshot) -> Bool {
-    snapshot.locatorsByID.values.contains { Self.visualRoles.contains($0.role) }
+    let locators = snapshot.locatorsByID.values
+    if locators.contains(where: { Self.visualRoles.contains($0.role) }) {
+      return true
+    }
+
+    // Custom-drawn Apps can expose only an unlabeled window/group shell and traffic-light
+    // buttons. That tree cannot represent the visible UI or provide usable click targets, so a
+    // screenshot is required even though the App omitted AXCanvas/AXImage roles.
+    let contentLocators = locators.filter { !Self.structuralRoles.contains($0.role) }
+    return !contentLocators.contains(where: Self.isTextRepresentable)
+  }
+
+  private static func isTextRepresentable(_ locator: AccessibilityElementLocator) -> Bool {
+    if textRoles.contains(locator.role) { return true }
+    return [locator.identifier, locator.title, locator.description]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .contains { !$0.isEmpty }
   }
 }

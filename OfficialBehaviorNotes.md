@@ -1018,10 +1018,12 @@ former 10,000-UTF-16-unit `type` limit, so that extra limit is also removed.
   its exact distinction from List Apps remains `NEEDS_ARM_ORACLE`. `CONFIRMED_STATIC_BINARY`.
 - ARM static metadata and strings expose `ComputerUse.SkyshotClassifier`, the
   `feature/skyshotClassifier` gate, and its image/no-image purpose. Intel attaches screenshots only
-  when the AX tree contains visual roles (`AXImage`, canvas, map, video, or web area); Remote Hosted
-  PIP therefore does not create a floating preview for text-only windows. The observable gate is
-  covered by `SkyshotClassifierTests`; the private ARM classifier implementation remains
-  `NEEDS_ARM_ORACLE`.
+  when the AX tree contains visual roles (`AXImage`, canvas, map, video, or web area), or when a
+  custom-drawn window exposes only a sparse unlabeled AX shell that cannot represent its visible
+  UI or supply click targets. Remote Hosted PIP therefore does not create a floating preview for
+  semantically represented text windows, while custom-drawn Apps such as Soda Music retain a
+  screenshot coordinate space. The observable gate is covered by `SkyshotClassifierTests`; the
+  private ARM classifier implementation remains `NEEDS_ARM_ORACLE`.
 - Intel launches installed apps without activating them, retries window discovery for five seconds,
   and enforces a base one-second post-action settle before the next state capture.
   `CONFIRMED_INTEL_RUNTIME` through Calculator launch/relaunch and action-state tests.
