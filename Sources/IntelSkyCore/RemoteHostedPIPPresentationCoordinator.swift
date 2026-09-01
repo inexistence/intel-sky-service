@@ -60,7 +60,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private let hostLivenessScheduler:
     @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
   private var presentations: [Key: Presentation] = [:]
-  private var activeTurn: ComputerUseTurnIdentity?
+  private var activeTurnsByThreadID: [String: ComputerUseTurnIdentity] = [:]
   private var hasReceivedLifecycleEvent = false
   private var maximumDisplayDimension: CGFloat?
 
@@ -208,10 +208,12 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     }
   }
 
-  func stopApplication(bundleIdentifier: String) {
+  func stopApplication(bundleIdentifier: String, threadID: String? = nil) {
     let presentationIDs = lock.withLock {
       presentations.compactMap { key, presentation in
-        presentation.bundleIdentifier == bundleIdentifier ? presentation.id : nil
+        presentation.bundleIdentifier == bundleIdentifier
+          && (threadID == nil || key.threadID == threadID)
+          ? presentation.id : nil
       }
     }
     for presentationID in presentationIDs { invalidate(presentationID: presentationID) }
@@ -221,17 +223,19 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
     lock.withLock { hasReceivedLifecycleEvent = true }
     switch event {
     case .started(let identity):
-      lock.withLock { activeTurn = identity }
+      lock.withLock { activeTurnsByThreadID[identity.threadID] = identity }
     case .transitioned(let previous, let next):
-      lock.withLock { activeTurn = next }
+      lock.withLock { activeTurnsByThreadID[next.threadID] = next }
       beginEndingPresentations(threadID: previous.threadID, turnID: previous.turnID)
     case .ended(let previous), .safetyTerminated(let previous, _):
       lock.withLock {
-        if activeTurn == previous { activeTurn = nil }
+        if activeTurnsByThreadID[previous.threadID] == previous {
+          activeTurnsByThreadID.removeValue(forKey: previous.threadID)
+        }
       }
       beginEndingPresentations(threadID: previous.threadID, turnID: previous.turnID)
     case .safetyRevoked:
-      lock.withLock { activeTurn = nil }
+      lock.withLock { activeTurnsByThreadID.removeAll() }
       beginEndingAllPresentations()
     }
   }
@@ -254,8 +258,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       lock.withLock({
         // Direct embedders predating lifecycle callbacks can still establish their first turn.
         // The production protocol always delivers `.started` before this path.
-        if !hasReceivedLifecycleEvent, activeTurn == nil { activeTurn = identity }
-        return activeTurn == identity
+        if !hasReceivedLifecycleEvent, activeTurnsByThreadID[identity.threadID] == nil {
+          activeTurnsByThreadID[identity.threadID] = identity
+        }
+        return activeTurnsByThreadID[identity.threadID] == identity
       }),
       let result = result as? [String: Any],
       let app = result["app"] as? [String: Any],

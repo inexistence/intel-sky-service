@@ -52,11 +52,9 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
   private let isApplicationActive: @Sendable (pid_t) -> Bool
   private let postSyntheticFocusEvent:
     @Sendable (SyntheticFocusEventDescriptor, ComputerUseEventTarget) throws -> Void
-  private let beginFocusProtection:
-    @Sendable (pid_t) -> SystemFocusStealGuard.Protection
-  private let endFocusProtection:
-    @Sendable (SystemFocusStealGuard.Protection) -> Void
-  private var activeTurn: ActiveTurn?
+  private let beginFocusProtection: @Sendable (pid_t) -> SystemFocusStealGuard.Protection
+  private let endFocusProtection: @Sendable (SystemFocusStealGuard.Protection) -> Void
+  private var activeTurns: [String: ActiveTurn] = [:]
 
   init(
     environment: any ComputerUseFocusEnvironment = WorkspaceFocusEnvironment(),
@@ -85,37 +83,40 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
-    let finishedTurn: FinishedTurn? = lock.withLock {
+    let finishedTurns: [FinishedTurn] = lock.withLock {
       switch event {
       case .started(let identity):
-        let previous = activeTurn.map { FinishedTurn(turn: $0, shouldRestore: false) }
-        activeTurn = ActiveTurn(identity: identity)
-        return previous
+        activeTurns[identity.threadID] = ActiveTurn(identity: identity)
+        return []
       case .transitioned(let previous, let next):
-        let previousTurn = activeTurn?.identity == previous ? activeTurn : nil
-        activeTurn = ActiveTurn(identity: next)
-        return previousTurn.map { FinishedTurn(turn: $0, shouldRestore: true) }
+        let previousTurn =
+          activeTurns[previous.threadID]?.identity == previous
+          ? activeTurns.removeValue(forKey: previous.threadID) : nil
+        activeTurns[next.threadID] = ActiveTurn(identity: next)
+        return previousTurn.map { [FinishedTurn(turn: $0, shouldRestore: true)] } ?? []
       case .ended(let identity):
-        guard activeTurn?.identity == identity else { return nil }
-        let ended = activeTurn
-        activeTurn = nil
-        return ended.map { FinishedTurn(turn: $0, shouldRestore: true) }
+        guard activeTurns[identity.threadID]?.identity == identity,
+          let ended = activeTurns.removeValue(forKey: identity.threadID)
+        else { return [] }
+        return [FinishedTurn(turn: ended, shouldRestore: true)]
       case .safetyTerminated(let identity, _):
-        guard activeTurn?.identity == identity else { return nil }
+        guard activeTurns[identity.threadID]?.identity == identity,
+          let terminated = activeTurns.removeValue(forKey: identity.threadID)
+        else { return [] }
         // Never activate an application while the screen is locked or after the user
         // has taken control. A subsequent request starts a fresh turn baseline.
-        let terminated = activeTurn
-        activeTurn = nil
-        return terminated.map { FinishedTurn(turn: $0, shouldRestore: false) }
+        return [FinishedTurn(turn: terminated, shouldRestore: false)]
       case .safetyRevoked:
         // Unscoped safety revocation must also forget any partially reconstructed turn and must
         // never restore focus while the screen is locked or the user has taken control.
-        let revoked = activeTurn
-        activeTurn = nil
-        return revoked.map { FinishedTurn(turn: $0, shouldRestore: false) }
+        let revoked = activeTurns.values.map {
+          FinishedTurn(turn: $0, shouldRestore: false)
+        }
+        activeTurns.removeAll()
+        return revoked
       }
     }
-    if let finishedTurn {
+    for finishedTurn in finishedTurns {
       endSyntheticFocusLease(finishedTurn.turn.syntheticFocusLease, deactivateIfInactive: true)
       if finishedTurn.shouldRestore { restoreIfSafe(finishedTurn.turn) }
     }
@@ -126,7 +127,9 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
     _ body: () throws -> T
   ) throws -> TurnScopedSyntheticFocusResult<T> {
     let canExecute = try lock.withLock { () throws -> Bool in
-      guard var turn = activeTurn else { return false }
+      guard let threadID = selectedThreadIDLocked(), var turn = activeTurns[threadID] else {
+        return false
+      }
 
       if let lease = turn.syntheticFocusLease {
         if lease.target == target, !isApplicationActive(target.processIdentifier) {
@@ -134,11 +137,11 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
         }
         endSyntheticFocusLease(lease, deactivateIfInactive: true)
         turn.syntheticFocusLease = nil
-        activeTurn = turn
+        activeTurns[threadID] = turn
       }
 
       guard !isApplicationActive(target.processIdentifier) else {
-        activeTurn = turn
+        activeTurns[threadID] = turn
         return true
       }
 
@@ -160,7 +163,7 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
         throw error
       }
       turn.syntheticFocusLease = SyntheticFocusLease(target: target, protection: protection)
-      activeTurn = turn
+      activeTurns[threadID] = turn
       return true
     }
     guard canExecute else { return .unavailable }
@@ -177,11 +180,13 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
 
   func targetWillBeActivated(_ app: ResolvedMacApp) {
     let identityToCapture = lock.withLock { () -> ComputerUseTurnIdentity? in
-      guard var turn = activeTurn else { return nil }
+      guard let threadID = selectedThreadIDLocked(), var turn = activeTurns[threadID] else {
+        return nil
+      }
       turn.controlledProcessIdentifiers.insert(app.processIdentifier)
       let needsCapture = !turn.didCaptureRestoreTarget
       if needsCapture { turn.didCaptureRestoreTarget = true }
-      activeTurn = turn
+      activeTurns[threadID] = turn
       return needsCapture ? turn.identity : nil
     }
     guard let identityToCapture else { return }
@@ -189,14 +194,14 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
     let target = environment.captureRestoreTarget()
     let checkpoint = interventionMonitor.isAvailable ? interventionMonitor.checkpoint() : nil
     lock.withLock {
-      guard var turn = activeTurn, turn.identity == identityToCapture,
+      guard var turn = activeTurns[identityToCapture.threadID], turn.identity == identityToCapture,
         turn.didCaptureRestoreTarget
       else {
         return
       }
       turn.restoreTarget = target
       turn.interventionCheckpoint = checkpoint
-      activeTurn = turn
+      activeTurns[identityToCapture.threadID] = turn
     }
   }
 
@@ -213,6 +218,11 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
     else {
       return
     }
+    guard
+      !lock.withLock({
+        activeTurns.values.contains { $0.controlledProcessIdentifiers.contains(currentPID) }
+      })
+    else { return }
     environment.restore(target)
   }
 
@@ -226,13 +236,22 @@ final class ComputerUseFocusCoordinator: ComputerUseFocusArbitrating,
     deactivateIfInactive: Bool
   ) {
     let lease = lock.withLock { () -> SyntheticFocusLease? in
-      guard var turn = activeTurn, turn.syntheticFocusLease?.target == target else { return nil }
+      guard let threadID = selectedThreadIDLocked(), var turn = activeTurns[threadID],
+        turn.syntheticFocusLease?.target == target
+      else { return nil }
       let lease = turn.syntheticFocusLease
       turn.syntheticFocusLease = nil
-      activeTurn = turn
+      activeTurns[threadID] = turn
       return lease
     }
     endSyntheticFocusLease(lease, deactivateIfInactive: deactivateIfInactive)
+  }
+
+  private func selectedThreadIDLocked() -> String? {
+    if let threadID = ComputerUseTurnContext.threadID, activeTurns[threadID] != nil {
+      return threadID
+    }
+    return activeTurns.count == 1 ? activeTurns.keys.first : nil
   }
 
   private func endSyntheticFocusLease(

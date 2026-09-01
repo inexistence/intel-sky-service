@@ -244,9 +244,14 @@ final class ComputerUseInterventionCoordinator: ComputerUseInterventionArbitrati
     let checkpoint: UInt64
   }
 
+  private struct BaselineKey: Hashable {
+    let threadID: String?
+    let bundleIdentifier: String
+  }
+
   private let lock = NSLock()
   private let monitor: any UserInterventionMonitoring
-  private var baselineByBundleIdentifier: [String: Baseline] = [:]
+  private var baselines: [BaselineKey: Baseline] = [:]
 
   init(monitor: any UserInterventionMonitoring = PhysicalInputMonitor.shared) {
     self.monitor = monitor
@@ -263,12 +268,20 @@ final class ComputerUseInterventionCoordinator: ComputerUseInterventionArbitrati
       processIdentifier: app.processIdentifier,
       checkpoint: checkpoint
     )
-    lock.withLock { baselineByBundleIdentifier[app.bundleIdentifier] = baseline }
+    let key = BaselineKey(
+      threadID: ComputerUseTurnContext.threadID,
+      bundleIdentifier: app.bundleIdentifier
+    )
+    lock.withLock { baselines[key] = baseline }
   }
 
   func requireFreshState(for app: ResolvedMacApp) throws {
     guard monitor.isAvailable else { return }
-    guard let baseline = lock.withLock({ baselineByBundleIdentifier[app.bundleIdentifier] }) else {
+    let key = BaselineKey(
+      threadID: ComputerUseTurnContext.threadID,
+      bundleIdentifier: app.bundleIdentifier
+    )
+    guard let baseline = lock.withLock({ baselines[key] }) else {
       throw SkySafetyError.userIntervened
     }
     // PID replacement is rejected by the snapshot cache with its more specific stale-session error.
@@ -279,10 +292,21 @@ final class ComputerUseInterventionCoordinator: ComputerUseInterventionArbitrati
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
-    // A state snapshot authorizes actions only within the turn that produced it.
-    // Clearing on start as well as transition/end also fails closed after a service-side
-    // lifecycle reconstruction.
-    lock.withLock { baselineByBundleIdentifier.removeAll() }
+    switch event {
+    case .started:
+      lock.withLock {
+        baselines = baselines.filter { $0.key.threadID != nil }
+      }
+    case .transitioned(let previous, _), .ended(let previous),
+      .safetyTerminated(let previous, _):
+      lock.withLock {
+        baselines = baselines.filter {
+          $0.key.threadID != nil && $0.key.threadID != previous.threadID
+        }
+      }
+    case .safetyRevoked:
+      lock.withLock { baselines.removeAll() }
+    }
   }
 }
 

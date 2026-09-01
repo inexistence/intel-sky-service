@@ -19,6 +19,7 @@ public enum SkyProtocol {
     "ComputerUseIPCAppStartCaptureRequest",
     "ComputerUseIPCAppStartRequest",
     "ComputerUseIPCAppStopRequest",
+    "ComputerUseIPCAppUsageRequest",
     "ComputerUseIPCCodexStatusItemMenuStateRequest",
     "ComputerUseIPCCodexTurnEndedRequest",
     "ComputerUseIPCEventStreamStartRequest",
@@ -158,6 +159,7 @@ public struct SkyRequestRouter: Sendable {
       eventStreamProvider: eventStreamProvider,
       requestObserver: requestObserver,
       turnLifecycle: ComputerUseTurnCoordinator(
+        appStateProvider: appStateProvider,
         appCaptureProvider: appCaptureProvider,
         eventStreamProvider: eventStreamProvider,
         requestObserver: requestObserver
@@ -292,111 +294,119 @@ public struct SkyRequestRouter: Sendable {
     let deadline = try RequestDeadline(params["deadlineUnixMilliseconds"])
     return try RequestDeadlineContext.withDeadline(deadline.date) {
       try deadline.check()
+      let turnIdentity = ComputerUseTurnIdentity(metadata: params["codexTurnMetadata"])
       turnLifecycle.observe(metadata: params["codexTurnMetadata"])
-      switch method {
-      case "ping":
-        return ["serverApiVersion": SkyProtocol.apiVersion]
-      case "request":
-        guard let requestType = params["requestType"] as? String else {
-          throw SkyRPCError.invalidRequest("Missing requestType")
-        }
-        guard let request = params["request"] as? [String: Any] else {
-          throw SkyRPCError.invalidRequest("Missing or invalid request payload")
-        }
-        let result: Any
-        switch requestType {
-        case "ComputerUseIPCCodexTurnEndedRequest":
-          let threadID = request["threadID"] as? String ?? "<missing>"
-          let turnID = request["turnID"] as? String ?? "<missing>"
-          TurnLifecycleDiagnostics.logger.notice(
-            "received explicit turn-ended thread=\(threadID, privacy: .public) turn=\(turnID, privacy: .public)"
+      return try ComputerUseTurnContext.withIdentity(turnIdentity) {
+        switch method {
+        case "ping":
+          return ["serverApiVersion": SkyProtocol.apiVersion]
+        case "request":
+          guard let requestType = params["requestType"] as? String else {
+            throw SkyRPCError.invalidRequest("Missing requestType")
+          }
+          guard let request = params["request"] as? [String: Any] else {
+            throw SkyRPCError.invalidRequest("Missing or invalid request payload")
+          }
+          let result: Any
+          switch requestType {
+          case "ComputerUseIPCCodexTurnEndedRequest":
+            let threadID = request["threadID"] as? String ?? "<missing>"
+            let turnID = request["turnID"] as? String ?? "<missing>"
+            TurnLifecycleDiagnostics.logger.notice(
+              "received explicit turn-ended thread=\(threadID, privacy: .public) turn=\(turnID, privacy: .public)"
+            )
+            turnLifecycle.end(request: request)
+            TurnLifecycleDiagnostics.logger.notice(
+              "applied explicit turn-ended thread=\(threadID, privacy: .public) turn=\(turnID, privacy: .public)"
+            )
+            result = [:]
+          case "ComputerUseIPCListAppsRequest":
+            result = try appCatalog.listApps()
+          case "ComputerUseIPCAppUsageRequest":
+            guard request.isEmpty else {
+              throw SkyRPCError.invalidRequest("App usage request must be empty")
+            }
+            result = try appCatalog.listApps()
+          case "ComputerUseIPCAppGetSkyshotRequest":
+            guard let appStateProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appStateProvider.getAppState(request: request)
+          case "ComputerUseIPCAppPolicyRequest":
+            guard let appStateProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appStateProvider.getAppPolicy(request: request)
+          case "ComputerUseIPCAppStartRequest":
+            guard let appStateProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appStateProvider.startApp(request: request)
+          case "ComputerUseIPCFrontmostWindowRequest":
+            guard let appLifecycleProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appLifecycleProvider.frontmostWindow(request: request)
+          case "ComputerUseIPCAppModifyRequest":
+            guard let appLifecycleProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appLifecycleProvider.modifyApp(request: request)
+          case "ComputerUseIPCAppStopRequest":
+            result = try sessionCoordinator.stopApplication(request: request)
+          case "ComputerUseIPCCodexStatusItemMenuStateRequest":
+            result = sessionCoordinator.statusItemMenuState()
+          case "ComputerUseIPCAppPerformActionRequest":
+            guard let appActionPerformer else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appActionPerformer.performAction(request: request)
+          case "ComputerUseIPCAppStartCaptureRequest":
+            guard let appCaptureProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appCaptureProvider.startCapture(request: request)
+          case "ComputerUseIPCAppNextCaptureUpdateRequest":
+            guard let appCaptureProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try appCaptureProvider.nextCaptureUpdate(request: request)
+          case "ComputerUseIPCEventStreamStartRequest":
+            guard let eventStreamProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            guard request.isEmpty else {
+              throw SkyRPCError.invalidRequest("Event Stream start request must be empty")
+            }
+            var contextualRequest = request
+            if let identity = ComputerUseTurnIdentity(metadata: params["codexTurnMetadata"]) {
+              contextualRequest["_originatingThreadID"] = identity.threadID
+            }
+            result = try eventStreamProvider.startEventStream(request: contextualRequest)
+          case "ComputerUseIPCEventStreamStatusRequest":
+            guard let eventStreamProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try eventStreamProvider.eventStreamStatus(request: request)
+          case "ComputerUseIPCEventStreamStopRequest":
+            guard let eventStreamProvider else {
+              throw SkyRPCError.unsupportedRequestType(requestType)
+            }
+            result = try eventStreamProvider.stopEventStream(request: request)
+          default:
+            throw SkyRPCError.unsupportedRequestType(requestType)
+          }
+          requestObserver?.observe(
+            requestType: requestType,
+            request: request,
+            codexTurnMetadata: params["codexTurnMetadata"],
+            result: result
           )
-          turnLifecycle.end(request: request)
-          TurnLifecycleDiagnostics.logger.notice(
-            "applied explicit turn-ended thread=\(threadID, privacy: .public) turn=\(turnID, privacy: .public)"
-          )
-          result = [:]
-        case "ComputerUseIPCListAppsRequest":
-          result = try appCatalog.listApps()
-        case "ComputerUseIPCAppGetSkyshotRequest":
-          guard let appStateProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appStateProvider.getAppState(request: request)
-        case "ComputerUseIPCAppPolicyRequest":
-          guard let appStateProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appStateProvider.getAppPolicy(request: request)
-        case "ComputerUseIPCAppStartRequest":
-          guard let appStateProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appStateProvider.startApp(request: request)
-        case "ComputerUseIPCFrontmostWindowRequest":
-          guard let appLifecycleProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appLifecycleProvider.frontmostWindow(request: request)
-        case "ComputerUseIPCAppModifyRequest":
-          guard let appLifecycleProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appLifecycleProvider.modifyApp(request: request)
-        case "ComputerUseIPCAppStopRequest":
-          result = try sessionCoordinator.stopApplication(request: request)
-        case "ComputerUseIPCCodexStatusItemMenuStateRequest":
-          result = sessionCoordinator.statusItemMenuState()
-        case "ComputerUseIPCAppPerformActionRequest":
-          guard let appActionPerformer else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appActionPerformer.performAction(request: request)
-        case "ComputerUseIPCAppStartCaptureRequest":
-          guard let appCaptureProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appCaptureProvider.startCapture(request: request)
-        case "ComputerUseIPCAppNextCaptureUpdateRequest":
-          guard let appCaptureProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try appCaptureProvider.nextCaptureUpdate(request: request)
-        case "ComputerUseIPCEventStreamStartRequest":
-          guard let eventStreamProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          guard request.isEmpty else {
-            throw SkyRPCError.invalidRequest("Event Stream start request must be empty")
-          }
-          var contextualRequest = request
-          if let identity = ComputerUseTurnIdentity(metadata: params["codexTurnMetadata"]) {
-            contextualRequest["_originatingThreadID"] = identity.threadID
-          }
-          result = try eventStreamProvider.startEventStream(request: contextualRequest)
-        case "ComputerUseIPCEventStreamStatusRequest":
-          guard let eventStreamProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try eventStreamProvider.eventStreamStatus(request: request)
-        case "ComputerUseIPCEventStreamStopRequest":
-          guard let eventStreamProvider else {
-            throw SkyRPCError.unsupportedRequestType(requestType)
-          }
-          result = try eventStreamProvider.stopEventStream(request: request)
+          try deadline.check()
+          return result
         default:
-          throw SkyRPCError.unsupportedRequestType(requestType)
+          throw SkyRPCError.unsupportedMethod(method)
         }
-        requestObserver?.observe(
-          requestType: requestType,
-          request: request,
-          codexTurnMetadata: params["codexTurnMetadata"],
-          result: result
-        )
-        try deadline.check()
-        return result
-      default:
-        throw SkyRPCError.unsupportedMethod(method)
       }
     }
   }

@@ -411,14 +411,29 @@ private func requestPayload(id: Int, type: String, request: [String: Any]) throw
 }
 
 @Test func protocolRequestCatalogPartitionsEveryKnownARMRequest() {
-  #expect(SkyProtocol.implementedRequestTypes.count == 15)
+  #expect(SkyProtocol.implementedRequestTypes.count == 16)
   #expect(SkyProtocol.outOfScopeRequestTypes.count == 19)
   #expect(
     SkyProtocol.implementedRequestTypes.isDisjoint(with: SkyProtocol.outOfScopeRequestTypes)
   )
   #expect(
-    SkyProtocol.implementedRequestTypes.union(SkyProtocol.outOfScopeRequestTypes).count == 34
+    SkyProtocol.implementedRequestTypes.union(SkyProtocol.outOfScopeRequestTypes).count == 35
   )
+}
+
+@Test func appUsageRequestReturnsTheDiscoveredAppCatalog() throws {
+  let router = SkyRequestRouter(appCatalog: StubCatalog())
+  let response = try decode(
+    router.handle(
+      try requestPayload(
+        id: 901,
+        type: "ComputerUseIPCAppUsageRequest",
+        request: [:]
+      )))
+  let result = try #require(response["result"] as? [[String: Any]])
+
+  #expect(result.count == 1)
+  #expect(result[0]["bundleIdentifier"] as? String == "com.apple.finder")
 }
 
 @Test func appRequestRequiresObjectPayload() throws {

@@ -1,12 +1,13 @@
 import Foundation
 
-public struct MacAppStateProvider: AppStateProviding {
+public struct MacAppStateProvider: AppStateProviding, ComputerUseTurnLifecycleEventHandling {
   private let resolver: any MacAppResolving
   private let accessibility: AccessibilitySnapshotter
   private let screenshots: WindowScreenshotter
   private let snapshotCache: ElementSnapshotCache
   private let interactionTracker: AppInteractionTracker
   private let treeDiffer: AccessibilityTreeDiffer
+  private let skyshotClassifier: SkyshotClassifier
   private let screenLockChecker: any ScreenLockChecking
   private let interventionArbitrator: any ComputerUseInterventionArbitrating
   private let policyEvaluator: any MacAppPolicyEvaluating
@@ -19,6 +20,7 @@ public struct MacAppStateProvider: AppStateProviding {
     snapshotCache: ElementSnapshotCache = .init(),
     interactionTracker: AppInteractionTracker = .init(),
     treeDiffer: AccessibilityTreeDiffer = .init(),
+    skyshotClassifier: SkyshotClassifier = .init(),
     screenLockChecker: any ScreenLockChecking = CGSessionScreenLockChecker()
   ) {
     self.init(
@@ -28,6 +30,7 @@ public struct MacAppStateProvider: AppStateProviding {
       snapshotCache: snapshotCache,
       interactionTracker: interactionTracker,
       treeDiffer: treeDiffer,
+      skyshotClassifier: skyshotClassifier,
       screenLockChecker: screenLockChecker,
       interventionArbitrator: ComputerUseInterventionCoordinator.shared,
       policyEvaluator: CodexAppServerMacAppPolicyEvaluator.shared,
@@ -42,6 +45,7 @@ public struct MacAppStateProvider: AppStateProviding {
     snapshotCache: ElementSnapshotCache = .init(),
     interactionTracker: AppInteractionTracker = .init(),
     treeDiffer: AccessibilityTreeDiffer = .init(),
+    skyshotClassifier: SkyshotClassifier = .init(),
     screenLockChecker: any ScreenLockChecking = CGSessionScreenLockChecker(),
     interventionArbitrator: any ComputerUseInterventionArbitrating,
     policyEvaluator: any MacAppPolicyEvaluating = OfficialCompatibleMacAppPolicyEvaluator(),
@@ -53,6 +57,7 @@ public struct MacAppStateProvider: AppStateProviding {
     self.snapshotCache = snapshotCache
     self.interactionTracker = interactionTracker
     self.treeDiffer = treeDiffer
+    self.skyshotClassifier = skyshotClassifier
     self.screenLockChecker = screenLockChecker
     self.interventionArbitrator = interventionArbitrator
     self.policyEvaluator = policyEvaluator
@@ -79,11 +84,13 @@ public struct MacAppStateProvider: AppStateProviding {
     var skyshot: [String: Any] = ["text": outputText]
     var coordinateSpace: WindowCoordinateSpace?
 
-    if let window = try? resolver.frontWindow(for: app),
+    if skyshotClassifier.containsImage(snapshot),
+      let window = try? resolver.frontWindow(for: app),
       let screenshot = try? screenshots.capture(
         windowID: window.windowID,
         processIdentifier: app.processIdentifier,
-        screenFrame: window.screenFrame
+        screenFrame: window.screenFrame,
+        bundleIdentifier: app.bundleIdentifier
       )
     {
       skyshot["screenshot"] = [
@@ -175,6 +182,34 @@ public struct MacAppStateProvider: AppStateProviding {
       "decision": policy.decision.rawValue,
       "target": target,
     ]
+  }
+
+  public func deactivate(bundleIdentifier: String, threadID: String?) {
+    snapshotCache.clear(bundleIdentifier: bundleIdentifier, threadID: threadID)
+    interactionTracker.clear(bundleIdentifier: bundleIdentifier, threadID: threadID)
+    treeDiffer.clear(bundleIdentifier: bundleIdentifier, threadID: threadID)
+    screenshots.clear(bundleIdentifier: bundleIdentifier, threadID: threadID)
+  }
+
+  func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    let endedThreadID: String?
+    switch event {
+    case .started:
+      snapshotCache.clearUnscoped()
+      interactionTracker.clearUnscoped()
+      treeDiffer.clearUnscoped()
+      screenshots.clearUnscoped()
+      return
+    case .transitioned(let previous, _), .ended(let previous),
+      .safetyTerminated(let previous, _):
+      endedThreadID = previous.threadID
+    case .safetyRevoked:
+      endedThreadID = nil
+    }
+    snapshotCache.clear(threadID: endedThreadID)
+    interactionTracker.clear(threadID: endedThreadID)
+    treeDiffer.clear(threadID: endedThreadID)
+    screenshots.clear(threadID: endedThreadID)
   }
 }
 

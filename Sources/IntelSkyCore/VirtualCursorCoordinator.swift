@@ -25,6 +25,7 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
   private var remoteCursorGeneration: UInt64 = 0
   private var lifecycleGeneration: UInt64 = 0
   private var lastRemoteCursorPoint: CGPoint?
+  private var cursorOwnerThreadID: String?
   private let rendersLocalOverlay: Bool
   private let localCursorSink: (@Sendable (LocalCursorCommand) -> Void)?
 
@@ -63,12 +64,17 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
 
   func showDrag(from start: CGPoint, to end: CGPoint, target: ComputerUseVisualTarget) {
     let turnGeneration = lock.withLock { lifecycleGeneration }
-    notifyRemoteCursor(at: start, isPressed: true)
+    let ownerThreadID = ComputerUseTurnContext.threadID
+    notifyRemoteCursor(at: start, isPressed: true, ownerThreadID: ownerThreadID)
     DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.08) { [weak self] in
       guard let self,
         lock.withLock({ lifecycleGeneration == turnGeneration })
       else { return }
-      let generation = notifyRemoteCursor(at: end, isPressed: true)
+      let generation = notifyRemoteCursor(
+        at: end,
+        isPressed: true,
+        ownerThreadID: ownerThreadID
+      )
       scheduleRemoteRelease(at: end, generation: generation, delay: 0.12)
     }
     if rendersLocalOverlay {
@@ -77,16 +83,37 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    let endedThreadID: String?
+    switch event {
+    case .started:
+      endedThreadID = nil
+    case .transitioned(let previous, _), .ended(let previous),
+      .safetyTerminated(let previous, _):
+      endedThreadID = previous.threadID
+    case .safetyRevoked:
+      endedThreadID = nil
+    }
     let inactive = lock.withLock {
-      () -> (CGPoint?, (@Sendable (CGPoint, Bool, Bool) -> Bool)?) in
+      () -> (CGPoint?, (@Sendable (CGPoint, Bool, Bool) -> Bool)?, Bool) in
+      let shouldClear: Bool
+      switch event {
+      case .started:
+        shouldClear = cursorOwnerThreadID == nil
+      case .safetyRevoked:
+        shouldClear = true
+      default:
+        shouldClear = cursorOwnerThreadID == nil || cursorOwnerThreadID == endedThreadID
+      }
+      guard shouldClear else { return (nil, nil, false) }
       lifecycleGeneration &+= 1
       remoteCursorGeneration &+= 1
       let point = lastRemoteCursorPoint
       lastRemoteCursorPoint = nil
-      return (point, remoteCursorHandler)
+      cursorOwnerThreadID = nil
+      return (point, remoteCursorHandler, true)
     }
     if let point = inactive.0 { _ = inactive.1?(point, false, false) }
-    if rendersLocalOverlay {
+    if rendersLocalOverlay, inactive.2 {
       renderLocal(.hide)
     }
   }
@@ -127,12 +154,14 @@ public final class ComputerUseVisualCoordinator: ComputerUseVisualizing,
   @discardableResult
   private func notifyRemoteCursor(
     at point: CGPoint,
-    isPressed: Bool
+    isPressed: Bool,
+    ownerThreadID: String? = nil
   ) -> UInt64 {
     let (generation, handler) = lock.withLock {
       () -> (UInt64, (@Sendable (CGPoint, Bool, Bool) -> Bool)?) in
       remoteCursorGeneration &+= 1
       lastRemoteCursorPoint = point
+      cursorOwnerThreadID = ownerThreadID ?? ComputerUseTurnContext.threadID
       return (remoteCursorGeneration, remoteCursorHandler)
     }
     _ = handler?(point, true, isPressed)

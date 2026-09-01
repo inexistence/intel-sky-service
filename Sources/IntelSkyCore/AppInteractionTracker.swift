@@ -2,6 +2,7 @@ import Foundation
 
 public final class AppInteractionTracker: @unchecked Sendable {
   private struct Key: Hashable {
+    let threadID: String?
     let bundleIdentifier: String
     let processIdentifier: pid_t
   }
@@ -15,6 +16,7 @@ public final class AppInteractionTracker: @unchecked Sendable {
     lock.withLock {
       lastActionByApp[
         Key(
+          threadID: ComputerUseTurnContext.threadID,
           bundleIdentifier: app.bundleIdentifier,
           processIdentifier: app.processIdentifier
         )
@@ -29,11 +31,39 @@ public final class AppInteractionTracker: @unchecked Sendable {
   ) -> TimeInterval {
     lock.withLock {
       let key = Key(
+        threadID: ComputerUseTurnContext.threadID,
         bundleIdentifier: app.bundleIdentifier,
         processIdentifier: app.processIdentifier
       )
       guard let lastAction = lastActionByApp[key] else { return 0 }
       return max(0, settleInterval - date.timeIntervalSince(lastAction))
+    }
+  }
+
+  func clear(threadID: String?) {
+    lock.withLock {
+      if let threadID {
+        lastActionByApp = lastActionByApp.filter {
+          $0.key.threadID != nil && $0.key.threadID != threadID
+        }
+      } else {
+        lastActionByApp.removeAll()
+      }
+    }
+  }
+
+  func clearUnscoped() {
+    lock.withLock {
+      lastActionByApp = lastActionByApp.filter { $0.key.threadID != nil }
+    }
+  }
+
+  func clear(bundleIdentifier: String, threadID: String?) {
+    lock.withLock {
+      lastActionByApp = lastActionByApp.filter {
+        $0.key.bundleIdentifier != bundleIdentifier
+          || (threadID != nil && $0.key.threadID != threadID)
+      }
     }
   }
 }

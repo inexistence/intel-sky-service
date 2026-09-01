@@ -41,6 +41,25 @@ import Testing
   #expect(coordinator.currentIdentity == nil)
 }
 
+@Test func turnCoordinatorKeepsIndependentThreadsActive() throws {
+  let recorder = TurnEventRecorder()
+  let coordinator = ComputerUseTurnCoordinator { recorder.append($0) }
+  let first = try #require(
+    ComputerUseTurnIdentity(metadata: turnMetadata(session: "s1", thread: "a", turn: "1"))
+  )
+  let second = try #require(
+    ComputerUseTurnIdentity(metadata: turnMetadata(session: "s2", thread: "b", turn: "1"))
+  )
+
+  coordinator.observe(metadata: turnMetadata(session: "s1", thread: "a", turn: "1"))
+  coordinator.observe(metadata: turnMetadata(session: "s2", thread: "b", turn: "1"))
+  coordinator.end(request: ["threadID": "a"])
+
+  #expect(recorder.events == [.started(first), .started(second), .ended(first)])
+  #expect(coordinator.activeIdentities == [second])
+  #expect(coordinator.currentIdentity == second)
+}
+
 @Test func runtimeCoordinatorRevokesTransientStateBeforeFocusRestoration() throws {
   let recorder = StringRecorder()
   let runtime = ComputerUseTurnRuntimeCoordinator(

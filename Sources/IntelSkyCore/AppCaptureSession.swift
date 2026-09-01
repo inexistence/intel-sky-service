@@ -22,7 +22,7 @@ protocol AppCaptureCompleting: Sendable {
 protocol AppCaptureLifecycleHandling: ComputerUseTurnLifecycleEventHandling {
   func clientDisconnected(_ clientIdentifier: String)
   func handle(_ event: ComputerUseTurnLifecycleEvent)
-  func stopApplication(bundleIdentifier: String)
+  func stopApplication(bundleIdentifier: String, threadID: String?)
   func shutdown()
 }
 
@@ -64,10 +64,13 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   AppCaptureLifecycleHandling, @unchecked Sendable
 {
   private static let currentVersion = 2
+  private static let unscopedThreadID = "__unscoped__"
 
   private final class Session: @unchecked Sendable {
     let requestID: String
     let owner: String
+    let turnIdentity: ComputerUseTurnIdentity?
+    var threadID: String? { turnIdentity?.threadID }
     let app: String
     let condition = NSCondition()
     var appMetadata: [String: Any]
@@ -75,6 +78,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     var lastText: String
     var lastScreenshotSignature: Data?
     var lastScreenshotURL: URL?
+    var transitionSnapshotURL: URL?
     var changeMonitor: (any AppCaptureChangeMonitoring)?
     var refreshRequested = false
     var terminalQueued = false
@@ -83,6 +87,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     init(
       requestID: String,
       owner: String,
+      turnIdentity: ComputerUseTurnIdentity?,
       app: String,
       appMetadata: [String: Any],
       text: String,
@@ -91,11 +96,15 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     ) {
       self.requestID = requestID
       self.owner = owner
+      self.turnIdentity = turnIdentity
       self.app = app
       self.appMetadata = appMetadata
       lastText = text
       lastScreenshotSignature = Self.screenshotSignature(screenshot)
       lastScreenshotURL = Self.screenshotURL(screenshot)
+      self.transitionSnapshotURL =
+        transitionSnapshotURL == lastScreenshotURL
+        ? nil : transitionSnapshotURL
       updates = [
         ["type": "metadata", "app": appMetadata],
         ["type": "axText", "app": appMetadata, "text": text],
@@ -178,7 +187,8 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   )
   private var sessions: [String: Session] = [:]
   private var isShuttingDown = false
-  private var lifecycleGeneration: UInt64 = 0
+  private var globalLifecycleGeneration: UInt64 = 0
+  private var lifecycleGenerationByThreadID: [String: UInt64] = [:]
 
   public init(
     appStateProvider: any AppStateProviding,
@@ -197,9 +207,12 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     self.transitionSnapshotRenderer = transitionSnapshotRenderer
   }
 
-  public func installSessionStopHandling() {
-    ComputerUseSessionCoordinator.shared.addStopHandler { [weak self] bundleIdentifier in
-      self?.stopApplication(bundleIdentifier: bundleIdentifier)
+  public func installSessionStopHandling(
+    deactivationHandler: (@Sendable (String, String?) -> Void)? = nil
+  ) {
+    ComputerUseSessionCoordinator.shared.addStopHandler { [weak self] bundleIdentifier, threadID in
+      self?.stopApplication(bundleIdentifier: bundleIdentifier, threadID: threadID)
+      deactivationHandler?(bundleIdentifier, threadID)
     }
   }
 
@@ -216,14 +229,19 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     guard let version = Self.integer(request["version"]), version == Self.currentVersion else {
       throw AppCaptureSessionError.invalidRequest("Unsupported capture version")
     }
-    let startingGeneration = try lock.withLock { () throws -> UInt64 in
+    let threadID = ComputerUseTurnContext.threadID
+    let threadKey = threadID ?? Self.unscopedThreadID
+    let startingGeneration = try lock.withLock { () throws -> (UInt64, UInt64) in
       guard !isShuttingDown else {
         throw AppCaptureSessionError.invalidRequest("Capture service is shutting down")
       }
       guard sessions[requestID] == nil else {
         throw AppCaptureSessionError.duplicateRequest(requestID)
       }
-      return lifecycleGeneration
+      return (
+        globalLifecycleGeneration,
+        lifecycleGenerationByThreadID[threadKey, default: 0]
+      )
     }
 
     let state = try appStateProvider.getAppState(request: ["app": app, "disableDiff": true])
@@ -252,6 +270,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     let session = Session(
       requestID: requestID,
       owner: ComputerUseClientContext.identifier,
+      turnIdentity: ComputerUseTurnContext.identity,
       app: app,
       appMetadata: appMetadata,
       text: text,
@@ -260,7 +279,10 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     )
 
     try lock.withLock {
-      guard !isShuttingDown, lifecycleGeneration == startingGeneration else {
+      guard !isShuttingDown,
+        globalLifecycleGeneration == startingGeneration.0,
+        lifecycleGenerationByThreadID[threadKey, default: 0] == startingGeneration.1
+      else {
         throw AppCaptureSessionError.invalidRequest("Capture turn ended before start completed")
       }
       guard sessions[requestID] == nil else {
@@ -316,6 +338,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
           lock.withLock {
             if sessions[requestID] === session { sessions.removeValue(forKey: requestID) }
           }
+          cleanupTransitionSnapshot(session)
         }
         return update
       }
@@ -349,23 +372,45 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
+    let endedThreadID: String?
     switch event {
-    case .started: return
-    case .transitioned, .ended, .safetyTerminated, .safetyRevoked:
-      lock.withLock { lifecycleGeneration &+= 1 }
-      terminateAllWithCompleted()
+    case .started:
+      lock.withLock {
+        lifecycleGenerationByThreadID[Self.unscopedThreadID, default: 0] &+= 1
+      }
+      terminateUnscopedWithCompleted(cleanupImagesImmediately: true)
+      return
+    case .transitioned(let previous, _), .ended(let previous),
+      .safetyTerminated(let previous, _):
+      endedThreadID = previous.threadID
+    case .safetyRevoked:
+      endedThreadID = nil
     }
+    lock.withLock {
+      if let endedThreadID {
+        lifecycleGenerationByThreadID[endedThreadID, default: 0] &+= 1
+        lifecycleGenerationByThreadID[Self.unscopedThreadID, default: 0] &+= 1
+      } else {
+        globalLifecycleGeneration &+= 1
+      }
+    }
+    terminateAllWithCompleted(threadID: endedThreadID, cleanupImagesImmediately: true)
   }
 
-  public func stopApplication(bundleIdentifier: String) {
+  public func stopApplication(bundleIdentifier: String, threadID: String?) {
     let matches = lock.withLock {
       sessions.values.filter {
-        ($0.appMetadata["bundleIdentifier"] as? String) == bundleIdentifier
-          || $0.app == bundleIdentifier
+        (($0.appMetadata["bundleIdentifier"] as? String) == bundleIdentifier
+          || $0.app == bundleIdentifier)
+          && (threadID == nil || $0.threadID == threadID)
       }
     }
     for session in matches {
-      terminate(session, update: terminalUpdate(type: "completed", session: session))
+      terminate(
+        session,
+        update: terminalUpdate(type: "completed", session: session),
+        cleanupImagesImmediately: true
+      )
     }
   }
 
@@ -380,14 +425,26 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     for session in removed { disconnect(session) }
   }
 
+  var activeCaptureRequestIDs: Set<String> {
+    let values = lock.withLock { Array(sessions.values) }
+    return Set(
+      values.compactMap { session in
+        session.condition.withLock {
+          !session.terminalQueued && !session.disconnected ? session.requestID : nil
+        }
+      })
+  }
+
   private func beginProducing(_ session: Session) {
     producerQueue.async { [weak self, weak session] in
       guard let self, let session else { return }
       while self.waitForRefresh(session) {
         do {
-          let state = try self.appStateProvider.getAppState(
-            request: ["app": session.app, "disableDiff": true]
-          )
+          let state = try ComputerUseTurnContext.withIdentity(session.turnIdentity) {
+            try self.appStateProvider.getAppState(
+              request: ["app": session.app, "disableDiff": true]
+            )
+          }
           try self.process(state: state, for: session)
         } catch {
           let reason: String
@@ -493,14 +550,38 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     }
   }
 
-  private func terminateAllWithCompleted() {
-    let values = lock.withLock { Array(sessions.values) }
+  private func terminateAllWithCompleted(
+    threadID: String? = nil,
+    cleanupImagesImmediately: Bool = false
+  ) {
+    let values = lock.withLock {
+      sessions.values.filter { threadID == nil || $0.threadID == nil || $0.threadID == threadID }
+    }
     for session in values {
-      terminate(session, update: terminalUpdate(type: "completed", session: session))
+      terminate(
+        session,
+        update: terminalUpdate(type: "completed", session: session),
+        cleanupImagesImmediately: cleanupImagesImmediately
+      )
     }
   }
 
-  private func terminate(_ session: Session, update: [String: Any]) {
+  private func terminateUnscopedWithCompleted(cleanupImagesImmediately: Bool) {
+    let values = lock.withLock { sessions.values.filter { $0.threadID == nil } }
+    for session in values {
+      terminate(
+        session,
+        update: terminalUpdate(type: "completed", session: session),
+        cleanupImagesImmediately: cleanupImagesImmediately
+      )
+    }
+  }
+
+  private func terminate(
+    _ session: Session,
+    update: [String: Any],
+    cleanupImagesImmediately: Bool = false
+  ) {
     session.condition.lock()
     guard !session.terminalQueued, !session.disconnected else {
       session.condition.unlock()
@@ -509,22 +590,36 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     session.terminalQueued = true
     let changeMonitor = session.changeMonitor
     session.changeMonitor = nil
+    let transitionSnapshotURL = cleanupImagesImmediately ? session.transitionSnapshotURL : nil
+    if cleanupImagesImmediately { session.transitionSnapshotURL = nil }
     if session.updates.count >= maximumQueuedUpdates { session.updates.removeFirst() }
     session.updates.append(update)
     session.condition.broadcast()
     session.condition.unlock()
     changeMonitor?.stop()
+    if let transitionSnapshotURL { Self.removeUnusedGeneratedImage(transitionSnapshotURL) }
+  }
+
+  private func cleanupTransitionSnapshot(_ session: Session) {
+    session.condition.lock()
+    let transitionSnapshotURL = session.transitionSnapshotURL
+    session.transitionSnapshotURL = nil
+    session.condition.unlock()
+    if let transitionSnapshotURL { Self.removeUnusedGeneratedImage(transitionSnapshotURL) }
   }
 
   private func disconnect(_ session: Session) {
     session.condition.lock()
     let changeMonitor = session.changeMonitor
     session.changeMonitor = nil
+    let transitionSnapshotURL = session.transitionSnapshotURL
+    session.transitionSnapshotURL = nil
     session.disconnected = true
     session.updates.removeAll()
     session.condition.broadcast()
     session.condition.unlock()
     changeMonitor?.stop()
+    if let transitionSnapshotURL { Self.removeUnusedGeneratedImage(transitionSnapshotURL) }
   }
 
   private func terminalUpdate(

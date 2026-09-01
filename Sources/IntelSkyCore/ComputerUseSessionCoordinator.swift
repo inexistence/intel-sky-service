@@ -104,18 +104,21 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
   ComputerUseTurnLifecycleEventHandling, @unchecked Sendable
 {
   static let shared = ComputerUseSessionCoordinator()
+  private static let unscopedOwner = "__unscoped__"
 
   private struct ActiveApplication: Sendable {
     let identifier: String
     let name: String
     let bundleIdentifier: String
     let bundleURL: String?
+    var ownerThreadIDs: Set<String>
 
-    init(_ app: ResolvedMacApp) {
+    init(_ app: ResolvedMacApp, ownerThreadID: String) {
       identifier = app.bundleIdentifier
       name = app.displayName
       bundleIdentifier = app.bundleIdentifier
       bundleURL = app.appPath.isEmpty ? nil : app.appPath
+      ownerThreadIDs = [ownerThreadID]
     }
 
     func matches(_ value: String) -> Bool {
@@ -136,21 +139,48 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
   }
 
   private let lock = NSLock()
+  private let statusPublisher: @Sendable (Bool) -> Void
   private var activeApplications: [String: ActiveApplication] = [:]
-  private var stoppedBundleIdentifiers: Set<String> = []
-  private var stopHandler: (@Sendable (String) -> Void)?
-  private var additionalStopHandlers: [UUID: @Sendable (String) -> Void] = [:]
+  private var stoppedOwnersByBundleIdentifier: [String: Set<String>] = [:]
+  private var stopHandler: (@Sendable (String, String?) -> Void)?
+  private var additionalStopHandlers: [UUID: @Sendable (String, String?) -> Void] = [:]
+  private var lastPublishedComputerUseActive = false
+
+  init(
+    statusPublisher: @escaping @Sendable (Bool) -> Void = { active in
+      ManagedServiceReconnectNotification.post(
+        processIdentifier: getpid(),
+        computerUseActive: active
+      )
+    }
+  ) {
+    self.statusPublisher = statusPublisher
+  }
+
+  private var currentOwnerThreadID: String {
+    ComputerUseTurnContext.threadID ?? Self.unscopedOwner
+  }
 
   func requireNotStopped(_ app: ResolvedMacApplication) throws {
-    guard !lock.withLock({ stoppedBundleIdentifiers.contains(app.bundleIdentifier) }) else {
+    let ownerThreadID = currentOwnerThreadID
+    guard
+      !lock.withLock({
+        stoppedOwnersByBundleIdentifier[app.bundleIdentifier]?.contains(ownerThreadID) == true
+      })
+    else {
       throw SkySafetyError.userStoppedSession
     }
   }
 
   func requireActionAllowed(_ app: ResolvedMacApplication) throws {
+    let ownerThreadID = currentOwnerThreadID
     let state = lock.withLock { () -> Int in
-      if stoppedBundleIdentifiers.contains(app.bundleIdentifier) { return 2 }
-      if activeApplications[app.bundleIdentifier] != nil { return 1 }
+      if stoppedOwnersByBundleIdentifier[app.bundleIdentifier]?.contains(ownerThreadID) == true {
+        return 2
+      }
+      if activeApplications[app.bundleIdentifier]?.ownerThreadIDs.contains(ownerThreadID) == true {
+        return 1
+      }
       return 0
     }
     switch state {
@@ -161,13 +191,26 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
   }
 
   func recordActive(_ app: ResolvedMacApp) {
+    let ownerThreadID = currentOwnerThreadID
     lock.withLock {
-      guard !stoppedBundleIdentifiers.contains(app.bundleIdentifier) else { return }
-      activeApplications[app.bundleIdentifier] = ActiveApplication(app)
+      guard
+        stoppedOwnersByBundleIdentifier[app.bundleIdentifier]?.contains(ownerThreadID) != true
+      else { return }
+      if var active = activeApplications[app.bundleIdentifier] {
+        active.ownerThreadIDs.insert(ownerThreadID)
+        activeApplications[app.bundleIdentifier] = active
+      } else {
+        activeApplications[app.bundleIdentifier] = ActiveApplication(
+          app,
+          ownerThreadID: ownerThreadID
+        )
+      }
     }
+    publishStatusIfChanged()
   }
 
   func activateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
+    let ownerThreadID = currentOwnerThreadID
     try requireNotStopped(
       ResolvedMacApplication(
         bundleIdentifier: app.bundleIdentifier,
@@ -175,19 +218,39 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
         appPath: app.appPath
       ))
     lock.withLock {
-      activeApplications[app.bundleIdentifier] = ActiveApplication(app)
+      if var active = activeApplications[app.bundleIdentifier] {
+        active.ownerThreadIDs.insert(ownerThreadID)
+        activeApplications[app.bundleIdentifier] = active
+      } else {
+        activeApplications[app.bundleIdentifier] = ActiveApplication(
+          app,
+          ownerThreadID: ownerThreadID
+        )
+      }
     }
+    publishStatusIfChanged()
     return ["active": true, "currentApp": Self.appDescriptor(app)]
   }
 
   func deactivateApplication(_ app: ResolvedMacApp) throws -> [String: Any] {
-    let handlers: [@Sendable (String) -> Void] = try lock.withLock {
-      guard activeApplications.removeValue(forKey: app.bundleIdentifier) != nil else {
+    let ownerThreadID = currentOwnerThreadID
+    let handlers: [@Sendable (String, String?) -> Void] = try lock.withLock {
+      guard var active = activeApplications[app.bundleIdentifier],
+        active.ownerThreadIDs.remove(ownerThreadID) != nil
+      else {
         throw ComputerUseSessionError.noActiveSession(app.bundleIdentifier)
+      }
+      if active.ownerThreadIDs.isEmpty {
+        activeApplications.removeValue(forKey: app.bundleIdentifier)
+      } else {
+        activeApplications[app.bundleIdentifier] = active
       }
       return [stopHandler].compactMap { $0 } + additionalStopHandlers.values
     }
-    for handler in handlers { handler(app.bundleIdentifier) }
+    for handler in handlers {
+      handler(app.bundleIdentifier, Self.externalThreadID(ownerThreadID))
+    }
+    publishStatusIfChanged()
     return ["active": false, "currentApp": NSNull()]
   }
 
@@ -198,22 +261,25 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
     let identifier = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !identifier.isEmpty else { throw ComputerUseSessionError.invalidStopRequest }
 
-    let stopped: (application: ActiveApplication, handlers: [@Sendable (String) -> Void])? =
-      lock.withLock {
-        guard
-          let match = activeApplications.first(where: { $0.value.matches(identifier) })
-        else {
-          return nil
+    let stopped:
+      (application: ActiveApplication, handlers: [@Sendable (String, String?) -> Void])? =
+        lock.withLock {
+          guard
+            let match = activeApplications.first(where: { $0.value.matches(identifier) })
+          else {
+            return nil
+          }
+          activeApplications.removeValue(forKey: match.key)
+          stoppedOwnersByBundleIdentifier[match.value.bundleIdentifier, default: []]
+            .formUnion(match.value.ownerThreadIDs)
+          return (
+            match.value,
+            [stopHandler].compactMap { $0 } + additionalStopHandlers.values
+          )
         }
-        activeApplications.removeValue(forKey: match.key)
-        stoppedBundleIdentifiers.insert(match.value.bundleIdentifier)
-        return (
-          match.value,
-          [stopHandler].compactMap { $0 } + additionalStopHandlers.values
-        )
-      }
     guard let stopped else { throw ComputerUseSessionError.noActiveSession(identifier) }
-    for handler in stopped.handlers { handler(stopped.application.bundleIdentifier) }
+    for handler in stopped.handlers { handler(stopped.application.bundleIdentifier, nil) }
+    publishStatusIfChanged()
     return [:]
   }
 
@@ -241,18 +307,51 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
   }
 
   func handle(_ event: ComputerUseTurnLifecycleEvent) {
-    lock.withLock {
-      activeApplications.removeAll()
-      stoppedBundleIdentifiers.removeAll()
+    let endedThreadID: String?
+    switch event {
+    case .started:
+      endedThreadID = Self.unscopedOwner
+    case .transitioned(let previous, _), .ended(let previous),
+      .safetyTerminated(let previous, _):
+      endedThreadID = previous.threadID
+    case .safetyRevoked:
+      endedThreadID = nil
     }
+    lock.withLock {
+      guard let endedThreadID else {
+        activeApplications.removeAll()
+        stoppedOwnersByBundleIdentifier.removeAll()
+        return
+      }
+      for bundleIdentifier in Array(activeApplications.keys) {
+        guard var active = activeApplications[bundleIdentifier] else { continue }
+        active.ownerThreadIDs.remove(endedThreadID)
+        active.ownerThreadIDs.remove(Self.unscopedOwner)
+        if active.ownerThreadIDs.isEmpty {
+          activeApplications.removeValue(forKey: bundleIdentifier)
+        } else {
+          activeApplications[bundleIdentifier] = active
+        }
+      }
+      for bundleIdentifier in Array(stoppedOwnersByBundleIdentifier.keys) {
+        stoppedOwnersByBundleIdentifier[bundleIdentifier]?.remove(endedThreadID)
+        stoppedOwnersByBundleIdentifier[bundleIdentifier]?.remove(Self.unscopedOwner)
+        if stoppedOwnersByBundleIdentifier[bundleIdentifier]?.isEmpty == true {
+          stoppedOwnersByBundleIdentifier.removeValue(forKey: bundleIdentifier)
+        }
+      }
+    }
+    publishStatusIfChanged()
   }
 
-  func setStopHandler(_ handler: (@Sendable (String) -> Void)?) {
+  func setStopHandler(_ handler: (@Sendable (String, String?) -> Void)?) {
     lock.withLock { stopHandler = handler }
   }
 
   @discardableResult
-  func addStopHandler(_ handler: @escaping @Sendable (String) -> Void) -> UUID {
+  func addStopHandler(
+    _ handler: @escaping @Sendable (String, String?) -> Void
+  ) -> UUID {
     let identifier = UUID()
     lock.withLock { additionalStopHandlers[identifier] = handler }
     return identifier
@@ -264,5 +363,19 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
       "bundleIdentifier": app.bundleIdentifier,
       "appPath": app.appPath.isEmpty ? NSNull() : app.appPath,
     ]
+  }
+
+  private static func externalThreadID(_ ownerThreadID: String) -> String? {
+    ownerThreadID == unscopedOwner ? nil : ownerThreadID
+  }
+
+  private func publishStatusIfChanged() {
+    let active = lock.withLock { () -> Bool? in
+      let active = !activeApplications.isEmpty
+      guard active != lastPublishedComputerUseActive else { return nil }
+      lastPublishedComputerUseActive = active
+      return active
+    }
+    if let active { statusPublisher(active) }
   }
 }

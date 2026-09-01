@@ -6,19 +6,25 @@ public enum ManagedServiceReconnectNotification {
     "com.openai.codex.computer-use.status-item-state-changed"
   )
 
-  public static func userInfo(processIdentifier: pid_t) -> [AnyHashable: Any] {
+  public static func userInfo(
+    processIdentifier: pid_t,
+    computerUseActive: Bool = false
+  ) -> [AnyHashable: Any] {
     [
       "processIdentifier": NSNumber(value: processIdentifier),
-      "computerUseActive": NSNumber(value: false),
+      "computerUseActive": NSNumber(value: computerUseActive),
       "computerHistoryState": "stopped",
     ]
   }
 
-  public static func post(processIdentifier: pid_t) {
+  public static func post(processIdentifier: pid_t, computerUseActive: Bool = false) {
     DistributedNotificationCenter.default().postNotificationName(
       name,
       object: nil,
-      userInfo: userInfo(processIdentifier: processIdentifier),
+      userInfo: userInfo(
+        processIdentifier: processIdentifier,
+        computerUseActive: computerUseActive
+      ),
       deliverImmediately: true
     )
   }

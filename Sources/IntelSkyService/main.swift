@@ -127,7 +127,9 @@ let appCaptureProvider = AppCaptureSessionManager(
     )
   }
 )
-appCaptureProvider.installSessionStopHandling()
+appCaptureProvider.installSessionStopHandling { bundleIdentifier, threadID in
+  appStateProvider.deactivate(bundleIdentifier: bundleIdentifier, threadID: threadID)
+}
 let eventStreamProvider = EventStreamSessionManager(
   rootDirectoryURL: URL(fileURLWithPath: socketPath)
     .deletingLastPathComponent()

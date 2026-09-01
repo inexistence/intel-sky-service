@@ -15,6 +15,17 @@ import Testing
   #expect(info["computerHistoryState"] as? String == "stopped")
 }
 
+@Test func activeStatusNotificationUsesOfficialEnvelope() {
+  let info = ManagedServiceReconnectNotification.userInfo(
+    processIdentifier: 321,
+    computerUseActive: true
+  )
+
+  #expect((info["processIdentifier"] as? NSNumber)?.int32Value == 321)
+  #expect((info["computerUseActive"] as? NSNumber)?.boolValue == true)
+  #expect(info["computerHistoryState"] as? String == "stopped")
+}
+
 @Test func managedReconnectWatchdogModeRequiresTwoDistinctProcessIdentifiers() {
   #expect(
     ManagedServiceReconnectWatchdogMode.parse(arguments: [

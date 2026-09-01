@@ -24,6 +24,38 @@ struct ComputerUseTurnIdentity: Equatable, Sendable {
   }
 }
 
+enum ComputerUseTurnContext {
+  private static let key = "dev.huangjianbin.intel-sky-service.turn-identity"
+
+  static var identity: ComputerUseTurnIdentity? {
+    (Thread.current.threadDictionary[key] as? ComputerUseTurnIdentityBox)?.identity
+  }
+
+  static var threadID: String? { identity?.threadID }
+
+  static func withIdentity<T>(
+    _ identity: ComputerUseTurnIdentity?,
+    operation: () throws -> T
+  ) rethrows -> T {
+    let dictionary = Thread.current.threadDictionary
+    let previous = dictionary[key]
+    if let identity {
+      dictionary[key] = ComputerUseTurnIdentityBox(identity)
+    } else {
+      dictionary.removeObject(forKey: key)
+    }
+    defer {
+      if let previous { dictionary[key] = previous } else { dictionary.removeObject(forKey: key) }
+    }
+    return try operation()
+  }
+
+  private final class ComputerUseTurnIdentityBox: NSObject {
+    let identity: ComputerUseTurnIdentity
+    init(_ identity: ComputerUseTurnIdentity) { self.identity = identity }
+  }
+}
+
 enum ComputerUseTurnSafetyTerminationReason: Equatable, Sendable {
   case screenLocked
   case userIntervened
@@ -59,6 +91,7 @@ final class ComputerUseTurnRuntimeCoordinator: ComputerUseTurnLifecycleEventHand
   }
 
   convenience init(
+    appStateProvider: (any AppStateProviding)? = nil,
     appCaptureProvider: (any AppCaptureProviding)? = nil,
     eventStreamProvider: (any EventStreamProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil
@@ -68,6 +101,9 @@ final class ComputerUseTurnRuntimeCoordinator: ComputerUseTurnLifecycleEventHand
       { ComputerUseInterventionCoordinator.shared.handle($0) },
       { ComputerUseSessionCoordinator.shared.handle($0) },
     ]
+    if let state = appStateProvider as? any ComputerUseTurnLifecycleEventHandling {
+      handlers.append { state.handle($0) }
+    }
     if let capture = appCaptureProvider as? any AppCaptureLifecycleHandling {
       handlers.append { capture.handle($0) }
     }
@@ -98,7 +134,8 @@ protocol ComputerUseTurnLifecycleHandling: Sendable {
 final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unchecked Sendable {
   private let lock = NSLock()
   private let eventHandler: @Sendable (ComputerUseTurnLifecycleEvent) -> Void
-  private var current: ComputerUseTurnIdentity?
+  private var activeByThreadID: [String: ComputerUseTurnIdentity] = [:]
+  private var observationOrder: [String] = []
   private var pendingEvents: [ComputerUseTurnLifecycleEvent] = []
   private var isDeliveringEvents = false
 
@@ -111,11 +148,13 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
   }
 
   convenience init(
+    appStateProvider: (any AppStateProviding)? = nil,
     appCaptureProvider: (any AppCaptureProviding)?,
     eventStreamProvider: (any EventStreamProviding)? = nil,
     requestObserver: (any SkyRequestResultObserving)? = nil
   ) {
     let runtime = ComputerUseTurnRuntimeCoordinator(
+      appStateProvider: appStateProvider,
       appCaptureProvider: appCaptureProvider,
       eventStreamProvider: eventStreamProvider,
       requestObserver: requestObserver
@@ -123,20 +162,30 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
     self.init { runtime.handle($0) }
   }
 
-  var currentIdentity: ComputerUseTurnIdentity? { lock.withLock { current } }
+  var currentIdentity: ComputerUseTurnIdentity? {
+    lock.withLock {
+      observationOrder.last.flatMap { activeByThreadID[$0] }
+    }
+  }
+
+  var activeIdentities: [ComputerUseTurnIdentity] {
+    lock.withLock { observationOrder.compactMap { activeByThreadID[$0] } }
+  }
 
   func observe(metadata: Any?) {
     guard let identity = ComputerUseTurnIdentity(metadata: metadata) else { return }
     let shouldDeliver = lock.withLock { () -> Bool in
-      guard current != identity else { return false }
+      guard activeByThreadID[identity.threadID] != identity else { return false }
       let event: ComputerUseTurnLifecycleEvent
-      if let previous = current {
-        current = identity
+      if let previous = activeByThreadID[identity.threadID] {
+        activeByThreadID[identity.threadID] = identity
         event = .transitioned(from: previous, to: identity)
       } else {
-        current = identity
+        activeByThreadID[identity.threadID] = identity
         event = .started(identity)
       }
+      observationOrder.removeAll { $0 == identity.threadID }
+      observationOrder.append(identity.threadID)
       return enqueueLocked(event)
     }
     if shouldDeliver { deliverPendingEvents() }
@@ -146,30 +195,40 @@ final class ComputerUseTurnCoordinator: ComputerUseTurnLifecycleHandling, @unche
     let requestedThread = nonempty(request["threadID"])
     let requestedTurn = nonempty(request["turnID"])
     let shouldDeliver = lock.withLock { () -> Bool in
-      guard let current else { return false }
-      guard requestedThread == nil || requestedThread == current.threadID,
-        requestedTurn == nil || requestedTurn == current.turnID
-      else {
+      let identity: ComputerUseTurnIdentity?
+      if let requestedThread {
+        identity = activeByThreadID[requestedThread]
+      } else if let latestThread = observationOrder.last {
+        identity = activeByThreadID[latestThread]
+      } else {
+        identity = nil
+      }
+      guard let identity, requestedTurn == nil || requestedTurn == identity.turnID else {
         return false
       }
-      self.current = nil
-      return enqueueLocked(.ended(current))
+      activeByThreadID.removeValue(forKey: identity.threadID)
+      observationOrder.removeAll { $0 == identity.threadID }
+      return enqueueLocked(.ended(identity))
     }
     if shouldDeliver { deliverPendingEvents() }
   }
 
   func terminateForSafety(_ reason: ComputerUseTurnSafetyTerminationReason) {
     let shouldDeliver = lock.withLock { () -> Bool in
-      let event: ComputerUseTurnLifecycleEvent
-      if let current {
-        self.current = nil
-        event = .safetyTerminated(current, reason)
-      } else {
+      if activeByThreadID.isEmpty {
         // Hidden/native callers can establish transient runtime state without Codex turn metadata.
         // A global safety boundary must still revoke that state rather than becoming a no-op.
-        event = .safetyRevoked(reason)
+        return enqueueLocked(.safetyRevoked(reason))
       }
-      return enqueueLocked(event)
+      let identities = observationOrder.compactMap { activeByThreadID[$0] }
+      activeByThreadID.removeAll()
+      observationOrder.removeAll()
+      var shouldStartDelivery = false
+      for identity in identities {
+        shouldStartDelivery =
+          enqueueLocked(.safetyTerminated(identity, reason)) || shouldStartDelivery
+      }
+      return shouldStartDelivery
     }
     if shouldDeliver { deliverPendingEvents() }
   }

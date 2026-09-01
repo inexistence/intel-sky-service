@@ -33,13 +33,22 @@ public struct CapturedWindowScreenshot: Sendable, Equatable {
   }
 }
 
-public struct WindowScreenshotter: Sendable {
+public final class WindowScreenshotter: @unchecked Sendable {
+  private struct Ownership {
+    let threadID: String?
+    let bundleIdentifier: String?
+  }
+
+  private let lock = NSLock()
+  private var ownershipByURL: [URL: Ownership] = [:]
+
   public init() {}
 
   public func capture(
     windowID: CGWindowID,
     processIdentifier: pid_t? = nil,
-    screenFrame: CGRect? = nil
+    screenFrame: CGRect? = nil,
+    bundleIdentifier: String? = nil
   ) throws -> CapturedWindowScreenshot {
     guard CGPreflightScreenCaptureAccess() else {
       throw WindowScreenshotError.permissionRequired
@@ -69,13 +78,15 @@ public struct WindowScreenshotter: Sendable {
         primaryFrame: screenFrame
       )
       do {
-        return try captureWithScreenCaptureKit(
+        let screenshot = try captureWithScreenCaptureKit(
           primaryWindowID: windowID,
           additionalWindowIDs: additionalWindowIDs,
           processIdentifier: processIdentifier,
           screenFrame: screenFrame,
           output: output
         )
+        recordOwnership(of: screenshot.url, bundleIdentifier: bundleIdentifier)
+        return screenshot
       } catch {
         // Never drop the primary screenshot if ScreenCaptureKit is unavailable,
         // times out, or a transient window disappears during filter setup.
@@ -83,7 +94,44 @@ public struct WindowScreenshotter: Sendable {
       }
     }
 
-    return try captureSingleWindow(windowID: windowID, output: output)
+    let screenshot = try captureSingleWindow(windowID: windowID, output: output)
+    recordOwnership(of: screenshot.url, bundleIdentifier: bundleIdentifier)
+    return screenshot
+  }
+
+  func clear(threadID: String?) {
+    removeOwnedScreenshots { ownership in
+      threadID == nil || ownership.threadID == nil || ownership.threadID == threadID
+    }
+  }
+
+  func clearUnscoped() {
+    removeOwnedScreenshots { $0.threadID == nil }
+  }
+
+  func clear(bundleIdentifier: String, threadID: String?) {
+    removeOwnedScreenshots { ownership in
+      ownership.bundleIdentifier == bundleIdentifier
+        && (threadID == nil || ownership.threadID == threadID)
+    }
+  }
+
+  private func recordOwnership(of url: URL, bundleIdentifier: String?) {
+    lock.withLock {
+      ownershipByURL[url.standardizedFileURL] = Ownership(
+        threadID: ComputerUseTurnContext.threadID,
+        bundleIdentifier: bundleIdentifier
+      )
+    }
+  }
+
+  private func removeOwnedScreenshots(where predicate: (Ownership) -> Bool) {
+    let urls = lock.withLock { () -> [URL] in
+      let matches = ownershipByURL.compactMap { predicate($0.value) ? $0.key : nil }
+      for url in matches { ownershipByURL.removeValue(forKey: url) }
+      return matches
+    }
+    for url in urls { try? FileManager.default.removeItem(at: url) }
   }
 
   private func captureSingleWindow(

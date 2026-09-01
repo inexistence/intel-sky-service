@@ -23,6 +23,23 @@ private let cursorTarget = ComputerUseVisualTarget(processIdentifier: 42, window
   #expect(recorder.events == ["12:34:true:false", "12:34:false:false"])
 }
 
+@Test func startingScopedTurnDeactivatesLegacyUnscopedCursor() throws {
+  let recorder = CursorEventRecorder()
+  let coordinator = ComputerUseVisualCoordinator(renderLocalOverlay: false)
+  coordinator.setRemoteCursorHandler { point, active, pressed in
+    recorder.append(point, active, pressed)
+    return true
+  }
+  coordinator.moveCursor(to: CGPoint(x: 12, y: 34), target: cursorTarget)
+  let identity = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+  )
+
+  coordinator.handle(.started(identity))
+
+  #expect(recorder.events == ["12:34:true:false", "12:34:false:false"])
+}
+
 @Test func delayedDragCursorCannotReappearAcrossTurnBoundary() throws {
   let recorder = CursorEventRecorder()
   let coordinator = ComputerUseVisualCoordinator(renderLocalOverlay: false)

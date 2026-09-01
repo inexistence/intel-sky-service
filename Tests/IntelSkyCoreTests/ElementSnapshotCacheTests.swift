@@ -27,6 +27,51 @@ import Testing
   _ = try cache.element(id: "2", for: app)
 }
 
+@Test func snapshotCacheIsThreadScopedAndClearsOnlyEndedThread() throws {
+  let cache = ElementSnapshotCache()
+  let app = testApp(pid: 10)
+  let first = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "first", "turn_id": "1"])
+  )
+  let second = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "second", "turn_id": "1"])
+  )
+
+  ComputerUseTurnContext.withIdentity(first) {
+    cache.store(testSnapshot(["1": AXUIElementCreateApplication(10)]), for: app)
+  }
+  #expect(throws: ElementSnapshotCacheError.self) {
+    try ComputerUseTurnContext.withIdentity(second) { try cache.element(id: "1", for: app) }
+  }
+  ComputerUseTurnContext.withIdentity(second) {
+    cache.store(testSnapshot(["2": AXUIElementCreateApplication(10)]), for: app)
+  }
+
+  cache.clear(threadID: first.threadID)
+  _ = try ComputerUseTurnContext.withIdentity(second) { try cache.element(id: "2", for: app) }
+}
+
+@Test func scopedBoundaryClearsOnlyLegacyUnscopedSnapshots() throws {
+  let cache = ElementSnapshotCache()
+  let app = testApp(pid: 10)
+  let identity = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+  )
+  cache.store(testSnapshot(["legacy": AXUIElementCreateApplication(10)]), for: app)
+  ComputerUseTurnContext.withIdentity(identity) {
+    cache.store(testSnapshot(["scoped": AXUIElementCreateApplication(10)]), for: app)
+  }
+
+  cache.clearUnscoped()
+
+  #expect(throws: ElementSnapshotCacheError.self) {
+    try cache.element(id: "legacy", for: app)
+  }
+  _ = try ComputerUseTurnContext.withIdentity(identity) {
+    try cache.element(id: "scoped", for: app)
+  }
+}
+
 @Test func newProcessInvalidatesPreviousProcessSnapshot() throws {
   let cache = ElementSnapshotCache()
   let oldApp = testApp(pid: 10)
@@ -189,8 +234,10 @@ import Testing
 }
 
 @Test func invalidUnlabeledElementDoesNotRebindAcrossGeometryChange() throws {
-  let locator = testLocator(path: [0, 2], title: nil, frame: CGRect(x: 0, y: 0, width: 50, height: 20))
-  let moved = testLocator(path: [0, 2], title: nil, frame: CGRect(x: 80, y: 0, width: 50, height: 20))
+  let locator = testLocator(
+    path: [0, 2], title: nil, frame: CGRect(x: 0, y: 0, width: 50, height: 20))
+  let moved = testLocator(
+    path: [0, 2], title: nil, frame: CGRect(x: 80, y: 0, width: 50, height: 20))
   let cache = ElementSnapshotCache(
     validityChecker: FixedElementValidityChecker(.invalid),
     refetcher: FixedSnapshotRefetcher(

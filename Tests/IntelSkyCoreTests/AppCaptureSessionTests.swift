@@ -63,6 +63,34 @@ import Testing
   #expect(terminal["type"] as? String == "completed")
 }
 
+@Test func startingScopedTurnCompletesLegacyUnscopedCapture() throws {
+  let manager = AppCaptureSessionManager(appStateProvider: CaptureStateProvider())
+  try start(manager, requestID: "legacy-unscoped")
+  let identity = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "thread", "turn_id": "turn"])
+  )
+
+  manager.handle(.started(identity))
+
+  #expect(manager.activeCaptureRequestIDs.isEmpty)
+}
+
+@Test func endingOneThreadPreservesAnotherThreadsCapture() throws {
+  let manager = AppCaptureSessionManager(appStateProvider: CaptureStateProvider())
+  let first = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "first", "turn_id": "1"])
+  )
+  let second = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "second", "turn_id": "1"])
+  )
+
+  try ComputerUseTurnContext.withIdentity(first) { try start(manager, requestID: "first") }
+  try ComputerUseTurnContext.withIdentity(second) { try start(manager, requestID: "second") }
+  manager.handle(.ended(first))
+
+  #expect(manager.activeCaptureRequestIDs == ["second"])
+}
+
 @Test func captureSessionLongPollEmitsChangedAccessibilityState() throws {
   let provider = ChangingCaptureStateProvider()
   let manager = AppCaptureSessionManager(

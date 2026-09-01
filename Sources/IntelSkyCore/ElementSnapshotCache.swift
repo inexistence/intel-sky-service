@@ -23,15 +23,19 @@ public enum ElementSnapshotCacheError: Error, CustomStringConvertible, Equatable
     case .unknownElement(let elementID, app: _):
       return "\(elementID) is an invalid element ID"
     case .elementAmbiguousBeforeRefetch:
-      return "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be started because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
+      return
+        "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be started because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
     case .elementAmbiguousAfterRefetch:
-      return "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be finished because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
+      return
+        "The element was invalidated, and an attempt was made to refetch it, but the refetch couldn't be finished because multiple elements were found that match the criteria. Try to get the on-screen content again and see if that resolves the issue."
     case .elementNoLongerValid, .elementNoLongerValidAfterRefetch:
-      return "The element ID is no longer valid. Try to get the on-screen content again and see if that resolves the issue."
+      return
+        "The element ID is no longer valid. Try to get the on-screen content again and see if that resolves the issue."
     case .focusedWindowChanged(let app):
       return "The focused window for \(app) changed; get the on-screen content again before acting"
     case .layoutChanged(let app):
-      return "The on-screen content for \(app) changed; get the on-screen content again before acting"
+      return
+        "The on-screen content for \(app) changed; get the on-screen content again before acting"
     case .missingCoordinateSpace(let app):
       return "The latest state for \(app) has no screenshot coordinate space"
     case .coordinateOutsideScreenshot(let point, let size):
@@ -126,6 +130,7 @@ struct ComputerUseEventTarget: Sendable, Equatable {
 
 public final class ElementSnapshotCache: @unchecked Sendable {
   private struct Key: Hashable {
+    let threadID: String?
     let bundleIdentifier: String
     let processIdentifier: pid_t
   }
@@ -176,11 +181,12 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     defer { lock.unlock() }
 
     let key = Key(
+      threadID: ComputerUseTurnContext.threadID,
       bundleIdentifier: app.bundleIdentifier,
       processIdentifier: app.processIdentifier
     )
     entries = entries.filter { existing, _ in
-      existing.bundleIdentifier != app.bundleIdentifier
+      existing.threadID != key.threadID || existing.bundleIdentifier != app.bundleIdentifier
     }
     entries[key] = Entry(
       createdAt: date,
@@ -205,7 +211,11 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     let original: AXUIElement
     let locator: AccessibilityElementLocator?
     let monitor: (any AccessibilitySnapshotInvalidationMonitoring)?
-    let key = Key(bundleIdentifier: app.bundleIdentifier, processIdentifier: app.processIdentifier)
+    let key = Key(
+      threadID: ComputerUseTurnContext.threadID,
+      bundleIdentifier: app.bundleIdentifier,
+      processIdentifier: app.processIdentifier
+    )
     lock.lock()
     do {
       let entry = try validEntry(for: app, at: date, allowLayoutChange: true)
@@ -221,10 +231,11 @@ public final class ElementSnapshotCache: @unchecked Sendable {
       throw error
     }
 
-    guard monitor?.wasDestroyed(original) == true
-      || monitor?.layoutChanged == true
-      || locator?.requiresLiveTreeMembershipCheck == true
-      || validityChecker.validity(of: original) == .invalid
+    guard
+      monitor?.wasDestroyed(original) == true
+        || monitor?.layoutChanged == true
+        || locator?.requiresLiveTreeMembershipCheck == true
+        || validityChecker.validity(of: original) == .invalid
     else { return original }
     guard let locator else { throw ElementSnapshotCacheError.elementNoLongerValid }
 
@@ -321,6 +332,7 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     allowLayoutChange: Bool = false
   ) throws -> Entry {
     let key = Key(
+      threadID: ComputerUseTurnContext.threadID,
       bundleIdentifier: app.bundleIdentifier,
       processIdentifier: app.processIdentifier
     )
@@ -339,10 +351,35 @@ public final class ElementSnapshotCache: @unchecked Sendable {
     }
     return entry
   }
+
+  func clear(threadID: String?) {
+    lock.withLock {
+      if let threadID {
+        entries = entries.filter { $0.key.threadID != nil && $0.key.threadID != threadID }
+      } else {
+        entries.removeAll()
+      }
+    }
+  }
+
+  func clearUnscoped() {
+    lock.withLock {
+      entries = entries.filter { $0.key.threadID != nil }
+    }
+  }
+
+  func clear(bundleIdentifier: String, threadID: String?) {
+    lock.withLock {
+      entries = entries.filter {
+        $0.key.bundleIdentifier != bundleIdentifier
+          || (threadID != nil && $0.key.threadID != threadID)
+      }
+    }
+  }
 }
 
-private extension AccessibilityElementLocator {
-  var requiresLiveTreeMembershipCheck: Bool {
+extension AccessibilityElementLocator {
+  fileprivate var requiresLiveTreeMembershipCheck: Bool {
     switch role {
     case "AXMenu", "AXMenuItem", "AXPopover", "AXSheet": return true
     default: return false

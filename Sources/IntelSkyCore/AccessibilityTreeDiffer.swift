@@ -1,13 +1,18 @@
 import Foundation
 
 public final class AccessibilityTreeDiffer: @unchecked Sendable {
+  private struct Key: Hashable {
+    let threadID: String?
+    let bundleIdentifier: String
+  }
+
   private struct Baseline {
     let processIdentifier: pid_t
     let records: [String: String]
   }
 
   private let lock = NSLock()
-  private var baselines: [String: Baseline] = [:]
+  private var baselines: [Key: Baseline] = [:]
 
   public init() {}
 
@@ -20,8 +25,12 @@ public final class AccessibilityTreeDiffer: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
 
-    let previous = baselines[app.bundleIdentifier]
-    baselines[app.bundleIdentifier] = Baseline(
+    let key = Key(
+      threadID: ComputerUseTurnContext.threadID,
+      bundleIdentifier: app.bundleIdentifier
+    )
+    let previous = baselines[key]
+    baselines[key] = Baseline(
       processIdentifier: app.processIdentifier,
       records: current
     )
@@ -54,6 +63,31 @@ public final class AccessibilityTreeDiffer: @unchecked Sendable {
         "The following is a diff from the previous accessibility tree",
         "with ~, +, and - representing changed, added, and removed elements, respectively.",
       ] + changes.map(\.1)).joined(separator: "\n")
+  }
+
+  func clear(threadID: String?) {
+    lock.withLock {
+      if let threadID {
+        baselines = baselines.filter { $0.key.threadID != nil && $0.key.threadID != threadID }
+      } else {
+        baselines.removeAll()
+      }
+    }
+  }
+
+  func clearUnscoped() {
+    lock.withLock {
+      baselines = baselines.filter { $0.key.threadID != nil }
+    }
+  }
+
+  func clear(bundleIdentifier: String, threadID: String?) {
+    lock.withLock {
+      baselines = baselines.filter {
+        $0.key.bundleIdentifier != bundleIdentifier
+          || (threadID != nil && $0.key.threadID != threadID)
+      }
+    }
   }
 
   private func records(in text: String) -> [String: String] {

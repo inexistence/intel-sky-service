@@ -29,7 +29,7 @@ import Testing
 @Test func userStopLatchesUntilTurnBoundaryAndInvokesPresentationHandler() throws {
   let coordinator = ComputerUseSessionCoordinator()
   let stopRecorder = SessionStopRecorder()
-  coordinator.setStopHandler { stopRecorder.record($0) }
+  coordinator.setStopHandler { bundleIdentifier, _ in stopRecorder.record(bundleIdentifier) }
   let app = sessionTestApp(bundleIdentifier: "com.example.fixture", name: "Fixture")
   let target = ResolvedMacApplication(app)
   #expect(throws: ComputerUseSessionError.self) {
@@ -67,6 +67,32 @@ import Testing
   #expect(throws: ComputerUseSessionError.self) {
     _ = try coordinator.stopApplication(request: ["app": "com.example.missing"])
   }
+}
+
+@Test func endingOneThreadPreservesAnotherThreadsApplicationAndPublishesOnlyEdges() throws {
+  let notifications = SessionStatusRecorder()
+  let coordinator = ComputerUseSessionCoordinator { notifications.record($0) }
+  let first = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "first", "turn_id": "1"])
+  )
+  let second = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "second", "turn_id": "1"])
+  )
+  let firstApp = sessionTestApp(bundleIdentifier: "com.example.first", name: "First")
+  let secondApp = sessionTestApp(bundleIdentifier: "com.example.second", name: "Second")
+
+  ComputerUseTurnContext.withIdentity(first) { coordinator.recordActive(firstApp) }
+  ComputerUseTurnContext.withIdentity(second) { coordinator.recordActive(secondApp) }
+  coordinator.handle(.ended(first))
+
+  let activeState = coordinator.statusItemMenuState()
+  let computerUse = try #require(activeState["computerUse"] as? [String: Any])
+  let applications = try #require(computerUse["activeApplications"] as? [[String: Any]])
+  #expect(applications.map { $0["bundleIdentifier"] as? String } == ["com.example.second"])
+  #expect(notifications.values == [true])
+
+  coordinator.handle(.ended(second))
+  #expect(notifications.values == [true, false])
 }
 
 @Test func appModificationTransitionsReturnConfirmedAppStateShape() throws {
@@ -114,6 +140,12 @@ private final class SessionStopRecorder: @unchecked Sendable {
   private var stored: [String] = []
   var bundleIdentifiers: [String] { lock.withLock { stored } }
   func record(_ bundleIdentifier: String) { lock.withLock { stored.append(bundleIdentifier) } }
+}
+
+private final class SessionStatusRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private(set) var values: [Bool] = []
+  func record(_ value: Bool) { lock.withLock { values.append(value) } }
 }
 
 private func sessionTestApp(bundleIdentifier: String, name: String) -> ResolvedMacApp {

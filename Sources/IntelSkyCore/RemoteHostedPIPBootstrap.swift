@@ -324,8 +324,11 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
           ) ?? false
         }
         ComputerUseSessionCoordinator.shared.setStopHandler {
-          [weak presentationCoordinator] bundleIdentifier in
-          presentationCoordinator?.stopApplication(bundleIdentifier: bundleIdentifier)
+          [weak presentationCoordinator] bundleIdentifier, threadID in
+          presentationCoordinator?.stopApplication(
+            bundleIdentifier: bundleIdentifier,
+            threadID: threadID
+          )
         }
       }
       let runtime = Runtime(
