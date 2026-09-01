@@ -247,21 +247,11 @@ protocol KeyboardInputPosting: Sendable {
 }
 
 struct CGKeyboardInputPoster: KeyboardInputPosting {
+  static let eventSourceStateID: CGEventSourceStateID = .hidSystemState
+
   func press(_ chord: ParsedKeyChord, target: ComputerUseEventTarget) throws {
     try requireAccessibilityPermission()
-    let orderedModifiers = KeyboardModifier.allCases.filter(chord.modifiers.contains)
-    var flags: CGEventFlags = []
-    var events: [CGEvent] = []
-    for modifier in orderedModifiers {
-      flags.insert(modifier.eventFlag)
-      events.append(try makeKeyEvent(keyCode: modifier.keyCode, isDown: true, flags: flags))
-    }
-    events.append(try makeKeyEvent(keyCode: chord.keyCode, isDown: true, flags: flags))
-    events.append(try makeKeyEvent(keyCode: chord.keyCode, isDown: false, flags: flags))
-    for modifier in orderedModifiers.reversed() {
-      flags.remove(modifier.eventFlag)
-      events.append(try makeKeyEvent(keyCode: modifier.keyCode, isDown: false, flags: flags))
-    }
+    let events = try Self.events(for: chord)
     try RequestDeadlineContext.check()
     try UserInterventionContext.check()
     try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
@@ -271,29 +261,86 @@ struct CGKeyboardInputPoster: KeyboardInputPosting {
 
   func typeText(_ text: String, target: ComputerUseEventTarget) throws {
     try requireAccessibilityPermission()
+    let eventGroups = try Self.eventsForTyping(text)
     try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
-      for chunk in Self.utf16Chunks(for: text) {
+      for events in eventGroups {
         try RequestDeadlineContext.check()
         try UserInterventionContext.check()
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-          let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-        else {
-          throw MacAppActionError.eventCreationFailed
-        }
-        chunk.withUnsafeBufferPointer { buffer in
-          down.keyboardSetUnicodeString(
-            stringLength: buffer.count,
-            unicodeString: buffer.baseAddress
-          )
-          up.keyboardSetUnicodeString(
-            stringLength: buffer.count,
-            unicodeString: buffer.baseAddress
-          )
-        }
-        ProcessTargetedEventPoster.postKeyboard(down, to: target)
-        ProcessTargetedEventPoster.postKeyboard(up, to: target)
+        for event in events { ProcessTargetedEventPoster.postKeyboard(event, to: target) }
       }
     }
+  }
+
+  static func events(for chord: ParsedKeyChord) throws -> [CGEvent] {
+    let flags = chord.modifiers.reduce(into: CGEventFlags()) { result, modifier in
+      result.insert(modifier.eventFlag)
+    }
+    return try virtualKeyPressEvents(
+      keyCode: chord.keyCode,
+      flags: flags,
+      unicodeUnits: nil
+    )
+  }
+
+  static func eventsForTyping(_ text: String) throws -> [[CGEvent]] {
+    try text.flatMap { character -> [[CGEvent]] in
+      let value = String(character)
+      let mapping = try? MacKeyChordParser().parse(value)
+      let keyCode: CGKeyCode
+      let flags: CGEventFlags
+      if value == "\n" || value == "\r" {
+        keyCode = 36
+        flags = []
+      } else if value == "\t" {
+        keyCode = 48
+        flags = []
+      } else if let mapping {
+        keyCode = mapping.keyCode
+        flags = mapping.modifiers.reduce(into: CGEventFlags()) { result, modifier in
+          result.insert(modifier.eventFlag)
+        }
+      } else {
+        keyCode = 0
+        flags = []
+      }
+      return try utf16Chunks(for: value).map { chunk in
+        try virtualKeyPressEvents(keyCode: keyCode, flags: flags, unicodeUnits: chunk)
+      }
+    }
+  }
+
+  private static func virtualKeyPressEvents(
+    keyCode: CGKeyCode,
+    flags: CGEventFlags,
+    unicodeUnits: [UInt16]?
+  ) throws -> [CGEvent] {
+    guard let source = CGEventSource(stateID: eventSourceStateID),
+      let flagsDown = CGEvent(source: source),
+      let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+      let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false),
+      let flagsUp = CGEvent(source: source)
+    else { throw MacAppActionError.eventCreationFailed }
+
+    flagsDown.type = .flagsChanged
+    flagsDown.flags = flags
+    down.flags = flags
+    up.flags = flags
+    flagsUp.type = .flagsChanged
+    flagsUp.flags = CGEventSource.flagsState(.combinedSessionState)
+
+    if let unicodeUnits {
+      unicodeUnits.withUnsafeBufferPointer { buffer in
+        down.keyboardSetUnicodeString(
+          stringLength: buffer.count,
+          unicodeString: buffer.baseAddress
+        )
+        up.keyboardSetUnicodeString(
+          stringLength: buffer.count,
+          unicodeString: buffer.baseAddress
+        )
+      }
+    }
+    return [flagsDown, down, up, flagsUp]
   }
 
   static func utf16Chunks(for text: String, maximumCount: Int = 20) -> [[UInt16]] {
@@ -316,14 +363,4 @@ struct CGKeyboardInputPoster: KeyboardInputPosting {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
   }
 
-  private func makeKeyEvent(keyCode: CGKeyCode, isDown: Bool, flags: CGEventFlags) throws
-    -> CGEvent
-  {
-    guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown)
-    else {
-      throw MacAppActionError.eventCreationFailed
-    }
-    event.flags = flags
-    return event
-  }
 }

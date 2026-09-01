@@ -272,7 +272,7 @@ private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
     try performer.performAction(
       request: clickRequest(
         at: ["coordinate": ["_0": [10, 20]]],
-        clickCount: 4,
+        clickCount: 0,
         mouseButton: 0
       ))
   }
@@ -389,26 +389,25 @@ private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
   #expect(keyboard.chords.isEmpty)
 }
 
-@Test func oversizedTypeTextIsRejectedBeforeActivation() throws {
+@Test func typeTextDoesNotApplyNonARMSizeLimit() throws {
   let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(testActionSnapshot(), for: app, coordinateSpace: testCoordinateSpace())
   let activator = RecordingActivator()
   let keyboard = RecordingKeyboardInputPoster()
   let performer = MacAppActionPerformer(
     resolver: StubActionResolver(app: app),
-    snapshotCache: ElementSnapshotCache(),
+    snapshotCache: cache,
     activator: activator,
     frameReader: StubFrameReader(frame: nil),
     mouseClickPoster: RecordingMouseClickPoster(),
     keyboardInputPoster: keyboard
   )
 
-  #expect(throws: MacAppActionError.self) {
-    try performer.performAction(
-      request: actionRequest(name: "type", payload: ["_0": String(repeating: "a", count: 10_001)])
-    )
-  }
+  let text = String(repeating: "a", count: 10_001)
+  _ = try performer.performAction(request: actionRequest(name: "type", payload: ["_0": text]))
   #expect(activator.activatedApps.isEmpty)
-  #expect(keyboard.typedTexts.isEmpty)
+  #expect(keyboard.typedTexts == [text])
 }
 
 @Test func emptyTypeTextIsRejectedBeforeActivation() throws {

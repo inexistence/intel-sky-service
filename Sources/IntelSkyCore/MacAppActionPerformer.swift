@@ -109,6 +109,24 @@ struct CGMouseClickPoster: MouseClickPosting {
     target: ComputerUseEventTarget
   ) throws {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
+    let events = try Self.events(at: point, button: button, count: count, target: target)
+
+    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
+      try RequestDeadlineContext.check()
+      try UserInterventionContext.check()
+      for event in events { ProcessTargetedEventPoster.post(event, to: target) }
+    }
+  }
+
+  static func events(
+    at point: CGPoint,
+    button: ComputerUseMouseButton,
+    count: Int,
+    target: ComputerUseEventTarget
+  ) throws -> [CGEvent] {
+    guard count > 0 else {
+      throw MacAppActionError.invalidAction("clickCount must be a positive integer")
+    }
     let types: (down: CGEventType, up: CGEventType, button: CGMouseButton)
     switch button {
     case .left: types = (.leftMouseDown, .leftMouseUp, .left)
@@ -116,31 +134,27 @@ struct CGMouseClickPoster: MouseClickPosting {
     case .middle: types = (.otherMouseDown, .otherMouseUp, .center)
     }
 
-    try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
-      for clickIndex in 1...count {
-        try RequestDeadlineContext.check()
-        try UserInterventionContext.check()
-        let down = try ProcessTargetedEventPoster.makeWindowMouseEvent(
-          type: types.down,
-          location: point,
-          button: types.button,
-          target: target,
-          eventNumber: clickIndex * 2 - 1,
-          clickCount: clickIndex
-        )
-        let up = try ProcessTargetedEventPoster.makeWindowMouseEvent(
-          type: types.up,
-          location: point,
-          button: types.button,
-          target: target,
-          eventNumber: clickIndex * 2,
-          clickCount: clickIndex
-        )
-        ProcessTargetedEventPoster.post(down, to: target)
-        ProcessTargetedEventPoster.post(up, to: target)
-        if clickIndex < count { Thread.sleep(forTimeInterval: 0.05) }
-      }
+    var events: [CGEvent] = []
+    for clickIndex in 1...count {
+      let eventNumber = clickIndex
+      events.append(try ProcessTargetedEventPoster.makeWindowMouseEvent(
+        type: types.down,
+        location: point,
+        button: types.button,
+        target: target,
+        eventNumber: eventNumber,
+        clickCount: clickIndex
+      ))
+      events.append(try ProcessTargetedEventPoster.makeWindowMouseEvent(
+        type: types.up,
+        location: point,
+        button: types.button,
+        target: target,
+        eventNumber: eventNumber,
+        clickCount: clickIndex
+      ))
     }
+    return events
   }
 }
 
@@ -279,9 +293,6 @@ public struct MacAppActionPerformer: AppActionPerforming {
       let text = try parseSingleStringPayload(action[actionName], actionName: actionName)
       guard !text.isEmpty else {
         throw MacAppActionError.invalidAction("no text to type")
-      }
-      guard text.utf16.count <= 10_000 else {
-        throw MacAppActionError.invalidAction("type text exceeds 10,000 UTF-16 code units")
       }
       try secureInputChecker.requireTextInjectionAllowed()
       let target = try snapshotCache.eventTarget(for: app)
@@ -583,9 +594,10 @@ public struct MacAppActionPerformer: AppActionPerforming {
     guard let number = value as? NSNumber,
       CFGetTypeID(number) != CFBooleanGetTypeID(),
       number.doubleValue.rounded() == number.doubleValue,
-      (1...3).contains(number.intValue)
+      number.doubleValue >= 1,
+      number.doubleValue <= Double(Int.max)
     else {
-      throw MacAppActionError.invalidAction("clickCount must be an integer from 1 through 3")
+      throw MacAppActionError.invalidAction("clickCount must be a positive integer")
     }
     return number.intValue
   }

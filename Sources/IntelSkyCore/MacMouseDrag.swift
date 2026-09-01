@@ -9,53 +9,51 @@ protocol MouseDragPosting: Sendable {
 struct CGMouseDragPoster: MouseDragPosting {
   func drag(from start: CGPoint, to end: CGPoint, target: ComputerUseEventTarget) throws {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
-    let down = try ProcessTargetedEventPoster.makeWindowMouseEvent(
-      type: .leftMouseDown,
-      location: start,
-      button: .left,
-      target: target
-    )
-    let up = try ProcessTargetedEventPoster.makeWindowMouseEvent(
-      type: .leftMouseUp,
-      location: end,
-      button: .left,
-      target: target
-    )
-
-    let distance = hypot(end.x - start.x, end.y - start.y)
-    let stepCount = min(60, max(6, Int(ceil(distance / 20))))
-    var dragEvents: [CGEvent] = []
-    for step in 1...stepCount {
-      let progress = CGFloat(step) / CGFloat(stepCount)
-      let point = CGPoint(
-        x: start.x + (end.x - start.x) * progress,
-        y: start.y + (end.y - start.y) * progress
-      )
-      let event = try ProcessTargetedEventPoster.makeWindowMouseEvent(
-        type: .leftMouseDragged,
-        location: point,
-        button: .left,
-        target: target
-      )
-      dragEvents.append(event)
-    }
+    let events = try Self.events(from: start, to: end, target: target)
 
     try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
       try RequestDeadlineContext.check()
       try UserInterventionContext.check()
-      ProcessTargetedEventPoster.post(down, to: target)
-      do {
-        for event in dragEvents {
-          try RequestDeadlineContext.check()
-          try UserInterventionContext.check()
-          ProcessTargetedEventPoster.post(event, to: target)
-          Thread.sleep(forTimeInterval: 0.008)
-        }
-      } catch {
-        ProcessTargetedEventPoster.post(up, to: target)
-        throw error
+      for event in events {
+        ProcessTargetedEventPoster.post(event, to: target)
       }
-      ProcessTargetedEventPoster.post(up, to: target)
     }
+  }
+
+  static func events(
+    from start: CGPoint,
+    to end: CGPoint,
+    target: ComputerUseEventTarget
+  ) throws -> [CGEvent] {
+    let clickEventNumber = 1
+    let dragEventNumber = 2
+    let down = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+      type: .leftMouseDown,
+      location: start,
+      button: .left,
+      target: target,
+      eventNumber: clickEventNumber,
+      clickCount: 1
+    )
+    let midpoint = CGPoint(x: (start.x + end.x) * 0.5, y: (start.y + end.y) * 0.5)
+    let dragEvents = try [start, midpoint, end].map { point in
+      try ProcessTargetedEventPoster.makeWindowMouseEvent(
+        type: .leftMouseDragged,
+        location: point,
+        button: .left,
+        target: target,
+        eventNumber: dragEventNumber,
+        clickCount: 0
+      )
+    }
+    let up = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+      type: .leftMouseUp,
+      location: end,
+      button: .left,
+      target: target,
+      eventNumber: clickEventNumber,
+      clickCount: 1
+    )
+    return [down] + dragEvents + [up]
   }
 }

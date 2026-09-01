@@ -127,6 +127,7 @@ struct MacAccessibilityActionPerformer: AccessibilityActionPerforming {
     try RequestDeadlineContext.check()
     try UserInterventionContext.check()
     try requireSettable(kAXValueAttribute as CFString, on: element)
+    try focusFieldIfNeeded(element)
     let result = AXUIElementSetAttributeValue(
       element,
       kAXValueAttribute as CFString,
@@ -195,6 +196,7 @@ struct MacAccessibilityActionPerformer: AccessibilityActionPerforming {
       throw MacAccessibilityActionError.operationFailed("createSelectedTextRange", .failure)
     }
     try requireSettable(kAXSelectedTextRangeAttribute as CFString, on: element)
+    try focusFieldIfNeeded(element)
     let setResult = AXUIElementSetAttributeValue(
       element,
       kAXSelectedTextRangeAttribute as CFString,
@@ -216,29 +218,55 @@ struct MacAccessibilityActionPerformer: AccessibilityActionPerforming {
     }
   }
 
+  private func focusFieldIfNeeded(_ element: AXUIElement) throws {
+    var rawFocused: CFTypeRef?
+    if AXUIElementCopyAttributeValue(
+      element,
+      kAXFocusedAttribute as CFString,
+      &rawFocused
+    ) == .success,
+      (rawFocused as? Bool) == true
+    {
+      return
+    }
+
+    var settable = DarwinBoolean(false)
+    guard
+      AXUIElementIsAttributeSettable(
+        element,
+        kAXFocusedAttribute as CFString,
+        &settable
+      ) == .success,
+      settable.boolValue
+    else {
+      return
+    }
+    let result = AXUIElementSetAttributeValue(
+      element,
+      kAXFocusedAttribute as CFString,
+      kCFBooleanTrue
+    )
+    guard result == .success else {
+      throw MacAccessibilityActionError.operationFailed("focusField", result)
+    }
+  }
+
   private func resolve(
     _ requested: String,
     among available: [String],
     on element: AXUIElement
   ) -> String? {
-    let normalizedRequested = normalizeAction(requested)
     for action in available {
-      if normalizeAction(action) == normalizedRequested { return action }
+      if action == requested { return action }
       var description: CFString?
       if AXUIElementCopyActionDescription(element, action as CFString, &description) == .success,
         let description,
-        normalizeAction(description as String) == normalizedRequested
+        description as String == requested
       {
         return action
       }
     }
     return nil
-  }
-
-  private func normalizeAction(_ value: String) -> String {
-    var normalized = value.lowercased().filter(\.isLetter)
-    if normalized.hasPrefix("ax") { normalized.removeFirst(2) }
-    return normalized
   }
 }
 

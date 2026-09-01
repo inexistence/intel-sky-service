@@ -39,14 +39,14 @@ replace when stronger evidence appears.
 | `list_apps` | `ComputerUseIPCListAppsRequest` | `CONFIRMED_CLIENT_SOURCE` | implemented | exact ARM filtering/dedup oracle |
 | `get_app_state` | `ComputerUseIPCAppGetSkyshotRequest` | `CONFIRMED_CLIENT_SOURCE` | partial | exact AX rendering and transient-window oracle |
 | `click` | `click` | `CONFIRMED_CLIENT_SOURCE` | partial | AX/CG fallback and menu semantics |
-| `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` | partial | calibrate timing/path and official cursor animation |
-| `paste` | `paste` | `CONFIRMED_CLIENT_SOURCE` | partial | ARM format/error oracle and clipboard edge cases |
-| `perform_secondary_action` | `performSecondaryAction` | `CONFIRMED_CLIENT_SOURCE` | partial | exact action validation and errors |
-| `press_key` | `pressKey` | `CONFIRMED_CLIENT_SOURCE` | partial | full keysym/layout/secure-input behavior |
-| `scroll` | `scroll` | `CONFIRMED_CLIENT_SOURCE` | partial | AX page actions and CG fallback |
-| `select_text` | `selectText` | `CONFIRMED_CLIENT_SOURCE` | partial | text-marker fallback |
-| `set_value` | `setValue` | `CONFIRMED_CLIENT_SOURCE` | partial | fallback and exact errors |
-| `type_text` | `type` | `CONFIRMED_CLIENT_SOURCE` | partial | strategy selection and newline semantics |
+| `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | attended runtime and official cursor animation |
+| `paste` | `paste` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | exact timeout and clipboard edge-case oracle |
+| `perform_secondary_action` | `performSecondaryAction` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | menu/Catalyst runtime oracle |
+| `press_key` | `pressKey` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | private `SAIVirtualKeyPress` keyboard-layout oracle |
+| `scroll` | `scroll` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | exact AX page-action dispatch thresholds |
+| `select_text` | `selectText` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | transformed-visible-text runtime oracle |
+| `set_value` | `setValue` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | search-field autosubmit runtime oracle |
+| `type_text` | `type` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | private `SAIVirtualKeyPress` keyboard-layout oracle |
 
 The differential oracle harness under `Tools/oracle` now has a declarative case matrix covering all
 eleven APIs, captures calls through the unmodified high-level `sky` client, and compares normalized
@@ -175,7 +175,8 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   with the target `windowNumber`, then preserve the global CGEvent location, external-window local
   location using the constructor's non-flipped external-window path, click/button fields, and
   window-event subtype.
-  Wheel events use a combined-session event source and the same target-window metadata. Element
+  Wheel events use the ARM-observed HID-system event source (CoreGraphics state ID `1`) and the
+  same target-window metadata. Element
   fallbacks use the center of the element's visible
   intersection with the captured window instead of the center of an off-screen full AX frame.
   This matters for virtualized controls such as Notes, whose AX table can be thousands of points
@@ -212,11 +213,36 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
 - Intel's former maximum of ten pages was a `KNOWN_DIFFERENCE` and has been removed. Its current
   element path walks AX parents and performs whole-page AX actions first, with public viewport
   directions inverted into AX content-motion directions. It verifies an available scrollbar
-  actually changed before counting an AX success, then uses bounded pixel-wheel events for ignored,
+  actually changed before counting an AX success, then uses a pixel-wheel event for ignored,
   unsupported, or fractional pages. Coordinate scroll remains a pixel-wheel operation. In an
   attended Notes regression, public `down` moved the note-list scrollbar from `0` to
   `0.07478991596638655`, and `up` returned it to `0`, without foreground activation.
   `CONFIRMED_INTEL_RUNTIME`; exact official dispatch thresholds remain `NEEDS_ARM_ORACLE`.
+
+Targeted disassembly of `SynthesizedEvent.scroll`, the public controller call, and the page-delta
+helper confirms that ARM constructs exactly one pixel-unit wheel event from
+`CGEventSource(stateID: 1)`, i.e. `.hidSystemState`, and posts it to the target PID. Its magnitude is
+`Int(pages * max(visibleRect axis extent, 100))`. Intel's former `.combinedSessionState`, 0.8-page
+scaling, 240–1200 clamp, and many-event 5 ms sequence are removed; the target window's display-clipped
+visible frame now supplies the extent. `MacScrollInputTests` covers the recovered conversion.
+`CONFIRMED_STATIC_BINARY`.
+
+## Drag and keyboard synthesis
+
+- Targeted disassembly of `SynthesizedEvent.click(...andDragTo:)` confirms a fixed five-event drag
+  envelope: mouse-down at the origin, dragged at the origin, dragged at the midpoint, dragged at the
+  destination, then mouse-up at the destination. The three dragged records share their event number
+  and use click count zero; down/up use click count one. Intel's former distance-dependent 6–60
+  intermediate points and 8 ms sleeps are removed. `MacMouseDragTests` locks the recovered geometry
+  and fields. `CONFIRMED_STATIC_BINARY`.
+- ARM `SynthesizedEvent.pressKeys` and `type` obtain virtual-key presses through private
+  `SAIVirtualKeyPress`, then emit `flagsChanged`, `keyDown`, `keyUp`, `flagsChanged` for every press.
+  The event source is CoreGraphics state ID `1` (`.hidSystemState`), while the final flags event
+  restores `CGEventSource.flagsState(stateID: 0)` (`.combinedSessionState`). Intel now uses this
+  envelope for chords and typed text, including ARM-shaped Return/Tab virtual keys and a Unicode
+  fallback for characters not representable by the public US-layout mapping. Exact dynamic keyboard
+  layout behavior remains `NEEDS_ARM_ORACLE` because `SAIVirtualKeyPress` is private API.
+  `CONFIRMED_STATIC_BINARY` / `HIGH_CONFIDENCE`.
 
 ## Click dispatch
 
@@ -231,6 +257,11 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   remain physical. An attended Notes run selected the 15th visible note through the `AXCell` path
   and changed the detail pane to `【参考】森马电商流程` with the expected Douyin URL and full body.
   `CONFIRMED_INTEL_RUNTIME`; exact remaining role exceptions remain `NEEDS_ARM_ORACLE`.
+- ARM `SynthesizedEvent.click` rejects only click counts below one. For each click, mouse-down and
+  mouse-up share one event number and carry that click's cumulative click count. The public action
+  call passes no inter-event delay to `ApplicationUIElement.sendClick`. Intel's former 1–3 limit,
+  split down/up event numbers, and 50 ms multi-click sleep are removed; `MacMouseClickTests` covers
+  counts above three and the recovered event fields. `CONFIRMED_STATIC_BINARY`.
 
 ## Focus, cursor, and user intervention
 
@@ -933,6 +964,13 @@ ARM static error cases include `noTextToType`, `pasteboardWriteFailed`,
 `cannotSetValueForNonSettableElement`, `cannotSelectTextForElement`, and
 `textToSelectNotFound`. `CONFIRMED_STATIC_BINARY`. Intel now covers these semantic failure classes,
 although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
+
+Targeted action-controller disassembly further confirms that `setValue` and `selectText` focus the
+field before mutating it, and that secondary actions match the requested string exactly against the
+element's action names/descriptions. Intel now follows both rules; its former case/punctuation/`AX`
+normalization could accept an action ARM rejected. The public client and ARM do not impose Intel's
+former 10,000-UTF-16-unit `type` limit, so that extra limit is also removed.
+`CONFIRMED_STATIC_BINARY`.
 
 ## App and state lifecycle
 

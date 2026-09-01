@@ -179,43 +179,33 @@ struct ScrollDeltaPlan: Sendable {
     screenFrame: CGRect,
     direction: ComputerUseScrollDirection,
     pages: Double
-  ) -> [ScrollDelta] {
+  ) -> ScrollDelta {
     let axisExtent: Double
     switch direction {
     case .up, .down: axisExtent = screenFrame.height
     case .left, .right: axisExtent = screenFrame.width
     }
-    let pageExtent = min(1_200, max(240, axisExtent * 0.8))
-    let rawMagnitude = (pageExtent * pages).rounded()
-    let magnitude = max(1, Int32(min(Double(Int32.max), rawMagnitude)))
+    let pageExtent = max(100, axisExtent)
+    let rawMagnitude = pageExtent * pages
+    let magnitude = Int32(min(Double(Int32.max), rawMagnitude))
     let signedMagnitude: Int32
     switch direction {
     case .up, .left: signedMagnitude = -magnitude
     case .down, .right: signedMagnitude = magnitude
     }
 
-    // Keep one request bounded even when the client asks for an extreme number
-    // of pages. The official client accepts every finite positive value.
-    let eventCount = min(240, max(1, Int(ceil(Double(magnitude) / 10))))
-    let baseDelta = signedMagnitude / Int32(eventCount)
-    let remainder = signedMagnitude % Int32(eventCount)
-    return (0..<eventCount).map { index in
-      let remainderDelta: Int32
-      if Int32(index) < abs(remainder) {
-        remainderDelta = remainder.signum()
-      } else {
-        remainderDelta = 0
-      }
-      let delta = baseDelta + remainderDelta
-      switch direction {
-      case .up, .down: return ScrollDelta(vertical: delta, horizontal: 0)
-      case .left, .right: return ScrollDelta(vertical: 0, horizontal: delta)
-      }
+    switch direction {
+    case .up, .down:
+      return ScrollDelta(vertical: signedMagnitude, horizontal: 0)
+    case .left, .right:
+      return ScrollDelta(vertical: 0, horizontal: signedMagnitude)
     }
   }
 }
 
 struct CGScrollEventPoster: ScrollEventPosting {
+  static let eventSourceStateID: CGEventSourceStateID = .hidSystemState
+
   private let screens: any ScreenFrameProviding
 
   init(screens: any ScreenFrameProviding = CGScreenFrameProvider()) {
@@ -233,28 +223,34 @@ struct CGScrollEventPoster: ScrollEventPosting {
       throw MacAppActionError.targetOutsideDisplays(point)
     }
 
-    let deltas = ScrollDeltaPlan.make(screenFrame: screen, direction: direction, pages: pages)
-    guard let source = CGEventSource(stateID: .combinedSessionState) else {
+    // ARM scales a page against ComputerUseAppController.visibleRect, clipped to a
+    // minimum of 100 points. The cached target frame is the corresponding window
+    // rectangle; intersect it with the containing display for partially off-screen windows.
+    let clippedWindowFrame = target.screenFrame.intersection(screen)
+    let visibleFrame = clippedWindowFrame.isNull || clippedWindowFrame.isEmpty
+      ? target.screenFrame : clippedWindowFrame
+    let delta = ScrollDeltaPlan.make(
+      screenFrame: visibleFrame,
+      direction: direction,
+      pages: pages
+    )
+    guard let source = CGEventSource(stateID: Self.eventSourceStateID) else {
       throw MacAppActionError.eventCreationFailed
     }
-    var events: [CGEvent] = []
-    for delta in deltas {
-      guard
-        let event = CGEvent(
-          scrollWheelEvent2Source: source,
-          units: .pixel,
-          wheelCount: 2,
-          wheel1: delta.vertical,
-          wheel2: delta.horizontal,
-          wheel3: 0
-        )
-      else {
-        throw MacAppActionError.eventCreationFailed
-      }
-      event.location = point
-      event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-      events.append(event)
+    guard
+      let event = CGEvent(
+        scrollWheelEvent2Source: source,
+        units: .pixel,
+        wheelCount: 1,
+        wheel1: delta.vertical,
+        wheel2: delta.horizontal,
+        wheel3: 0
+      )
+    else {
+      throw MacAppActionError.eventCreationFailed
     }
+    event.location = point
+    event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
 
     let move = try ProcessTargetedEventPoster.makeWindowMouseEvent(
       type: .mouseMoved,
@@ -267,12 +263,7 @@ struct CGScrollEventPoster: ScrollEventPosting {
       try RequestDeadlineContext.check()
       try UserInterventionContext.check()
       ProcessTargetedEventPoster.post(move, to: target)
-      for (index, event) in events.enumerated() {
-        try RequestDeadlineContext.check()
-        try UserInterventionContext.check()
-        ProcessTargetedEventPoster.post(event, to: target)
-        if index + 1 < events.count { Thread.sleep(forTimeInterval: 0.005) }
-      }
+      ProcessTargetedEventPoster.post(event, to: target)
     }
   }
 }

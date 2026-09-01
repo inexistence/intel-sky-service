@@ -59,6 +59,30 @@ import Testing
   #expect(chunks.allSatisfy { $0.count <= 20 })
 }
 
+@Test func keyboardEventsMatchARMVirtualKeyPressEnvelope() throws {
+  let chord = try MacKeyChordParser().parse("Control_L+Shift_L+period")
+  let events = try CGKeyboardInputPoster.events(for: chord)
+
+  #expect(CGKeyboardInputPoster.eventSourceStateID == .hidSystemState)
+  #expect(events.map(\.type) == [.flagsChanged, .keyDown, .keyUp, .flagsChanged])
+  #expect(events[0].flags == [.maskControl, .maskShift])
+  #expect(events[1].flags == [.maskControl, .maskShift])
+  #expect(events[2].flags == [.maskControl, .maskShift])
+  #expect(events[1].getIntegerValueField(.keyboardEventKeycode) == 47)
+  #expect(events[2].getIntegerValueField(.keyboardEventKeycode) == 47)
+}
+
+@Test func typedCharactersUseARMKeyCodesAndUnicodeFallback() throws {
+  let groups = try CGKeyboardInputPoster.eventsForTyping("A\n👋")
+
+  #expect(groups.count == 3)
+  #expect(groups.allSatisfy { $0.map(\.type) == [.flagsChanged, .keyDown, .keyUp, .flagsChanged] })
+  #expect(groups[0][1].getIntegerValueField(.keyboardEventKeycode) == 0)
+  #expect(groups[0][1].flags.contains(.maskShift))
+  #expect(groups[1][1].getIntegerValueField(.keyboardEventKeycode) == 36)
+  #expect(groups[2][1].getIntegerValueField(.keyboardEventKeycode) == 0)
+}
+
 @Test func rejectsEmptyUnknownAndAmbiguousKeyChords() {
   #expect(throws: MacAppActionError.self) { try MacKeyChordParser().parse("") }
   #expect(throws: MacAppActionError.self) { try MacKeyChordParser().parse("Ctrl+") }

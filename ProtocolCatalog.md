@@ -62,7 +62,8 @@ ARM metadata confirms the cases `click`, `performSecondaryAction`, `setValue`, `
 `scroll`, `drag`, `pressKey`, `type`, and `paste`. Location is either
 `coordinate { _0:[x,y] }` or `elementID { _0:String }`; scroll direction is
 `up|down|left|right`; paste format is `text|md|html`; selection is
-`text|cursorBefore|cursorAfter`. The installed public client confirms its concrete JSON spelling.
+`text|cursor_before|cursor_after` on the installed public JSON surface (the Swift enum cases are
+`text|cursorBefore|cursorAfter`). The installed public client confirms the concrete JSON spelling.
 Action-specific policy, coordinate, focus, cursor, intervention, deadline, and stale-element behavior
 is indexed in `OfficialBehaviorNotes.md` and covered by the action/AX/input test files.
 
