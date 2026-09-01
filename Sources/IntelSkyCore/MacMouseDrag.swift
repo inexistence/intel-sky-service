@@ -9,22 +9,18 @@ protocol MouseDragPosting: Sendable {
 struct CGMouseDragPoster: MouseDragPosting {
   func drag(from start: CGPoint, to end: CGPoint, target: ComputerUseEventTarget) throws {
     guard AXIsProcessTrusted() else { throw AccessibilitySnapshotError.permissionRequired }
-    guard
-      let down = CGEvent(
-        mouseEventSource: nil,
-        mouseType: .leftMouseDown,
-        mouseCursorPosition: start,
-        mouseButton: .left
-      ),
-      let up = CGEvent(
-        mouseEventSource: nil,
-        mouseType: .leftMouseUp,
-        mouseCursorPosition: end,
-        mouseButton: .left
-      )
-    else {
-      throw MacAppActionError.eventCreationFailed
-    }
+    let down = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+      type: .leftMouseDown,
+      location: start,
+      button: .left,
+      target: target
+    )
+    let up = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+      type: .leftMouseUp,
+      location: end,
+      button: .left,
+      target: target
+    )
 
     let distance = hypot(end.x - start.x, end.y - start.y)
     let stepCount = min(60, max(6, Int(ceil(distance / 20))))
@@ -35,16 +31,12 @@ struct CGMouseDragPoster: MouseDragPosting {
         x: start.x + (end.x - start.x) * progress,
         y: start.y + (end.y - start.y) * progress
       )
-      guard
-        let event = CGEvent(
-          mouseEventSource: nil,
-          mouseType: .leftMouseDragged,
-          mouseCursorPosition: point,
-          mouseButton: .left
-        )
-      else {
-        throw MacAppActionError.eventCreationFailed
-      }
+      let event = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+        type: .leftMouseDragged,
+        location: point,
+        button: .left,
+        target: target
+      )
       dragEvents.append(event)
     }
 

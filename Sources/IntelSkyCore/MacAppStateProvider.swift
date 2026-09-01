@@ -103,8 +103,7 @@ public struct MacAppStateProvider: AppStateProviding, ComputerUseTurnLifecycleEv
       coordinateSpace = WindowCoordinateSpace(
         windowID: window.windowID,
         screenFrame: window.screenFrame,
-        screenshotPixelSize: screenshot.pixelSize,
-        activationPoint: snapshot.windowActivationPoint
+        screenshotPixelSize: screenshot.pixelSize
       )
     }
     try sessionScope.check()

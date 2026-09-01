@@ -118,6 +118,37 @@ private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
   #expect(mouse.targets == [testEventTarget()])
 }
 
+@Test func physicalElementClickUsesVisibleWindowIntersection() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(
+    CapturedAccessibilitySnapshot(
+      text: "test",
+      elementsByID: ["7": AXUIElementCreateApplication(app.processIdentifier)]
+    ),
+    for: app,
+    coordinateSpace: testCoordinateSpace()
+  )
+  let mouse = RecordingMouseClickPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: RecordingActivator(),
+    frameReader: StubFrameReader(frame: CGRect(x: 120, y: 100, width: 200, height: 8_000)),
+    mouseClickPoster: mouse
+  )
+
+  _ = try performer.performAction(
+    request: clickRequest(
+      at: ["elementID": ["_0": "7"]],
+      clickCount: 2,
+      mouseButton: 0
+    )
+  )
+
+  #expect(mouse.clicks.first?.point == CGPoint(x: 220, y: 300))
+}
+
 @Test func singleLeftElementClickPrefersAccessibilityPress() throws {
   let app = actionTestApp()
   let cache = ElementSnapshotCache()
@@ -397,7 +428,7 @@ private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
   #expect(activator.activatedApps.isEmpty)
 }
 
-@Test func elementScrollUsesLatestSnapshotFrameCenter() throws {
+@Test func elementScrollUsesLatestVisibleSnapshotFrameCenter() throws {
   let app = actionTestApp()
   let cache = ElementSnapshotCache()
   cache.store(
@@ -431,8 +462,41 @@ private struct AlwaysForbiddenPolicyEvaluator: MacAppPolicyEvaluating {
   #expect(activator.activatedApps.isEmpty)
   #expect(
     scroll.scrolls == [
-      RecordedScroll(point: CGPoint(x: 70, y: 140), direction: .down, pages: 1.5)
+      RecordedScroll(point: CGPoint(x: 110, y: 195), direction: .down, pages: 1.5)
     ])
+}
+
+@Test func elementScrollUsesVisibleWindowIntersectionForOversizedElement() throws {
+  let app = actionTestApp()
+  let cache = ElementSnapshotCache()
+  cache.store(
+    CapturedAccessibilitySnapshot(
+      text: "test",
+      elementsByID: ["8": AXUIElementCreateApplication(app.processIdentifier)]
+    ),
+    for: app,
+    coordinateSpace: testCoordinateSpace()
+  )
+  let scroll = RecordingScrollEventPoster()
+  let performer = MacAppActionPerformer(
+    resolver: StubActionResolver(app: app),
+    snapshotCache: cache,
+    activator: RecordingActivator(),
+    frameReader: StubFrameReader(frame: CGRect(x: 120, y: 100, width: 200, height: 8_000)),
+    mouseClickPoster: RecordingMouseClickPoster(),
+    keyboardInputPoster: RecordingKeyboardInputPoster(),
+    scrollEventPoster: scroll
+  )
+
+  _ = try performer.performAction(
+    request: scrollRequest(
+      at: ["elementID": ["_0": "8"]],
+      direction: "down",
+      pages: 1
+    )
+  )
+
+  #expect(scroll.scrolls.first?.point == CGPoint(x: 220, y: 300))
 }
 
 @Test func elementScrollUsesAXPageActionsBeforePixelFallback() throws {

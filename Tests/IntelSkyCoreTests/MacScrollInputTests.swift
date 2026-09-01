@@ -8,8 +8,8 @@ import Testing
   let down = ScrollDeltaPlan.make(screenFrame: frame, direction: .down, pages: 1.5)
   let up = ScrollDeltaPlan.make(screenFrame: frame, direction: .up, pages: 1.5)
 
-  #expect(down.reduce(0) { $0 + $1.vertical } == -1_200)
-  #expect(up.reduce(0) { $0 + $1.vertical } == 1_200)
+  #expect(down.reduce(0) { $0 + $1.vertical } == 1_200)
+  #expect(up.reduce(0) { $0 + $1.vertical } == -1_200)
   #expect(down.allSatisfy { (-10...10).contains($0.vertical) && $0.horizontal == 0 })
 }
 
@@ -18,9 +18,9 @@ import Testing
   let left = ScrollDeltaPlan.make(screenFrame: frame, direction: .left, pages: 1)
   let right = ScrollDeltaPlan.make(screenFrame: frame, direction: .right, pages: 1)
 
-  #expect(left.reduce(0) { $0 + $1.horizontal } == 400)
-  #expect(right.reduce(0) { $0 + $1.horizontal } == -400)
-  #expect(left.allSatisfy { $0.vertical == 0 && (1...10).contains($0.horizontal) })
+  #expect(left.reduce(0) { $0 + $1.horizontal } == -400)
+  #expect(right.reduce(0) { $0 + $1.horizontal } == 400)
+  #expect(left.allSatisfy { $0.vertical == 0 && (-10 ... -1).contains($0.horizontal) })
 }
 
 @Test func scrollPlanBoundsTinyAndLargeDisplayPageExtents() {
@@ -35,6 +35,6 @@ import Testing
     pages: 1
   )
 
-  #expect(tiny.reduce(0) { $0 + $1.vertical } == -240)
-  #expect(large.reduce(0) { $0 + $1.vertical } == -1_200)
+  #expect(tiny.reduce(0) { $0 + $1.vertical } == 240)
+  #expect(large.reduce(0) { $0 + $1.vertical } == 1_200)
 }

@@ -120,24 +120,22 @@ struct CGMouseClickPoster: MouseClickPosting {
       for clickIndex in 1...count {
         try RequestDeadlineContext.check()
         try UserInterventionContext.check()
-        guard
-          let down = CGEvent(
-            mouseEventSource: nil,
-            mouseType: types.down,
-            mouseCursorPosition: point,
-            mouseButton: types.button
-          ),
-          let up = CGEvent(
-            mouseEventSource: nil,
-            mouseType: types.up,
-            mouseCursorPosition: point,
-            mouseButton: types.button
-          )
-        else {
-          throw MacAppActionError.eventCreationFailed
-        }
-        down.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
-        up.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
+        let down = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+          type: types.down,
+          location: point,
+          button: types.button,
+          target: target,
+          eventNumber: clickIndex * 2 - 1,
+          clickCount: clickIndex
+        )
+        let up = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+          type: types.up,
+          location: point,
+          button: types.button,
+          target: target,
+          eventNumber: clickIndex * 2,
+          clickCount: clickIndex
+        )
         ProcessTargetedEventPoster.post(down, to: target)
         ProcessTargetedEventPoster.post(up, to: target)
         if clickIndex < count { Thread.sleep(forTimeInterval: 0.05) }
@@ -429,22 +427,22 @@ public struct MacAppActionPerformer: AppActionPerforming {
       element = nil
     }
 
+    let cachedEventTarget = try? snapshotCache.eventTarget(for: app)
     let visualizationPoint: CGPoint?
     switch target {
     case .elementID:
       visualizationPoint = element.flatMap { frameReader.frame(of: $0.value) }.map {
-        CGPoint(x: $0.midX, y: $0.midY)
+        interactionPoint(in: $0, windowFrame: cachedEventTarget?.screenFrame)
       }
     case .coordinate(let coordinate):
       visualizationPoint = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
     if let visualizationPoint {
-      let visualTarget = try? snapshotCache.eventTarget(for: app)
       visualizer.showClick(
         at: visualizationPoint,
         target: ComputerUseVisualTarget(
           processIdentifier: app.processIdentifier,
-          windowID: visualTarget?.windowID
+          windowID: cachedEventTarget?.windowID
         )
       )
     }
@@ -453,14 +451,14 @@ public struct MacAppActionPerformer: AppActionPerforming {
     {
       return
     }
-    let eventTarget = try snapshotCache.eventTarget(for: app)
+    let eventTarget = try cachedEventTarget ?? snapshotCache.eventTarget(for: app)
     let point: CGPoint
     switch target {
     case .elementID:
       guard let element, let frame = frameReader.frame(of: element.value) else {
         throw MacAppActionError.missingElementFrame(element?.id ?? "unknown")
       }
-      point = CGPoint(x: frame.midX, y: frame.midY)
+      point = interactionPoint(in: frame, windowFrame: eventTarget.screenFrame)
     case .coordinate(let coordinate):
       point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
@@ -495,22 +493,22 @@ public struct MacAppActionPerformer: AppActionPerforming {
       try snapshotCache.validateSnapshot(for: app)
       element = nil
     }
+    let cachedEventTarget = try? snapshotCache.eventTarget(for: app)
     let point: CGPoint
     switch target {
     case .elementID(let elementID):
       guard let element, let frame = frameReader.frame(of: element) else {
         throw MacAppActionError.missingElementFrame(elementID)
       }
-      point = CGPoint(x: frame.midX, y: frame.midY)
+      point = interactionPoint(in: frame, windowFrame: cachedEventTarget?.screenFrame)
     case .coordinate(let coordinate):
       point = try snapshotCache.screenPoint(for: coordinate, in: app)
     }
-    let visualTarget = try? snapshotCache.eventTarget(for: app)
     visualizer.moveCursor(
       to: point,
       target: ComputerUseVisualTarget(
         processIdentifier: app.processIdentifier,
-        windowID: visualTarget?.windowID
+        windowID: cachedEventTarget?.windowID
       )
     )
     let requestedPages = number.doubleValue
@@ -527,7 +525,7 @@ public struct MacAppActionPerformer: AppActionPerforming {
     }
     let remainingPages = requestedPages - Double(axPages)
     if remainingPages > 0 {
-      let eventTarget = try snapshotCache.eventTarget(for: app)
+      let eventTarget = try cachedEventTarget ?? snapshotCache.eventTarget(for: app)
       try scrollEventPoster.scroll(
         at: point,
         direction: direction,
@@ -535,6 +533,17 @@ public struct MacAppActionPerformer: AppActionPerforming {
         target: eventTarget
       )
     }
+  }
+
+  private func interactionPoint(in elementFrame: CGRect, windowFrame: CGRect?) -> CGPoint {
+    guard let windowFrame else {
+      return CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+    }
+    let visibleFrame = elementFrame.intersection(windowFrame)
+    guard !visibleFrame.isNull, !visibleFrame.isEmpty else {
+      return CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+    }
+    return CGPoint(x: visibleFrame.midX, y: visibleFrame.midY)
   }
 
   private func parseSingleStringPayload(_ value: Any?, actionName: String) throws -> String {

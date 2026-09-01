@@ -171,6 +171,16 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   then scales screenshot-local coordinates into global points. Missing screenshots and out-of-bounds
   coordinates fail closed. `CONFIRMED_INTEL_RUNTIME` for unit coverage; real multi-display smoke
   coverage remains `NEEDS_ARM_ORACLE` and pending Intel desktop automation.
+- Process-targeted mouse and drag events now use the ARM-observed `NSEvent.mouseEvent` constructor
+  with the target `windowNumber`, then preserve the global CGEvent location, external-window local
+  location using the constructor's non-flipped external-window path, click/button fields, and
+  window-event subtype.
+  Wheel events use a combined-session event source and the same target-window metadata. Element
+  fallbacks use the center of the element's visible
+  intersection with the captured window instead of the center of an off-screen full AX frame.
+  This matters for virtualized controls such as Notes, whose AX table can be thousands of points
+  high. `CONFIRMED_STATIC_BINARY` for the ARM event geometry inputs and
+  `CONFIRMED_INTEL_RUNTIME` for Notes.
 - ARM Skyshot context metadata contains `overrideScreenshotWindowID`,
   `additionalScreenshotWindowIDs`, `screenshotIncludesWindowShadow`, and plural
   `skyshotImageFiles`; the binary imports `SCScreenshotManager.captureImage` and both
@@ -200,9 +210,13 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   path, probably with fallback. `CONFIRMED_STATIC_BINARY` for API use; dispatch rules remain
   `NEEDS_ARM_ORACLE`.
 - Intel's former maximum of ten pages was a `KNOWN_DIFFERENCE` and has been removed. Its current
-  element path now walks AX parents and performs whole-page AX actions first, then uses bounded
-  pixel-wheel events for unsupported pages and fractional remainders. Coordinate scroll remains a
-  pixel-wheel operation. The exact official dispatch thresholds remain `NEEDS_ARM_ORACLE`.
+  element path walks AX parents and performs whole-page AX actions first, with public viewport
+  directions inverted into AX content-motion directions. It verifies an available scrollbar
+  actually changed before counting an AX success, then uses bounded pixel-wheel events for ignored,
+  unsupported, or fractional pages. Coordinate scroll remains a pixel-wheel operation. In an
+  attended Notes regression, public `down` moved the note-list scrollbar from `0` to
+  `0.07478991596638655`, and `up` returned it to `0`, without foreground activation.
+  `CONFIRMED_INTEL_RUNTIME`; exact official dispatch thresholds remain `NEEDS_ARM_ORACLE`.
 
 ## Click dispatch
 
@@ -211,9 +225,12 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   physical-click override. `CONFIRMED_STATIC_BINARY`.
 - ARM also contains `Mouse action not supported for menu items` and `Failed to click menu item`,
   indicating special AX-only menu-item handling. `CONFIRMED_STATIC_BINARY`.
-- Intel now tries `AXPress` for a single left element click and falls back to a centered CGEvent
-  click. Menu items without `AXPress` fail closed. Coordinate, multi-click, right-click, and middle
-  click remain physical. Exact role exceptions remain `NEEDS_ARM_ORACLE`.
+- Intel now tries `AXPress` for a single left element click, then selects the nearest ancestor with
+  a settable `AXSelected` attribute, and only then falls back to a synthesized physical click.
+  Menu items without `AXPress` fail closed. Coordinate, multi-click, right-click, and middle click
+  remain physical. An attended Notes run selected the 15th visible note through the `AXCell` path
+  and changed the detail pane to `【参考】森马电商流程` with the expected Douyin URL and full body.
+  `CONFIRMED_INTEL_RUNTIME`; exact remaining role exceptions remain `NEEDS_ARM_ORACLE`.
 
 ## Focus, cursor, and user intervention
 

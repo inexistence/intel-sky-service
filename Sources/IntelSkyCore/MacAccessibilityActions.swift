@@ -64,13 +64,53 @@ struct MacAccessibilityPrimaryClicker: AccessibilityPrimaryClicking {
       if role == (kAXMenuItemRole as String) {
         throw MacAccessibilityActionError.actionNotAvailable(kAXPressAction as String)
       }
-      return false
+      return try selectElementOrAncestor(element)
     }
     let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
     guard result == .success else {
       throw MacAccessibilityActionError.operationFailed(kAXPressAction as String, result)
     }
     return true
+  }
+
+  private func selectElementOrAncestor(_ element: AXUIElement) throws -> Bool {
+    var candidate: AXUIElement? = element
+    for _ in 0..<8 {
+      guard let current = candidate else { return false }
+      var settable = DarwinBoolean(false)
+      let query = AXUIElementIsAttributeSettable(
+        current,
+        kAXSelectedAttribute as CFString,
+        &settable
+      )
+      if query == .success, settable.boolValue {
+        let result = AXUIElementSetAttributeValue(
+          current,
+          kAXSelectedAttribute as CFString,
+          kCFBooleanTrue
+        )
+        guard result == .success else {
+          throw MacAccessibilityActionError.operationFailed("select", result)
+        }
+        return true
+      }
+      candidate = parent(of: current)
+    }
+    return false
+  }
+
+  private func parent(of element: AXUIElement) -> AXUIElement? {
+    var rawParent: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(
+        element,
+        kAXParentAttribute as CFString,
+        &rawParent
+      ) == .success,
+      let rawParent,
+      CFGetTypeID(rawParent) == AXUIElementGetTypeID()
+    else { return nil }
+    return unsafeDowncast(rawParent, to: AXUIElement.self)
   }
 
   private func stringAttribute(_ attribute: CFString, of element: AXUIElement) -> String? {

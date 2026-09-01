@@ -59,10 +59,67 @@ struct MacAccessibilityPageScroller: AccessibilityPageScrolling {
     for _ in 0..<pageCount {
       try RequestDeadlineContext.check()
       try UserInterventionContext.check()
+      let positionBefore = scrollPosition(of: target, direction: direction)
       guard AXUIElementPerformAction(target, action as CFString) == .success else { break }
+      if let positionBefore {
+        var positionAfter = scrollPosition(of: target, direction: direction)
+        for _ in 0..<4 where positionAfter == positionBefore {
+          Thread.sleep(forTimeInterval: 0.02)
+          try RequestDeadlineContext.check()
+          try UserInterventionContext.check()
+          positionAfter = scrollPosition(of: target, direction: direction)
+        }
+        // Some controls advertise and accept AXScroll*ByPage while ignoring it.
+        // Count only observable page movement so the caller can synthesize the
+        // remaining wheel distance instead of returning a false success.
+        guard positionAfter.map({ $0 != positionBefore }) == true else { break }
+      }
       completed += 1
     }
     return completed
+  }
+
+  private func scrollPosition(
+    of element: AXUIElement,
+    direction: ComputerUseScrollDirection
+  ) -> Double? {
+    let scrollbarAttribute: CFString
+    switch direction {
+    case .up, .down: scrollbarAttribute = kAXVerticalScrollBarAttribute as CFString
+    case .left, .right: scrollbarAttribute = kAXHorizontalScrollBarAttribute as CFString
+    }
+
+    let scrollbar: AXUIElement
+    if stringAttribute(kAXRoleAttribute as CFString, of: element) == (kAXScrollBarRole as String) {
+      scrollbar = element
+    } else {
+      var rawScrollbar: CFTypeRef?
+      guard
+        AXUIElementCopyAttributeValue(element, scrollbarAttribute, &rawScrollbar) == .success,
+        let rawScrollbar,
+        CFGetTypeID(rawScrollbar) == AXUIElementGetTypeID()
+      else { return nil }
+      scrollbar = unsafeDowncast(rawScrollbar, to: AXUIElement.self)
+    }
+
+    var rawValue: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(
+        scrollbar,
+        kAXValueAttribute as CFString,
+        &rawValue
+      ) == .success,
+      let number = rawValue as? NSNumber
+    else { return nil }
+    return number.doubleValue
+  }
+
+  private func stringAttribute(_ attribute: CFString, of element: AXUIElement) -> String? {
+    var rawValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &rawValue) == .success else {
+      return nil
+    }
+    return rawValue as? String
   }
 
   private func scrollTarget(
@@ -101,11 +158,13 @@ struct MacAccessibilityPageScroller: AccessibilityPageScrolling {
   }
 
   private func actionName(for direction: ComputerUseScrollDirection) -> String {
+    // The public API names the viewport/navigation direction. AX page actions
+    // name the direction that the document content moves, which is the inverse.
     switch direction {
-    case .up: return "AXScrollUpByPage"
-    case .down: return "AXScrollDownByPage"
-    case .left: return "AXScrollLeftByPage"
-    case .right: return "AXScrollRightByPage"
+    case .up: return "AXScrollDownByPage"
+    case .down: return "AXScrollUpByPage"
+    case .left: return "AXScrollRightByPage"
+    case .right: return "AXScrollLeftByPage"
     }
   }
 }
@@ -131,8 +190,8 @@ struct ScrollDeltaPlan: Sendable {
     let magnitude = max(1, Int32(min(Double(Int32.max), rawMagnitude)))
     let signedMagnitude: Int32
     switch direction {
-    case .up, .left: signedMagnitude = magnitude
-    case .down, .right: signedMagnitude = -magnitude
+    case .up, .left: signedMagnitude = -magnitude
+    case .down, .right: signedMagnitude = magnitude
     }
 
     // Keep one request bounded even when the client asks for an extreme number
@@ -175,11 +234,14 @@ struct CGScrollEventPoster: ScrollEventPosting {
     }
 
     let deltas = ScrollDeltaPlan.make(screenFrame: screen, direction: direction, pages: pages)
+    guard let source = CGEventSource(stateID: .combinedSessionState) else {
+      throw MacAppActionError.eventCreationFailed
+    }
     var events: [CGEvent] = []
     for delta in deltas {
       guard
         let event = CGEvent(
-          scrollWheelEvent2Source: nil,
+          scrollWheelEvent2Source: source,
           units: .pixel,
           wheelCount: 2,
           wheel1: delta.vertical,
@@ -194,16 +256,12 @@ struct CGScrollEventPoster: ScrollEventPosting {
       events.append(event)
     }
 
-    guard
-      let move = CGEvent(
-        mouseEventSource: nil,
-        mouseType: .mouseMoved,
-        mouseCursorPosition: point,
-        mouseButton: .left
-      )
-    else {
-      throw MacAppActionError.eventCreationFailed
-    }
+    let move = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+      type: .mouseMoved,
+      location: point,
+      button: .left,
+      target: target
+    )
 
     try ProcessTargetedEventPoster.withSyntheticFocus(on: target) {
       try RequestDeadlineContext.check()

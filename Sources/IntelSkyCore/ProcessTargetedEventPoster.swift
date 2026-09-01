@@ -116,6 +116,17 @@ enum ProcessTargetedEventPoster {
   }
 
   static func post(_ event: CGEvent, to target: ComputerUseEventTarget) {
+    switch event.type {
+    case .leftMouseDown, .leftMouseUp, .leftMouseDragged,
+      .rightMouseDown, .rightMouseUp, .rightMouseDragged,
+      .otherMouseDown, .otherMouseUp, .otherMouseDragged, .mouseMoved:
+      // ARM SynthesizedEvent marks process-targeted mouse events as window
+      // events. Without this subtype AppKit can route the event to a control
+      // belonging to the physical pointer's window instead of the target.
+      event.setIntegerValueField(.mouseEventSubtype, value: 3)
+    default:
+      break
+    }
     event.setIntegerValueField(
       .mouseEventWindowUnderMousePointer,
       value: Int64(target.windowID)
@@ -124,20 +135,69 @@ enum ProcessTargetedEventPoster {
       .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
       value: Int64(target.windowID)
     )
+    // Process-targeted CoreGraphics events need both the global event location and
+    // the private window-local location. AppKit controls (notably Notes tables)
+    // can accept the PID-targeted event while discarding it during hit testing if
+    // this field is absent. The ARM SynthesizedEvent path always supplies it.
+    if let setWindowLocationFunction {
+      setWindowLocationFunction(event, windowLocation(for: event.location, in: target))
+    }
     event.postToPid(target.processIdentifier)
+  }
+
+  static func windowLocation(
+    for screenPoint: CGPoint,
+    in target: ComputerUseEventTarget
+  ) -> CGPoint {
+    // The ARM constructor exposes a windowUsesFlippedCoordinates branch.
+    // CGWindow/AX external application frames require its false path, so keep
+    // the top-origin Y offset here; Notes hit-testing verifies this mapping.
+    CGPoint(
+      x: screenPoint.x - target.screenFrame.minX,
+      y: screenPoint.y - target.screenFrame.minY
+    )
   }
 
   static func postKeyboard(_ event: CGEvent, to target: ComputerUseEventTarget) {
     event.postToPid(target.processIdentifier)
   }
 
+  static func makeWindowMouseEvent(
+    type: CGEventType,
+    location: CGPoint,
+    button: CGMouseButton,
+    target: ComputerUseEventTarget,
+    eventNumber: Int = 1,
+    clickCount: Int = 1
+  ) throws -> CGEvent {
+    guard
+      let eventType = NSEvent.EventType(rawValue: UInt(type.rawValue)),
+      let appKitEvent = NSEvent.mouseEvent(
+        with: eventType,
+        location: windowLocation(for: location, in: target),
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: Int(target.windowID),
+        context: nil,
+        eventNumber: eventNumber,
+        clickCount: clickCount,
+        pressure: 1
+      ),
+      let event = appKitEvent.cgEvent
+    else { throw MacAppActionError.eventCreationFailed }
+    event.flags = []
+    event.location = location
+    event.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
+    event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+    event.setIntegerValueField(.mouseEventSubtype, value: 3)
+    return event
+  }
+
   static func syntheticFocusSequence(for target: ComputerUseEventTarget) -> (
     begin: [SyntheticFocusEventDescriptor], end: [SyntheticFocusEventDescriptor]
   ) {
     let activationPoint = target.activationPoint ?? .zero
-    let windowLocation = target.activationPoint.map {
-      CGPoint(x: $0.x - target.screenFrame.minX, y: $0.y - target.screenFrame.minY)
-    }
+    let windowLocation = target.activationPoint.map { Self.windowLocation(for: $0, in: target) }
     var begin = [
       SyntheticFocusEventDescriptor(type: 21, subtype: 0x8000, windowNumber: 0),
       SyntheticFocusEventDescriptor(

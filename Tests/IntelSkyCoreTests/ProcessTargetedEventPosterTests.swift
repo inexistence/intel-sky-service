@@ -81,6 +81,36 @@ private let syntheticFocusTestTarget = ComputerUseEventTarget(
   }
 }
 
+@Test func processTargetedMouseLocationUsesTargetWindowCoordinates() {
+  #expect(
+    ProcessTargetedEventPoster.windowLocation(
+      for: CGPoint(x: 240, y: 172),
+      in: syntheticFocusTestTarget
+    ) == CGPoint(x: 140, y: 22)
+  )
+}
+
+@Test func synthesizedWindowMouseEventCarriesARMFields() throws {
+  let event = try ProcessTargetedEventPoster.makeWindowMouseEvent(
+    type: .leftMouseDown,
+    location: CGPoint(x: 240, y: 172),
+    button: .left,
+    target: ComputerUseEventTarget(
+      processIdentifier: getpid(),
+      windowID: 77,
+      screenFrame: CGRect(x: 20, y: 30, width: 640, height: 480)
+    ),
+    eventNumber: 9,
+    clickCount: 2
+  )
+
+  #expect(event.location == CGPoint(x: 240, y: 172))
+  #expect(event.getIntegerValueField(.mouseEventClickState) == 2)
+  #expect(event.getIntegerValueField(.mouseEventButtonNumber) == 0)
+  #expect(event.getIntegerValueField(.mouseEventSubtype) == 3)
+  #expect(NSEvent(cgEvent: event)?.windowNumber == 77)
+}
+
 @Test func activeApplicationDoesNotReceiveSyntheticFocusTransitions() throws {
   var posted: [SyntheticFocusEventDescriptor] = []
   var bodyWasCalled = false
