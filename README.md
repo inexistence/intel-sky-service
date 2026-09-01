@@ -172,6 +172,10 @@ Remote Hosted PIP is driven by that screenshot attachment, text-only windows do 
 unnecessary floating preview. Computer Use application-list changes also publish ChatGPT's recovered
 status-item distributed-notification envelope so the menu does not retain ended Apps.
 
+Physical user input is attributed per target App using the event target PID, pointer window owner,
+or keyboard frontmost App. Input in Codex therefore does not invalidate a different controlled App;
+input resolved to the controlled App still cancels the action and requires a fresh state query.
+
 ## Troubleshooting
 
 Check permissions directly:

@@ -1139,8 +1139,11 @@ former 10,000-UTF-16-unit `type` limit, so that extra limit is also removed.
   loop. `CONFIRMED_STATIC_BINARY`; exact debounce duration and clearing transitions remain
   `NEEDS_ARM_ORACLE`.
 - Intel preflights Input Monitoring without requesting it. When already granted, a listen-only
-  event tap ignores events emitted by the service itself, attributes known events by target PID,
-  and conservatively treats unresolved targets as affecting every controlled app. It cancels
+  event tap ignores events emitted by the service itself and uses ARM's recovered `EventData`
+  inputs and optional target-resolver shape. Intel resolves the reported target PID first, the
+  pointer-window owner PID second, and the frontmost App for keyboard events. Truly unresolved
+  events retain the global focus-safety generation but do not mark every App as requiring requery.
+  It cancels
   in-flight keyboard, mouse, drag, scroll, AX, and paste work with `userIntervened` (`-10016`). A
   successful `get_app_state` records a per-app/PID checkpoint at capture start; physical input after
   that point, including during capture, latches subsequent actions to `userIntervened` until another
@@ -1148,9 +1151,9 @@ former 10,000-UTF-16-unit `type` limit, so that extra limit is also removed.
   granted, monitoring remains disabled without a permission prompt and `service-status.json`
   reports the degraded capability. If its event tap becomes available after an earlier snapshot,
   that uncheckpointed snapshot fails closed until requery. `HIGH_CONFIDENCE`; exact official target
-  resolution, debounce, and whether some intervention reasons persist for the entire turn remain
-  `NEEDS_ARM_ORACLE`.
-- The current runtime checkpoint passes 263 Swift tests and 13 Node protocol/reverse/oracle tests,
+  resolver fallback order, debounce, and whether some intervention reasons persist for the entire
+  turn remain `NEEDS_ARM_ORACLE`.
+- The current runtime checkpoint passes 323 Swift tests and 13 Node protocol/reverse/oracle tests,
   including the protocol-catalog verifier and soft-link hash coverage. It also passes the
   12-selector Intel PIP-host audit and an x86_64 release build compiled with warnings as errors.
 

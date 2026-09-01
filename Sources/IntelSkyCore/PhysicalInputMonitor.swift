@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -25,8 +26,9 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStream
   public static let shared = PhysicalInputMonitor()
 
   private let lock = NSLock()
+  private let targetProcessResolver: @Sendable (CGEventType, CGEvent) -> pid_t?
   private var generation: UInt64 = 0
-  private var unknownTargetGeneration: UInt64 = 0
+  private var targetMapResetGeneration: UInt64 = 0
   private var generationByTargetProcess: [pid_t: UInt64] = [:]
   private var available = false
   private var eventObservers: [UUID: @Sendable (CGEventType, CGEvent) -> Void] = [:]
@@ -35,10 +37,15 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStream
   public var isAvailable: Bool { lock.withLock { available } }
 
   public init() {
+    targetProcessResolver = Self.makeTargetProcessResolver()
     startMonitoringIfAuthorized()
   }
 
-  init(startMonitoring: Bool) {
+  init(
+    startMonitoring: Bool,
+    targetProcessResolver: (@Sendable (CGEventType, CGEvent) -> pid_t?)? = nil
+  ) {
+    self.targetProcessResolver = targetProcessResolver ?? Self.makeTargetProcessResolver()
     if startMonitoring { startMonitoringIfAuthorized() }
   }
 
@@ -51,7 +58,7 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStream
 
   func checkpoint(for processIdentifier: pid_t) -> UInt64 {
     lock.withLock {
-      unknownTargetGeneration &+ (generationByTargetProcess[processIdentifier] ?? 0)
+      targetMapResetGeneration &+ (generationByTargetProcess[processIdentifier] ?? 0)
     }
   }
 
@@ -70,20 +77,19 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStream
   func record(_ event: CGEvent, type: CGEventType) {
     let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
     guard sourcePID != Int64(ProcessInfo.processInfo.processIdentifier) else { return }
-    let targetPID = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
+    let reportedTargetPID = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
+    let targetPID =
+      reportedTargetPID > 0 ? reportedTargetPID : targetProcessResolver(type, event)
     let observers = lock.withLock { () -> [@Sendable (CGEventType, CGEvent) -> Void] in
       generation &+= 1
-      if targetPID > 0 {
+      if let targetPID, targetPID > 0 {
         if generationByTargetProcess[targetPID] == nil,
           generationByTargetProcess.count >= 256
         {
           generationByTargetProcess.removeAll(keepingCapacity: true)
-          unknownTargetGeneration &+= 1
+          targetMapResetGeneration &+= 1
         }
         generationByTargetProcess[targetPID, default: 0] &+= 1
-      } else {
-        // An unresolved physical target must conservatively invalidate every controlled app.
-        unknownTargetGeneration &+= 1
       }
       return Array(eventObservers.values)
     }
@@ -97,6 +103,13 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStream
   func reenableEventTap() {
     guard let tap = lock.withLock({ eventTap }) else { return }
     CGEvent.tapEnable(tap: tap, enable: true)
+  }
+
+  private static func makeTargetProcessResolver()
+    -> @Sendable (CGEventType, CGEvent) -> pid_t?
+  {
+    let resolver = PhysicalInputTargetResolver()
+    return { type, event in resolver.resolve(type: type, event: event) }
   }
 
   private func runEventTap() {
@@ -140,6 +153,55 @@ public final class PhysicalInputMonitor: UserInterventionMonitoring, EventStream
     lock.withLock {
       if eventTap === tap { eventTap = nil }
       available = false
+    }
+  }
+}
+
+private final class PhysicalInputTargetResolver: @unchecked Sendable {
+  private let lock = NSLock()
+  private var cachedPointerWindow: (windowID: CGWindowID, processIdentifier: pid_t?)?
+
+  func resolve(type: CGEventType, event: CGEvent) -> pid_t? {
+    if Self.isPointerEvent(type) {
+      let windowID = CGWindowID(
+        event.getIntegerValueField(.mouseEventWindowUnderMousePointer)
+      )
+      guard windowID != 0 else { return nil }
+      if let cached = lock.withLock({ cachedPointerWindow }), cached.windowID == windowID {
+        return cached.processIdentifier
+      }
+      let processIdentifier = Self.windowOwnerProcessIdentifier(windowID)
+      lock.withLock { cachedPointerWindow = (windowID, processIdentifier) }
+      return processIdentifier
+    }
+
+    if type == .keyDown {
+      let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+      if frontmostPID > 0 { return frontmostPID }
+    }
+    return nil
+  }
+
+  private static func windowOwnerProcessIdentifier(_ windowID: CGWindowID) -> pid_t? {
+    guard
+      let windowInfo = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID)
+        as? [[String: Any]],
+      let ownerPID = windowInfo.first?[kCGWindowOwnerPID as String] as? NSNumber,
+      ownerPID.int32Value > 0
+    else {
+      return nil
+    }
+    return ownerPID.int32Value
+  }
+
+  private static func isPointerEvent(_ type: CGEventType) -> Bool {
+    switch type {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+      .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged,
+      .rightMouseDragged, .otherMouseDragged, .scrollWheel:
+      return true
+    default:
+      return false
     }
   }
 }

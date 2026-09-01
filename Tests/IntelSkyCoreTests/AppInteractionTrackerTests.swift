@@ -58,10 +58,13 @@ import Testing
   #expect(throws: SkySafetyError.self) { try UserInterventionContext.check() }
 }
 
-@Test func physicalInputMonitorAttributesKnownTargetsAndConservativelyHandlesUnknownTargets()
+@Test func physicalInputMonitorAttributesKnownTargetsAndDoesNotBroadcastUnresolvedTargets()
   throws
 {
-  let monitor = PhysicalInputMonitor(startMonitoring: false)
+  let monitor = PhysicalInputMonitor(
+    startMonitoring: false,
+    targetProcessResolver: { _, _ in nil }
+  )
   let knownTargetEvent = try #require(CGEvent(source: nil))
   knownTargetEvent.setIntegerValueField(.eventSourceUnixProcessID, value: 1234)
   knownTargetEvent.setIntegerValueField(.eventTargetUnixProcessID, value: 10)
@@ -76,7 +79,23 @@ import Testing
   unknownTargetEvent.setIntegerValueField(.eventTargetUnixProcessID, value: 0)
   monitor.record(unknownTargetEvent)
 
-  #expect(monitor.checkpoint(for: 10) == 2)
+  #expect(monitor.checkpoint() == 2)
+  #expect(monitor.checkpoint(for: 10) == 1)
+  #expect(monitor.checkpoint(for: 11) == 0)
+}
+
+@Test func physicalInputMonitorResolvesMissingEventTargetPerApp() throws {
+  let monitor = PhysicalInputMonitor(
+    startMonitoring: false,
+    targetProcessResolver: { _, _ in 11 }
+  )
+  let event = try #require(CGEvent(source: nil))
+  event.setIntegerValueField(.eventSourceUnixProcessID, value: 1234)
+  event.setIntegerValueField(.eventTargetUnixProcessID, value: 0)
+
+  monitor.record(event)
+
+  #expect(monitor.checkpoint(for: 10) == 0)
   #expect(monitor.checkpoint(for: 11) == 1)
 }
 
