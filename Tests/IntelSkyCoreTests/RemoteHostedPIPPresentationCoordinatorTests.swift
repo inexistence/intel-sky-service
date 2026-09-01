@@ -487,6 +487,7 @@ import UniformTypeIdentifiers
   let host = RecordingPIPHostCaller()
   let capture = RecordingPIPWindowCapture()
   let scheduler = RecordingPIPLivenessScheduler()
+  let retiredThreads = LockedArray<String>()
   let coordinator = RemoteHostedPIPPresentationCoordinator(
     host: host,
     captureFactory: { _, _, _ in capture },
@@ -495,6 +496,7 @@ import UniformTypeIdentifiers
       scheduler.schedule(after: delay, operation: operation)
     }
   )
+  coordinator.setTurnRetiredHandler { retiredThreads.append($0) }
   coordinator.observe(
     requestType: "ComputerUseIPCAppGetSkyshotRequest",
     request: ["app": "com.example.fixture"],
@@ -510,10 +512,12 @@ import UniformTypeIdentifiers
 
   scheduler.runNext()
   #expect(!capture.stopped)
+  #expect(retiredThreads.values.isEmpty)
   #expect(scheduler.delays == [2])
 
   scheduler.runNext()
   #expect(capture.stopped)
+  #expect(retiredThreads.values == ["thread"])
   #expect(host.events.contains("invalidate:\(presentationID)"))
   #expect(scheduler.delays.isEmpty)
 }
@@ -676,6 +680,17 @@ private final class RecordingPIPLivenessScheduler: @unchecked Sendable {
   func runNext() {
     let operation = lock.withLock { pending.isEmpty ? nil : pending.removeFirst().operation }
     operation?()
+  }
+}
+
+private final class LockedArray<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [Value] = []
+
+  var values: [Value] { lock.withLock { stored } }
+
+  func append(_ value: Value) {
+    lock.withLock { stored.append(value) }
   }
 }
 

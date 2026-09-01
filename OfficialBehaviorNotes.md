@@ -481,25 +481,28 @@ start fresh, and deliberately does not activate a restore target. `HIGH_CONFIDEN
 component ordering remains `NEEDS_ARM_ORACLE`.
 
 Production Intel ChatGPT does not send `ComputerUseIPCCodexTurnEndedRequest` to its managed service.
-The Codex app-server sends thread notifications only to connections subscribed to that thread;
-`initialize` alone therefore leaves a passive observer connected but unable to receive
-`turn/completed`. Intel now registers the thread ID from every scoped Computer Use request with a
-metadata-only `thread/resume { excludeTurns: true }` and repeats active subscriptions after an
-app-server reconnect. Completion removes the subscription and drives the existing thread-scoped
-runtime cleanup. This closes the observed split state where Appshot disappeared while the desktop
-cursor and status-menu App remained active.
+Live probing proved that `${CODEX_HOME}/ipc/ipc.sock` is the desktop IPC router: sending the earlier
+`thread/resume` request returns `no-client-found` and cannot subscribe to App Server notifications.
+ARM binary analysis recovered its actual `CodexAppServerThreadEventObserver`: client type
+`Codex AppServer Thread Events`, `thread-stream-following-changed` subscriptions, following-status
+responses, and completion detection from `thread-stream-state-changed` patches. The completion
+predicate accepts a status other than `inProgress` at either `turns/<id>/status` or
+`turnHistory/history/entitiesByKey/<id>/status`. Intel now implements those same broker messages,
+waits for successful initialization before following, repeats follows after reconnect, and removes
+the follow before driving thread-scoped runtime cleanup. This covers turns that never create PIP.
 Static caller inspection and two attended cross-turn traces instead show that ChatGPT completes the
 native Remote Hosted PIP presentation in its own task controller. The host retains a completed
 presentation for an intentional 30-second grace period, then rejects presentation-scoped XPC calls
 with `RemoteHostedPIPContent` code 3. The historical trace emitted no
 `com.openai.codex.computer-use.status-item-state-changed` notification at that boundary. The current
 Intel service publishes that recovered envelope whenever the menu-visible active-application set
-changes, independently of PIP retirement. Intel therefore keeps the explicit request
-and observed turn-ID transition paths for compatible callers, and additionally probes the published
+changes, independently of PIP retirement. Intel therefore keeps the explicit request,
+state-stream, and observed turn-ID transition paths, and additionally probes the published
 host presentation with the idempotent source-PID selector. It tolerates a disconnected host for
 reconnect and one transient failure; two failures against the same publication generation stop the
-capture and invalidate local presentation state. This is a host-lifecycle signal, not an inactivity
-timeout, so a long active turn is never ended merely because it has no requests.
+capture, invalidate local presentation state, and drive the same thread-ended cleanup so the menu
+cannot outlive a host-retired cursor/PIP. This is a host-lifecycle signal, not an inactivity timeout,
+so a long active turn is never ended merely because it has no requests.
 
 An attended deployed run published Notes presentation
 `781E5132-83D8-40A0-A751-229863DEC97E` at 00:53:35. ChatGPT completed the turn at 00:53:40, expired

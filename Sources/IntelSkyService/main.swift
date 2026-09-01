@@ -162,6 +162,10 @@ let appServerThreadEventObserver = CodexAppServerThreadEventObserver(
 )
 router.installThreadActivityObserver(appServerThreadEventObserver)
 appServerThreadEventObserver.start()
+pipBootstrapController?.setTurnRetiredHandler { threadID in
+  fputs("native PIP host retired turn \(threadID); revoking Computer Use runtime\n", stderr)
+  router.codexTurnDidEnd(threadID: threadID)
+}
 let screenLockMonitor = ComputerUseScreenLockMonitor {
   fputs("screen locked or console session changed; revoking Computer Use runtime\n", stderr)
   router.screenDidLock()

@@ -63,6 +63,7 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
   private var activeTurnsByThreadID: [String: ComputerUseTurnIdentity] = [:]
   private var hasReceivedLifecycleEvent = false
   private var maximumDisplayDimension: CGFloat?
+  private var turnRetiredHandler: (@Sendable (String) -> Void)?
 
   init(
     host: any RemoteHostedPIPHostCalling,
@@ -153,6 +154,10 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
       presentations.compactMap { key, presentation in presentation.ending ? nil : key }
     }
     for key in keys { publishPresentation(for: key, allowRepublish: true) }
+  }
+
+  func setTurnRetiredHandler(_ handler: (@Sendable (String) -> Void)?) {
+    lock.withLock { turnRetiredHandler = handler }
   }
 
   @discardableResult
@@ -742,21 +747,22 @@ final class RemoteHostedPIPPresentationCoordinator: SkyRequestResultObserving,
         }
         return
       }
-      let shouldInvalidate = lock.withLock { () -> Bool in
+      let retiredThread = lock.withLock { () -> String? in
         guard let key = presentations.first(where: { $0.value.id == presentationID })?.key,
           var current = presentations[key], !current.ending,
           current.publicationState == .published,
           current.livenessGeneration == generation
-        else { return false }
+        else { return nil }
         current.consecutiveLivenessFailures += 1
         presentations[key] = current
-        return current.consecutiveLivenessFailures >= 2
+        return current.consecutiveLivenessFailures >= 2 ? key.threadID : nil
       }
-      if shouldInvalidate {
+      if let retiredThread {
         RemoteHostedPIPDiagnostics.logger.notice(
-          "host retired presentation id=\(presentationID, privacy: .public); stopping capture"
+          "host retired presentation id=\(presentationID, privacy: .public); ending turn and stopping capture"
         )
         invalidate(presentationID: presentationID)
+        lock.withLock { turnRetiredHandler }?(retiredThread)
       } else {
         scheduleHostLivenessProbe(presentationID: presentationID, generation: generation)
       }

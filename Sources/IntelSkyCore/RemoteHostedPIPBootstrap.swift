@@ -121,6 +121,10 @@ public final class RemoteHostedPIPBootstrapController: NSObject, SkyRequestResul
     lock.withLock { authorizedHostHandler = handler }
   }
 
+  public func setTurnRetiredHandler(_ handler: @escaping @Sendable (String) -> Void) {
+    runtime().presentationCoordinator.setTurnRetiredHandler(handler)
+  }
+
   deinit {
     if started {
       AERemoveEventHandler(

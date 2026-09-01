@@ -1,13 +1,13 @@
 import Darwin
 import Foundation
 
-/// Mirrors the ARM service's turn-boundary source: the Codex App Server native IPC stream.
+/// Mirrors the ARM service's turn-boundary source: the Codex desktop IPC thread-state stream.
 /// Computer Use requests do not reliably include a public turn-ended request, while this stream
-/// publishes `turn/completed` independently of whether the turn created a PIP presentation.
+/// publishes turn-status patches independently of whether the turn created a PIP presentation.
 public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityObserving,
   @unchecked Sendable
 {
-  static let maximumFrameLength = 8 * 1024 * 1024
+  static let maximumFrameLength = 128 * 1024 * 1024
 
   private let lock = NSLock()
   private let writeLock = NSLock()
@@ -26,6 +26,7 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
   private var generation: UInt64 = 0
   private var running = false
   private var connectedDescriptor: Int32 = -1
+  private var connectedInitialized = false
   private var observedThreadIDs: Set<String> = []
 
   public convenience init(
@@ -80,12 +81,14 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
     if descriptor >= 0 { Darwin.shutdown(descriptor, SHUT_RDWR) }
   }
 
-  /// App-server notifications are delivered only to clients subscribed to the corresponding
-  /// thread. Computer Use learns that scope from each request's Codex turn metadata.
+  /// Thread-state patches are delivered only to clients following the corresponding thread.
+  /// Computer Use learns that scope from each request's Codex turn metadata.
   public func observe(threadID: String) {
     guard let threadID = Self.nonempty(threadID) else { return }
     let state = lock.withLock { () -> (Int32, UInt64)? in
-      guard observedThreadIDs.insert(threadID).inserted, running, connectedDescriptor >= 0 else {
+      guard observedThreadIDs.insert(threadID).inserted, running, connectedDescriptor >= 0,
+        connectedInitialized
+      else {
         return nil
       }
       return (connectedDescriptor, generation)
@@ -117,10 +120,20 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
   static func completedThreadID(from data: Data) -> String? {
     guard
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      object["method"] as? String == "turn/completed",
       let params = object["params"] as? [String: Any]
     else { return nil }
-    return nonempty(params["threadId"] as? String)
+    if object["method"] as? String == "turn/completed" {
+      return nonempty(params["threadId"] as? String)
+    }
+    guard object["type"] as? String == "broadcast",
+      object["version"] as? Int == 11,
+      object["method"] as? String == "thread-stream-state-changed",
+      nonempty(params["hostId"] as? String) == "local",
+      let conversationID = nonempty(params["conversationId"] as? String),
+      let change = params["change"] as? [String: Any],
+      changeCompletesTurn(change)
+    else { return nil }
+    return conversationID
   }
 
   static func initializePayload(identifier: UUID = UUID()) throws -> Data {
@@ -129,25 +142,56 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
         "type": "request",
         "requestId": identifier.uuidString,
         "method": "initialize",
-        "params": ["clientType": "desktop"],
+        "params": ["clientType": "Codex AppServer Thread Events"],
       ],
       options: [.sortedKeys]
     )
   }
 
-  static func threadResumePayload(
+  static func initializeSucceeded(requestID: String, data: Data) -> Bool {
+    guard
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      object["type"] as? String == "response",
+      object["requestId"] as? String == requestID,
+      object["method"] as? String == "initialize",
+      object["resultType"] as? String == "success"
+    else { return false }
+    return true
+  }
+
+  static func threadFollowingPayload(
     threadID: String,
-    identifier: UUID = UUID()
+    following: Bool = true,
+    targetClientID: String? = nil
   ) throws -> Data {
-    try JSONSerialization.data(
-      withJSONObject: [
-        "type": "request",
-        "requestId": identifier.uuidString,
-        "method": "thread/resume",
-        "params": ["threadId": threadID, "excludeTurns": true],
+    var object: [String: Any] = [
+      "type": "broadcast",
+      "method": "thread-stream-following-changed",
+      "version": 1,
+      "params": [
+        "conversationId": threadID,
+        "hostId": "local",
+        "following": following,
       ],
-      options: [.sortedKeys]
-    )
+    ]
+    if let targetClientID = nonempty(targetClientID) {
+      object["targetClientIds"] = [targetClientID]
+    }
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+  }
+
+  static func followingStatusRequest(from data: Data) -> (threadID: String, clientID: String)? {
+    guard
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      object["type"] as? String == "broadcast",
+      object["version"] as? Int == 1,
+      object["method"] as? String == "thread-stream-following-status-requested",
+      let sourceClientID = nonempty(object["sourceClientId"] as? String),
+      let params = object["params"] as? [String: Any],
+      nonempty(params["hostId"] as? String) == "local",
+      let conversationID = nonempty(params["conversationId"] as? String)
+    else { return nil }
+    return (conversationID, sourceClientID)
   }
 
   static func clientDiscoveryResponse(from data: Data) -> Data? {
@@ -175,15 +219,43 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
         Darwin.close(descriptor)
         return
       }
-      try writeFrame(Self.initializePayload(), to: descriptor)
-      for threadID in lock.withLock({ observedThreadIDs.sorted() }) {
-        try writeFrame(Self.threadResumePayload(threadID: threadID), to: descriptor)
-      }
+      let initializeID = UUID()
+      try writeFrame(Self.initializePayload(identifier: initializeID), to: descriptor)
       while isCurrent(expectedGeneration) {
         let payload = try Self.readFrame(from: descriptor)
+        if Self.initializeSucceeded(requestID: initializeID.uuidString, data: payload) {
+          let threadIDs = lock.withLock { () -> [String] in
+            guard running, generation == expectedGeneration,
+              connectedDescriptor == descriptor
+            else { return [] }
+            connectedInitialized = true
+            return observedThreadIDs.sorted()
+          }
+          for threadID in threadIDs {
+            try writeFrame(Self.threadFollowingPayload(threadID: threadID), to: descriptor)
+          }
+          continue
+        }
         if let threadID = Self.completedThreadID(from: payload) {
-          _ = lock.withLock { observedThreadIDs.remove(threadID) }
-          turnEnded(threadID)
+          let wasObserved = lock.withLock { observedThreadIDs.remove(threadID) != nil }
+          if wasObserved {
+            try writeFrame(
+              Self.threadFollowingPayload(threadID: threadID, following: false),
+              to: descriptor
+            )
+            turnEnded(threadID)
+          }
+        }
+        if let statusRequest = Self.followingStatusRequest(from: payload),
+          lock.withLock({ observedThreadIDs.contains(statusRequest.threadID) })
+        {
+          try writeFrame(
+            Self.threadFollowingPayload(
+              threadID: statusRequest.threadID,
+              targetClientID: statusRequest.clientID
+            ),
+            to: descriptor
+          )
         }
         if let response = Self.clientDiscoveryResponse(from: payload) {
           try writeFrame(response, to: descriptor)
@@ -209,6 +281,7 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
     lock.withLock {
       guard running, generation == expectedGeneration else { return false }
       connectedDescriptor = descriptor
+      connectedInitialized = false
       return true
     }
   }
@@ -216,7 +289,10 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
   private func clearAndClose(descriptor: Int32) {
     guard descriptor >= 0 else { return }
     lock.withLock {
-      if connectedDescriptor == descriptor { connectedDescriptor = -1 }
+      if connectedDescriptor == descriptor {
+        connectedDescriptor = -1
+        connectedInitialized = false
+      }
     }
     Darwin.close(descriptor)
   }
@@ -226,11 +302,14 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
     descriptor: Int32,
     generation expectedGeneration: UInt64
   ) {
-    guard lock.withLock({
-      running && generation == expectedGeneration && connectedDescriptor == descriptor
-    }) else { return }
+    guard
+      lock.withLock({
+        running && generation == expectedGeneration && connectedDescriptor == descriptor
+          && connectedInitialized
+      })
+    else { return }
     do {
-      try writeFrame(Self.threadResumePayload(threadID: threadID), to: descriptor)
+      try writeFrame(Self.threadFollowingPayload(threadID: threadID), to: descriptor)
     } catch {
       if isCurrent(expectedGeneration) {
         diagnostic("Codex App Server thread subscription failed: \(error)")
@@ -353,11 +432,31 @@ public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityO
     var description: String {
       switch self {
       case .endOfStream: return "end of stream"
-      case .frameTooLarge: return "frame exceeds 8 MiB"
+      case .frameTooLarge: return "frame exceeds 128 MiB"
       case .socketPathTooLong: return "Unix socket path is too long"
       case .systemCall(let operation, let code):
         return "\(operation) failed: \(String(cString: strerror(code)))"
       }
+    }
+  }
+
+  private static func changeCompletesTurn(_ change: [String: Any]) -> Bool {
+    guard change["type"] as? String == "patches",
+      let patches = change["patches"] as? [[String: Any]]
+    else { return false }
+    return patches.reversed().contains { patch in
+      guard let path = patch["path"] as? [Any],
+        let value = nonempty(patch["value"] as? String),
+        value != "inProgress"
+      else { return false }
+      if path.count == 3 {
+        return path[0] as? String == "turns" && path[2] as? String == "status"
+      }
+      if path.count == 5 {
+        return path[0] as? String == "turnHistory" && path[1] as? String == "history"
+          && path[2] as? String == "entitiesByKey" && path[4] as? String == "status"
+      }
+      return false
     }
   }
 }
