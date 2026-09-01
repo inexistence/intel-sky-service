@@ -168,7 +168,7 @@ supported as a compatible secondary path.
 Skyshots always contain the AX text representation, but attach a screenshot only when the recovered
 ARM-style classifier finds visual content such as an image, canvas, map, video, or web area. Since
 Remote Hosted PIP is driven by that screenshot attachment, text-only windows do not create an
-unnecessary floating preview. Computer Use active/inactive edges also publish ChatGPT's recovered
+unnecessary floating preview. Computer Use application-list changes also publish ChatGPT's recovered
 status-item distributed-notification envelope so the menu does not retain ended Apps.
 
 ## Troubleshooting

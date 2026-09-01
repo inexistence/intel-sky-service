@@ -144,7 +144,7 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
   private var stoppedOwnersByBundleIdentifier: [String: Set<String>] = [:]
   private var stopHandler: (@Sendable (String, String?) -> Void)?
   private var additionalStopHandlers: [UUID: @Sendable (String, String?) -> Void] = [:]
-  private var lastPublishedComputerUseActive = false
+  private var lastPublishedApplicationBundleIdentifiers: Set<String> = []
 
   init(
     statusPublisher: @escaping @Sendable (Bool) -> Void = { active in
@@ -371,10 +371,12 @@ final class ComputerUseSessionCoordinator: ComputerUseSessionCoordinating,
 
   private func publishStatusIfChanged() {
     let active = lock.withLock { () -> Bool? in
-      let active = !activeApplications.isEmpty
-      guard active != lastPublishedComputerUseActive else { return nil }
-      lastPublishedComputerUseActive = active
-      return active
+      let applicationBundleIdentifiers = Set(activeApplications.keys)
+      guard applicationBundleIdentifiers != lastPublishedApplicationBundleIdentifiers else {
+        return nil
+      }
+      lastPublishedApplicationBundleIdentifiers = applicationBundleIdentifiers
+      return !applicationBundleIdentifiers.isEmpty
     }
     if let active { statusPublisher(active) }
   }

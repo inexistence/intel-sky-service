@@ -69,7 +69,7 @@ import Testing
   }
 }
 
-@Test func endingOneThreadPreservesAnotherThreadsApplicationAndPublishesOnlyEdges() throws {
+@Test func applicationSetChangesRefreshMenuWhileAnotherThreadRemainsActive() throws {
   let notifications = SessionStatusRecorder()
   let coordinator = ComputerUseSessionCoordinator { notifications.record($0) }
   let first = try #require(
@@ -89,6 +89,29 @@ import Testing
   let computerUse = try #require(activeState["computerUse"] as? [String: Any])
   let applications = try #require(computerUse["activeApplications"] as? [[String: Any]])
   #expect(applications.map { $0["bundleIdentifier"] as? String } == ["com.example.second"])
+  // Repeated `true` publications refresh ChatGPT's full application menu even though
+  // the aggregate Computer Use state remains active.
+  #expect(notifications.values == [true, true, true])
+
+  coordinator.handle(.ended(second))
+  #expect(notifications.values == [true, true, true, false])
+}
+
+@Test func ownershipChangesDoNotRefreshMenuWhenVisibleApplicationSetIsUnchanged() throws {
+  let notifications = SessionStatusRecorder()
+  let coordinator = ComputerUseSessionCoordinator { notifications.record($0) }
+  let first = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "first", "turn_id": "1"])
+  )
+  let second = try #require(
+    ComputerUseTurnIdentity(metadata: ["thread_id": "second", "turn_id": "1"])
+  )
+  let app = sessionTestApp(bundleIdentifier: "com.example.shared", name: "Shared")
+
+  ComputerUseTurnContext.withIdentity(first) { coordinator.recordActive(app) }
+  ComputerUseTurnContext.withIdentity(second) { coordinator.recordActive(app) }
+  coordinator.handle(.ended(first))
+
   #expect(notifications.values == [true])
 
   coordinator.handle(.ended(second))

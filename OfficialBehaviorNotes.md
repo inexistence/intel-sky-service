@@ -493,8 +493,8 @@ native Remote Hosted PIP presentation in its own task controller. The host retai
 presentation for an intentional 30-second grace period, then rejects presentation-scoped XPC calls
 with `RemoteHostedPIPContent` code 3. The historical trace emitted no
 `com.openai.codex.computer-use.status-item-state-changed` notification at that boundary. The current
-Intel service publishes that recovered envelope on aggregate inactive→active and active→inactive
-App-session edges, independently of PIP retirement. Intel therefore keeps the explicit request
+Intel service publishes that recovered envelope whenever the menu-visible active-application set
+changes, independently of PIP retirement. Intel therefore keeps the explicit request
 and observed turn-ID transition paths for compatible callers, and additionally probes the published
 host presentation with the idempotent source-PID selector. It tolerates a disconnected host for
 reconnect and one transient failure; two failures against the same publication generation stop the
@@ -944,7 +944,7 @@ envelope: notification `com.openai.codex.computer-use.status-item-state-changed`
 `processIdentifier`, `computerUseActive`, and `computerHistoryState`. ChatGPT accepts the event only
 for its cached managed PID; refreshing the status menu then runs the existing managed
 `ensureServicePid` path and reconnects the native PIP host. The session registry now uses the same
-envelope to publish only aggregate active-state edges, so the menu receives `true` when the first
+envelope whenever the menu-visible application set changes, so the menu receives `true` when the first
 thread begins using an App and `false` only after the last owning thread ends or deactivates. Intel
 starts a same-signed, same-binary watchdog only after an authenticated PIP bootstrap. The watchdog
 owns no socket or UI and, if the
