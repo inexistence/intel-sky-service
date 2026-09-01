@@ -20,6 +20,7 @@ const defaultARMBinary =
 const catalog = readFileSync(catalogPath, "utf8");
 const protocolSource = readFileSync(protocolSourcePath, "utf8");
 const nativeBridgeSource = readFileSync(nativeBridgePath, "utf8");
+const staticOnlyRequests = new Set(["ComputerUseIPCAppUsageRequest"]);
 
 function requestRows() {
   return catalog
@@ -68,8 +69,8 @@ test("protocol catalog exactly partitions implemented and out-of-scope requests"
   const outOfScope = swiftSet("outOfScopeRequestTypes");
   const documented = new Set(rows.map((row) => row.name));
 
-  assert.equal(rows.length, 34);
-  assert.equal(documented.size, 34, "protocol catalog contains duplicate request rows");
+  assert.equal(rows.length, 35);
+  assert.equal(documented.size, 35, "protocol catalog contains duplicate request rows");
   assert.deepEqual(
     sorted(new Set([...implemented, ...outOfScope])),
     sorted(documented),
@@ -121,8 +122,16 @@ test("catalog matches ARM field metadata when the reference binary is available"
       .filter(([name]) => name?.startsWith("ComputerUseIPC") && name.endsWith("Request")),
   );
   const rows = requestRows();
-  assert.deepEqual(sorted(armRequests.keys()), sorted(new Set(rows.map((row) => row.name))));
-  for (const row of rows) {
+  const metadataRequests = rows.filter((row) => !staticOnlyRequests.has(row.name));
+  assert.deepEqual(
+    sorted(armRequests.keys()),
+    sorted(new Set(metadataRequests.map((row) => row.name))),
+  );
+  const binary = readFileSync(binaryPath);
+  for (const request of staticOnlyRequests) {
+    assert.ok(binary.includes(Buffer.from(request)), `${request} is absent from ARM binary strings`);
+  }
+  for (const row of metadataRequests) {
     assert.deepEqual(row.fields, armRequests.get(row.name), `${row.name} field metadata differs`);
   }
 });

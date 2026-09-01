@@ -27,9 +27,10 @@ replace when stronger evidence appears.
 - The x86_64 and ARM64 bundles inspected on 2026-08-30 contain byte-identical macOS
   `client.js` files.
 - ARM service bundle: `com.openai.sky.CUAService`, build `26.828.1000919`, arm64.
-- `ProtocolCatalog.md` is the request-by-request wire index. Its machine check proves that the 15
-  implemented and 19 `OUT_OF_SCOPE` requests exactly match all 34 ARM request descriptors, router
-  dispatch, and the five authenticated Intel Apple Event cases. `CONFIRMED_STATIC_BINARY`.
+- `ProtocolCatalog.md` is the request-by-request wire index. Its machine check proves that the 16
+  implemented and 19 `OUT_OF_SCOPE` requests exactly match all 35 recovered ARM request names (34
+  field descriptors plus the static-only App Usage name), router dispatch, and the five
+  authenticated Intel Apple Event cases. `CONFIRMED_STATIC_BINARY`.
 
 ## Public Window API matrix
 
@@ -391,8 +392,12 @@ input monitoring, and `focusStealProtection` all available. The official high-le
 a 26,278-character AX tree in 2.3 seconds; the service remained the sole socket owner.
 `CONFIRMED_INTEL_RUNTIME`.
 
-Intel now tracks scoped turns, handles explicit turn-ended requests, and treats an observed turn-ID
-change as an implicit boundary. Before the first operation that truly foregrounds a target, it
+Intel now keeps an independent registry entry for every active thread, handles explicit turn-ended
+requests, and treats a turn-ID change within the same thread as an implicit boundary. Ending one
+thread removes only its App ownership, Capture Stream, PIP, cursor, focus lease,
+intervention/AX/diff baselines, and generated screenshots; other threads remain active. The first
+scoped start revokes legacy state created without turn metadata. Before the first operation that
+truly foregrounds a target, it
 captures the user's frontmost app and focused AX window. It restores only at the turn boundary and
 only if the current frontmost process is one controlled during that turn; restoration is suppressed
 after physical input or an independent user focus change. Lifecycle delivery is serialized outside
@@ -407,8 +412,10 @@ Production Intel ChatGPT does not send `ComputerUseIPCCodexTurnEndedRequest` to 
 Static caller inspection and two attended cross-turn traces instead show that ChatGPT completes the
 native Remote Hosted PIP presentation in its own task controller. The host retains a completed
 presentation for an intentional 30-second grace period, then rejects presentation-scoped XPC calls
-with `RemoteHostedPIPContent` code 3. No `com.openai.codex.computer-use.status-item-state-changed`
-distributed notification was emitted at that boundary. Intel therefore keeps the explicit request
+with `RemoteHostedPIPContent` code 3. The historical trace emitted no
+`com.openai.codex.computer-use.status-item-state-changed` notification at that boundary. The current
+Intel service publishes that recovered envelope on aggregate inactive→active and active→inactive
+App-session edges, independently of PIP retirement. Intel therefore keeps the explicit request
 and observed turn-ID transition paths for compatible callers, and additionally probes the published
 host presentation with the idempotent source-PID selector. It tolerates a disconnected host for
 reconnect and one transient failure; two failures against the same publication generation stop the
@@ -431,8 +438,9 @@ The final error-classified build repeated the same production path with Notes pr
 00:59:57.892, and the service observed only two explicit `RemoteHostedPIPContent` code-3 replies
 before stopping/finalizing/deallocating capture at 01:00:00.801–00.803. Ordinary unavailable or
 timeout failures do not count as retirement, and a republish generation invalidates already queued
-probes. The final installed executable SHA-256 is
-`16ef59e1bb7e60fdcdb92886ef7ea635681dd22af16f4362f73c4f0348bb4575`.
+probes. That error-classified executable SHA-256 was
+`16ef59e1bb7e60fdcdb92886ef7ea635681dd22af16f4362f73c4f0348bb4575`; it has since been superseded
+by the per-thread lifecycle build recorded in `CompletionAudit.md`.
 
 The socket server now accepts up to eight clients concurrently while serializing Computer Use
 request execution. This prevents a persistent node_repl transport from blocking a separate trusted
@@ -856,8 +864,11 @@ Static inspection of `sky.node` and the production ASAR recovered ChatGPT's dist
 envelope: notification `com.openai.codex.computer-use.status-item-state-changed` with
 `processIdentifier`, `computerUseActive`, and `computerHistoryState`. ChatGPT accepts the event only
 for its cached managed PID; refreshing the status menu then runs the existing managed
-`ensureServicePid` path and reconnects the native PIP host. Intel starts a same-signed, same-binary
-watchdog only after an authenticated PIP bootstrap. The watchdog owns no socket or UI and, if the
+`ensureServicePid` path and reconnects the native PIP host. The session registry now uses the same
+envelope to publish only aggregate active-state edges, so the menu receives `true` when the first
+thread begins using an App and `false` only after the last owning thread ends or deactivates. Intel
+starts a same-signed, same-binary watchdog only after an authenticated PIP bootstrap. The watchdog
+owns no socket or UI and, if the
 service exits while that ChatGPT PID remains alive, publishes the official stopped-state envelope
 for the old PID. A simultaneous LaunchServices fallback yields socket binding for one second so the
 ChatGPT-managed child wins, while retaining socket-only recovery if the manager is unavailable.
@@ -866,6 +877,14 @@ the persistent official client returned a full 21,783-character Notes state and 
 1,137 ms. Logs then showed endpoint transfer on attempt 1, XPC connection, the 200-point maximum,
 and a new complete Notes presentation. Exactly one service owned the mode-0600 socket; its watchdog
 owned none. `CONFIRMED_STATIC_BINARY` / `CONFIRMED_CLIENT_SOURCE` /
+`CONFIRMED_INTEL_RUNTIME`.
+
+The per-thread lifecycle build was signed with the configured Apple Development identity and
+installed through the managed installer on 2026-09-01. Its executable SHA-256 is
+`941e738217524b91cca9f854d04c7cb2a048dda183dc33cec7789c83720eccb0`. ChatGPT replaced managed PID
+49640 with PID 53262 without an App restart; the new status file reported capability registration,
+Accessibility, Screen Recording, physical Input Monitoring, and focus-steal protection available.
+The process audit showed one managed service and its socketless exit-watchdog child.
 `CONFIRMED_INTEL_RUNTIME`.
 
 Intel now retains a presentation as pending when that native host is absent or disconnects between
@@ -908,7 +927,15 @@ although exact messages and service-code mapping remain `NEEDS_ARM_ORACLE`.
 - It normally waits about one second after an action and up to five additional seconds when loading
   indicators or other state changes are detected. `CONFIRMED_CLIENT_SOURCE`.
 - ARM request types include app start/stop/modify, frontmost window, capture updates, turn-ended,
-  event streams, and Skysight lifecycle. `CONFIRMED_STATIC_BINARY`.
+  App usage, event streams, and Skysight lifecycle. Intel implements the empty
+  `ComputerUseIPCAppUsageRequest` using the discovered-App catalog with official recent-use fields;
+  its exact distinction from List Apps remains `NEEDS_ARM_ORACLE`. `CONFIRMED_STATIC_BINARY`.
+- ARM static metadata and strings expose `ComputerUse.SkyshotClassifier`, the
+  `feature/skyshotClassifier` gate, and its image/no-image purpose. Intel attaches screenshots only
+  when the AX tree contains visual roles (`AXImage`, canvas, map, video, or web area); Remote Hosted
+  PIP therefore does not create a floating preview for text-only windows. The observable gate is
+  covered by `SkyshotClassifierTests`; the private ARM classifier implementation remains
+  `NEEDS_ARM_ORACLE`.
 - Intel launches installed apps without activating them, retries window discovery for five seconds,
   and enforces a base one-second post-action settle before the next state capture.
   `CONFIRMED_INTEL_RUNTIME` through Calculator launch/relaunch and action-state tests.
