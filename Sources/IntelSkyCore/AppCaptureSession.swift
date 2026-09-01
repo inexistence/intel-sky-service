@@ -63,8 +63,12 @@ enum AppCaptureSessionError: Error, CustomStringConvertible {
 public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureCompleting,
   AppCaptureLifecycleHandling, @unchecked Sendable
 {
-  private static let currentVersion = 2
   private static let unscopedThreadID = "__unscoped__"
+
+  private enum RefreshReason: Equatable {
+    case regular
+    case reliableFinalFrame
+  }
 
   private final class Session: @unchecked Sendable {
     let requestID: String
@@ -72,6 +76,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     let turnIdentity: ComputerUseTurnIdentity?
     var threadID: String? { turnIdentity?.threadID }
     let app: String
+    let supportsReliableFinalFrame: Bool
     let condition = NSCondition()
     var appMetadata: [String: Any]
     var updates: [[String: Any]]
@@ -82,6 +87,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     var changeMonitor: (any AppCaptureChangeMonitoring)?
     var refreshRequested = false
     var terminalQueued = false
+    var reliableCompletionRequested = false
     var disconnected = false
 
     init(
@@ -89,6 +95,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       owner: String,
       turnIdentity: ComputerUseTurnIdentity?,
       app: String,
+      supportsReliableFinalFrame: Bool,
       appMetadata: [String: Any],
       text: String,
       screenshot: [String: Any]?,
@@ -98,6 +105,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       self.owner = owner
       self.turnIdentity = turnIdentity
       self.app = app
+      self.supportsReliableFinalFrame = supportsReliableFinalFrame
       self.appMetadata = appMetadata
       lastText = text
       lastScreenshotSignature = Self.screenshotSignature(screenshot)
@@ -121,7 +129,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
 
     func requestRefresh() {
       condition.lock()
-      guard !terminalQueued, !disconnected else {
+      guard !terminalQueued, !reliableCompletionRequested, !disconnected else {
         condition.unlock()
         return
       }
@@ -226,7 +234,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     guard let animationTarget = request["animationTarget"] as? [String: Any] else {
       throw AppCaptureSessionError.invalidRequest("Capture animationTarget must be an object")
     }
-    guard let version = Self.integer(request["version"]), version == Self.currentVersion else {
+    guard let version = Self.integer(request["version"]) else {
       throw AppCaptureSessionError.invalidRequest("Unsupported capture version")
     }
     let threadID = ComputerUseTurnContext.threadID
@@ -272,6 +280,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       owner: ComputerUseClientContext.identifier,
       turnIdentity: ComputerUseTurnContext.identity,
       app: app,
+      supportsReliableFinalFrame: version > 1,
       appMetadata: appMetadata,
       text: text,
       screenshot: screenshot,
@@ -359,7 +368,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     else {
       throw AppCaptureSessionError.captureNotFound(requestID)
     }
-    terminate(session, update: terminalUpdate(type: "completed", session: session))
+    complete(session)
   }
 
   func clientDisconnected(_ clientIdentifier: String) {
@@ -406,11 +415,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       }
     }
     for session in matches {
-      terminate(
-        session,
-        update: terminalUpdate(type: "completed", session: session),
-        cleanupImagesImmediately: true
-      )
+      complete(session, cleanupImagesImmediately: true)
     }
   }
 
@@ -430,7 +435,8 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     return Set(
       values.compactMap { session in
         session.condition.withLock {
-          !session.terminalQueued && !session.disconnected ? session.requestID : nil
+          !session.terminalQueued && !session.reliableCompletionRequested && !session.disconnected
+            ? session.requestID : nil
         }
       })
   }
@@ -438,14 +444,22 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
   private func beginProducing(_ session: Session) {
     producerQueue.async { [weak self, weak session] in
       guard let self, let session else { return }
-      while self.waitForRefresh(session) {
+      while let refreshReason = self.waitForRefresh(session) {
         do {
           let state = try ComputerUseTurnContext.withIdentity(session.turnIdentity) {
             try self.appStateProvider.getAppState(
               request: ["app": session.app, "disableDiff": true]
             )
           }
-          try self.process(state: state, for: session)
+          try self.process(
+            state: state,
+            for: session,
+            forceScreenshot: refreshReason == .reliableFinalFrame
+          )
+          if refreshReason == .reliableFinalFrame {
+            self.finishReliableFinalFrame(for: session)
+            return
+          }
         } catch {
           let reason: String
           switch error {
@@ -463,21 +477,28 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     }
   }
 
-  private func waitForRefresh(_ session: Session) -> Bool {
+  private func waitForRefresh(_ session: Session) -> RefreshReason? {
     session.condition.lock()
     defer { session.condition.unlock() }
-    guard !session.terminalQueued, !session.disconnected else { return false }
+    guard !session.terminalQueued, !session.disconnected else { return nil }
+    if session.reliableCompletionRequested { return .reliableFinalFrame }
     let deadline = Date().addingTimeInterval(pollInterval)
-    while !session.refreshRequested, !session.terminalQueued, !session.disconnected,
+    while !session.refreshRequested, !session.reliableCompletionRequested,
+      !session.terminalQueued, !session.disconnected,
       Date() < deadline
     {
       _ = session.condition.wait(until: deadline)
     }
     session.refreshRequested = false
-    return !session.terminalQueued && !session.disconnected
+    guard !session.terminalQueued, !session.disconnected else { return nil }
+    return session.reliableCompletionRequested ? .reliableFinalFrame : .regular
   }
 
-  private func process(state: [String: Any], for session: Session) throws {
+  private func process(
+    state: [String: Any],
+    for session: Session,
+    forceScreenshot: Bool = false
+  ) throws {
     guard let appMetadata = state["app"] as? [String: Any],
       let skyshot = state["skyshot"] as? [String: Any],
       let text = skyshot["text"] as? String
@@ -502,7 +523,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     }
     if let screenshot = skyshot["screenshot"] as? [String: Any] {
       let signature = Session.screenshotSignature(screenshot)
-      if signature != session.lastScreenshotSignature {
+      if forceScreenshot || signature != session.lastScreenshotSignature {
         session.lastScreenshotSignature = signature
         session.lastScreenshotURL = Session.screenshotURL(screenshot)
         enqueue(Session.screenshotUpdate(app: appMetadata, screenshot: screenshot), in: session)
@@ -517,7 +538,13 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     if let nextProcessIdentifier, nextProcessIdentifier > 0,
       previousProcessIdentifier != nextProcessIdentifier
     {
-      replaceChangeMonitor(for: session, processIdentifier: nextProcessIdentifier)
+      session.condition.lock()
+      let shouldReplaceMonitor = !session.reliableCompletionRequested
+        && !session.terminalQueued && !session.disconnected
+      session.condition.unlock()
+      if shouldReplaceMonitor {
+        replaceChangeMonitor(for: session, processIdentifier: nextProcessIdentifier)
+      }
     }
   }
 
@@ -528,7 +555,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     }
     replacement.start()
     session.condition.lock()
-    guard !session.terminalQueued, !session.disconnected else {
+    guard !session.reliableCompletionRequested, !session.terminalQueued, !session.disconnected else {
       session.condition.unlock()
       replacement.stop()
       return
@@ -558,23 +585,57 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       sessions.values.filter { threadID == nil || $0.threadID == nil || $0.threadID == threadID }
     }
     for session in values {
-      terminate(
-        session,
-        update: terminalUpdate(type: "completed", session: session),
-        cleanupImagesImmediately: cleanupImagesImmediately
-      )
+      complete(session, cleanupImagesImmediately: cleanupImagesImmediately)
     }
   }
 
   private func terminateUnscopedWithCompleted(cleanupImagesImmediately: Bool) {
     let values = lock.withLock { sessions.values.filter { $0.threadID == nil } }
     for session in values {
+      complete(session, cleanupImagesImmediately: cleanupImagesImmediately)
+    }
+  }
+
+  private func complete(_ session: Session, cleanupImagesImmediately: Bool = false) {
+    guard session.supportsReliableFinalFrame else {
       terminate(
         session,
         update: terminalUpdate(type: "completed", session: session),
         cleanupImagesImmediately: cleanupImagesImmediately
       )
+      return
     }
+
+    session.condition.lock()
+    guard !session.terminalQueued, !session.reliableCompletionRequested, !session.disconnected else {
+      session.condition.unlock()
+      return
+    }
+    session.reliableCompletionRequested = true
+    session.refreshRequested = true
+    let changeMonitor = session.changeMonitor
+    session.changeMonitor = nil
+    let transitionSnapshotURL = cleanupImagesImmediately ? session.transitionSnapshotURL : nil
+    if cleanupImagesImmediately { session.transitionSnapshotURL = nil }
+    session.condition.broadcast()
+    session.condition.unlock()
+    changeMonitor?.stop()
+    if let transitionSnapshotURL { Self.removeUnusedGeneratedImage(transitionSnapshotURL) }
+  }
+
+  private func finishReliableFinalFrame(for session: Session) {
+    session.condition.lock()
+    guard session.reliableCompletionRequested, !session.terminalQueued, !session.disconnected
+    else {
+      session.condition.unlock()
+      return
+    }
+    session.reliableCompletionRequested = false
+    session.terminalQueued = true
+    if session.updates.count >= maximumQueuedUpdates { session.updates.removeFirst() }
+    session.updates.append(terminalUpdate(type: "completed", session: session))
+    session.condition.broadcast()
+    session.condition.unlock()
   }
 
   private func terminate(
@@ -588,6 +649,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
       return
     }
     session.terminalQueued = true
+    session.reliableCompletionRequested = false
     let changeMonitor = session.changeMonitor
     session.changeMonitor = nil
     let transitionSnapshotURL = cleanupImagesImmediately ? session.transitionSnapshotURL : nil
@@ -615,6 +677,7 @@ public final class AppCaptureSessionManager: AppCaptureProviding, AppCaptureComp
     let transitionSnapshotURL = session.transitionSnapshotURL
     session.transitionSnapshotURL = nil
     session.disconnected = true
+    session.reliableCompletionRequested = false
     session.updates.removeAll()
     session.condition.broadcast()
     session.condition.unlock()

@@ -36,9 +36,11 @@ import Testing
       "session_id": "session", "thread_id": "thread", "turn_id": "turn",
     ]))
   manager.handle(.ended(identity))
-  let terminal = try manager.nextCaptureUpdate(request: ["requestId": "capture-1"])
-  updateTypes.append(try #require(terminal["type"] as? String))
-  #expect(updateTypes == ["metadata", "axText", "screenshot", "completed"])
+  for _ in 0..<2 {
+    let update = try manager.nextCaptureUpdate(request: ["requestId": "capture-1"])
+    updateTypes.append(try #require(update["type"] as? String))
+  }
+  #expect(updateTypes == ["metadata", "axText", "screenshot", "screenshot", "completed"])
   #expect(throws: AppCaptureSessionError.self) {
     try manager.nextCaptureUpdate(request: ["requestId": "capture-1"])
   }
@@ -59,7 +61,9 @@ import Testing
 
   manager.handle(.safetyRevoked(.screenLocked))
 
+  let finalFrame = try manager.nextCaptureUpdate(request: ["requestId": "unscoped-safety"])
   let terminal = try manager.nextCaptureUpdate(request: ["requestId": "unscoped-safety"])
+  #expect(finalFrame["type"] as? String == "screenshot")
   #expect(terminal["type"] as? String == "completed")
 }
 
@@ -157,7 +161,15 @@ import Testing
 
   #expect(monitor.stopped)
   monitor.trigger()
-  #expect(provider.calls == 1)
+  var updateTypes: [String] = []
+  for _ in 0..<6 {
+    let update = try manager.nextCaptureUpdate(request: ["requestId": "monitor-stop"])
+    updateTypes.append(try #require(update["type"] as? String))
+  }
+  #expect(
+    updateTypes == ["metadata", "axText", "screenshot", "axText", "screenshot", "completed"]
+  )
+  #expect(provider.calls == 2)
 }
 
 @Test func captureProcessReplacementMovesNativeChangeMonitorToNewPID() throws {
@@ -204,14 +216,16 @@ import Testing
     try manager.completeCapture(request: ["requestId": "native-one-shot"])
 
     var updateTypes: [String] = []
-    for _ in 0..<4 {
+    for index in 0..<5 {
       let update = try manager.nextCaptureUpdate(request: ["requestId": "native-one-shot"])
       updateTypes.append(try #require(update["type"] as? String))
-      if update["type"] as? String == "screenshot" {
+      if index == 2 {
         #expect(update["transitionSnapshotURL"] as? String == "file:///tmp/finder.png")
+      } else if index == 3 {
+        #expect(update["transitionSnapshotURL"] == nil)
       }
     }
-    #expect(updateTypes == ["metadata", "axText", "screenshot", "completed"])
+    #expect(updateTypes == ["metadata", "axText", "screenshot", "screenshot", "completed"])
     #expect(throws: AppCaptureSessionError.self) {
       try manager.nextCaptureUpdate(request: ["requestId": "native-one-shot"])
     }
@@ -329,18 +343,70 @@ private struct FixedCaptureTransitionRenderer: AppshotTransitionSnapshotRenderin
   }
 }
 
-@Test func captureSessionValidatesHiddenRequestSchemaBeforeCapturing() {
+@Test func captureSessionAcceptsARMInitialAndFutureVersions() throws {
   let manager = AppCaptureSessionManager(appStateProvider: CaptureStateProvider())
+
+  for version in [-1, 0, 1, 2, 3] {
+    _ = try manager.startCapture(request: [
+      "app": "com.apple.finder",
+      "requestId": "capture-\(version)",
+      "permissionRequestId": "permission-\(version)",
+      "animationTarget": [:],
+      "version": version,
+    ])
+  }
 
   #expect(throws: AppCaptureSessionError.self) {
     try manager.startCapture(request: [
       "app": "com.apple.finder",
-      "requestId": "capture-1",
-      "permissionRequestId": "permission-1",
+      "requestId": "capture-invalid",
+      "permissionRequestId": "permission-invalid",
       "animationTarget": [:],
-      "version": 3,
+      "version": "2",
     ])
   }
+  manager.shutdown()
+}
+
+@Test func reliableCaptureEmitsChangedFinalFrameBeforeCompleted() throws {
+  let provider = ChangingCaptureStateProvider()
+  let manager = AppCaptureSessionManager(appStateProvider: provider, pollInterval: 60)
+  try start(manager, requestID: "reliable-final")
+  for _ in 0..<3 {
+    _ = try manager.nextCaptureUpdate(request: ["requestId": "reliable-final"])
+  }
+
+  try manager.completeCapture(request: ["requestId": "reliable-final"])
+
+  let finalAXFrame = try manager.nextCaptureUpdate(request: ["requestId": "reliable-final"])
+  let finalScreenshot = try manager.nextCaptureUpdate(request: ["requestId": "reliable-final"])
+  let completed = try manager.nextCaptureUpdate(request: ["requestId": "reliable-final"])
+  #expect(finalAXFrame["type"] as? String == "axText")
+  #expect(finalAXFrame["text"] as? String == "[0] AXWindow title=\"Changed\"")
+  #expect(finalScreenshot["type"] as? String == "screenshot")
+  #expect(completed["type"] as? String == "completed")
+  #expect(provider.calls == 2)
+}
+
+@Test func initialCaptureCompletesWithoutReliableFinalFrame() throws {
+  let provider = ChangingCaptureStateProvider()
+  let manager = AppCaptureSessionManager(appStateProvider: provider, pollInterval: 60)
+  _ = try manager.startCapture(request: [
+    "app": "com.apple.finder",
+    "requestId": "initial-version",
+    "permissionRequestId": "permission-initial-version",
+    "animationTarget": [:],
+    "version": 1,
+  ])
+  for _ in 0..<3 {
+    _ = try manager.nextCaptureUpdate(request: ["requestId": "initial-version"])
+  }
+
+  try manager.completeCapture(request: ["requestId": "initial-version"])
+
+  let completed = try manager.nextCaptureUpdate(request: ["requestId": "initial-version"])
+  #expect(completed["type"] as? String == "completed")
+  #expect(provider.calls == 1)
 }
 
 private struct CaptureStateProvider: AppStateProviding {

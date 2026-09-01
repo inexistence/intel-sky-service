@@ -39,6 +39,16 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     let event: CGEvent
   }
 
+  private struct PendingRecord: @unchecked Sendable {
+    let record: [String: Any]
+    let suppressed: Bool
+  }
+
+  private struct BufferedRecord: @unchecked Sendable {
+    var record: [String: Any]
+    let contextKey: Data
+  }
+
   static let maximumDurationSeconds = 30 * 60
 
   private final class Session: @unchecked Sendable {
@@ -53,6 +63,7 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     let eventsHandle: FileHandle
     let suppressedEventsHandle: FileHandle
     var eventObserverID: UUID?
+    var accessibilityMonitor: NativeEventStreamAccessibilityMonitor?
     var timer: DispatchSourceTimer?
     var sequence = 0
     var eventCount = 0
@@ -63,6 +74,20 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     var seenApplicationProcesses: Set<String> = []
     var lastSelectionSignature: Data?
     var lastTerminalValue: String?
+    var textBuffer: BufferedRecord?
+    var textFlushTask: DispatchWorkItem?
+    var textFlushGeneration = 0
+    var terminalValueChangedBuffer: [String: Any]?
+    var terminalValueChangedFlushTask: DispatchWorkItem?
+    var terminalValueChangedFlushGeneration = 0
+    var pendingAXNotificationRecords: [String: [String: Any]] = [:]
+    var axNotificationDebounceTasks: [String: DispatchWorkItem] = [:]
+    var axNotificationDebounceGenerations: [String: Int] = [:]
+    var layoutFlushTask: DispatchWorkItem?
+    var layoutFlushGeneration = 0
+    var pendingRecords: [PendingRecord] = []
+    var recordProcessingScheduled = false
+    var lastAccessibilityRefreshAt = Date.distantPast
     var storageFailed = false
 
     init(
@@ -115,6 +140,7 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
   private let screenLockChecker: any ScreenLockChecking
   private let accessibilitySnapshotter = AccessibilitySnapshotter()
   private let accessibilityTreeDiffer = AccessibilityTreeDiffer()
+  private let usesNativeAccessibilityMonitor: Bool
   private var activeSession: Session?
   private var latestStatus: [String: Any]?
 
@@ -122,16 +148,19 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     self.rootDirectoryURL = rootDirectoryURL
     inputMonitor = PhysicalInputMonitor.shared
     screenLockChecker = CGSessionScreenLockChecker()
+    usesNativeAccessibilityMonitor = true
   }
 
   init(
     rootDirectoryURL: URL,
     inputMonitor: any EventStreamInputMonitoring,
-    screenLockChecker: any ScreenLockChecking = NoopScreenLockChecker()
+    screenLockChecker: any ScreenLockChecking = NoopScreenLockChecker(),
+    usesNativeAccessibilityMonitor: Bool = false
   ) {
     self.rootDirectoryURL = rootDirectoryURL
     self.inputMonitor = inputMonitor
     self.screenLockChecker = screenLockChecker
+    self.usesNativeAccessibilityMonitor = usesNativeAccessibilityMonitor
   }
 
   public func startEventStream(request: [String: Any]) throws -> [String: Any] {
@@ -168,7 +197,7 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
         activeSession = session
         processingQueue.sync {
           appendBoundary(kind: "session.started", to: session)
-          captureAccessibilityChange(for: session)
+          captureAccessibilityChange(for: session, buffered: false)
           writeMetadata(for: session)
         }
         guard !session.storageFailed else {
@@ -180,6 +209,19 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
         session.eventObserverID = inputMonitor.addEventObserver { [weak self] type, event in
           guard let copied = event.copy() else { return }
           self?.enqueue(type: type, event: copied)
+        }
+        if usesNativeAccessibilityMonitor {
+          let monitor = NativeEventStreamAccessibilityMonitor { [weak self, weak session] notification in
+            guard let self, let session else { return }
+            self.processingQueue.async { [weak self, weak session] in
+              guard let self, let session,
+                self.lock.withLock({ self.activeSession === session })
+              else { return }
+              self.captureAccessibilityChange(for: session, notification: notification)
+            }
+          }
+          session.accessibilityMonitor = monitor
+          monitor.start()
         }
         installTimer(for: session)
         return status(for: session, isRecording: true)
@@ -251,9 +293,14 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
       finalizeFromProcessingQueue(session, reason: "serviceTerminated")
       return
     }
+    if type != .keyDown { flushTextBuffer(for: session) }
     guard let record = makeRecord(type: type, event: event, session: session) else { return }
-    let suppressed = Self.shouldSuppress(record)
-    append(record, suppressed: suppressed, to: session)
+    if Self.isBufferableTextInput(record) {
+      bufferTextInput(record, for: session)
+    } else {
+      flushTextBuffer(for: session)
+      enqueueRecord(record, suppressed: Self.shouldSuppress(record), for: session)
+    }
     if session.storageFailed { finalizeFromProcessingQueue(session, reason: "serviceTerminated") }
   }
 
@@ -366,6 +413,191 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     }
   }
 
+  private static func isBufferableTextInput(_ record: [String: Any]) -> Bool {
+    guard record["kind"] as? String == "keyboard.text_input",
+      let keyboard = record["keyboard"] as? [String: Any],
+      let text = keyboard["text"] as? String,
+      !text.isEmpty
+    else { return false }
+    return !shouldSuppress(record)
+  }
+
+  private static func textInputContextKey(_ record: [String: Any]) -> Data? {
+    guard var keyboard = record["keyboard"] as? [String: Any] else { return nil }
+    keyboard.removeValue(forKey: "text")
+    var context: [String: Any] = ["keyboard": keyboard]
+    if let app = record["app"] { context["app"] = app }
+    if let window = record["window"] { context["window"] = window }
+    return try? JSONSerialization.data(withJSONObject: context, options: [.sortedKeys])
+  }
+
+  private func bufferTextInput(_ record: [String: Any], for session: Session) {
+    guard let contextKey = Self.textInputContextKey(record),
+      let keyboard = record["keyboard"] as? [String: Any],
+      let text = keyboard["text"] as? String
+    else {
+      enqueueRecord(record, suppressed: Self.shouldSuppress(record), for: session)
+      return
+    }
+    if var buffered = session.textBuffer, buffered.contextKey == contextKey,
+      var bufferedKeyboard = buffered.record["keyboard"] as? [String: Any]
+    {
+      bufferedKeyboard["text"] = (bufferedKeyboard["text"] as? String ?? "") + text
+      buffered.record["keyboard"] = bufferedKeyboard
+      session.textBuffer = buffered
+      // ARM allocates one EventStreamRecordIdentity for the whole text buffer.
+      session.sequence -= 1
+    } else {
+      flushTextBuffer(for: session)
+      session.textBuffer = BufferedRecord(record: record, contextKey: contextKey)
+    }
+    scheduleTextFlush(for: session)
+  }
+
+  private func scheduleTextFlush(for session: Session) {
+    session.textFlushTask?.cancel()
+    session.textFlushGeneration += 1
+    let generation = session.textFlushGeneration
+    let task = DispatchWorkItem { [weak self, weak session] in
+      guard let self, let session,
+        self.lock.withLock({ self.activeSession === session }),
+        session.textFlushGeneration == generation
+      else { return }
+      self.flushTextBuffer(for: session)
+      self.drainPendingRecords(for: session)
+    }
+    session.textFlushTask = task
+    processingQueue.asyncAfter(deadline: .now() + 0.75, execute: task)
+  }
+
+  private func flushTextBuffer(for session: Session) {
+    session.textFlushTask?.cancel()
+    session.textFlushTask = nil
+    guard let buffered = session.textBuffer else { return }
+    session.textBuffer = nil
+    enqueueRecord(
+      buffered.record,
+      suppressed: Self.shouldSuppress(buffered.record),
+      for: session
+    )
+  }
+
+  private func bufferTerminalValueChanged(_ record: [String: Any], for session: Session) {
+    session.terminalValueChangedBuffer = record
+    session.terminalValueChangedFlushTask?.cancel()
+    session.terminalValueChangedFlushGeneration += 1
+    let generation = session.terminalValueChangedFlushGeneration
+    let task = DispatchWorkItem { [weak self, weak session] in
+      guard let self, let session,
+        self.lock.withLock({ self.activeSession === session }),
+        session.terminalValueChangedFlushGeneration == generation
+      else { return }
+      self.flushTerminalValueChangedBuffer(for: session)
+      self.drainPendingRecords(for: session)
+    }
+    session.terminalValueChangedFlushTask = task
+    processingQueue.asyncAfter(deadline: .now() + 0.75, execute: task)
+  }
+
+  private func flushTerminalValueChangedBuffer(for session: Session) {
+    session.terminalValueChangedFlushTask?.cancel()
+    session.terminalValueChangedFlushTask = nil
+    guard let record = session.terminalValueChangedBuffer else { return }
+    session.terminalValueChangedBuffer = nil
+    enqueueRecord(record, suppressed: Self.shouldSuppress(record), for: session)
+  }
+
+  private func bufferAXNotificationRecord(
+    _ record: [String: Any],
+    key: String,
+    for session: Session
+  ) {
+    session.pendingAXNotificationRecords[key] = record
+    if key.hasPrefix("window:") || key.hasPrefix("sensitive:") {
+      scheduleLayoutFlush(for: session)
+      return
+    }
+    session.axNotificationDebounceTasks[key]?.cancel()
+    let generation = (session.axNotificationDebounceGenerations[key] ?? 0) + 1
+    session.axNotificationDebounceGenerations[key] = generation
+    let task = DispatchWorkItem { [weak self, weak session] in
+      guard let self, let session,
+        self.lock.withLock({ self.activeSession === session }),
+        session.axNotificationDebounceGenerations[key] == generation
+      else { return }
+      self.flushAXNotificationRecord(key: key, for: session)
+      self.drainPendingRecords(for: session)
+    }
+    session.axNotificationDebounceTasks[key] = task
+    let delay = key.hasPrefix("selectedText:") ? 0.5 : 0.25
+    processingQueue.asyncAfter(deadline: .now() + delay, execute: task)
+  }
+
+  private func scheduleLayoutFlush(for session: Session) {
+    session.layoutFlushTask?.cancel()
+    session.layoutFlushGeneration += 1
+    let generation = session.layoutFlushGeneration
+    let task = DispatchWorkItem { [weak self, weak session] in
+      guard let self, let session,
+        self.lock.withLock({ self.activeSession === session }),
+        session.layoutFlushGeneration == generation
+      else { return }
+      let keys = session.pendingAXNotificationRecords.keys.filter {
+        $0.hasPrefix("window:") || $0.hasPrefix("sensitive:")
+      }.sorted()
+      for key in keys { self.flushAXNotificationRecord(key: key, for: session) }
+      session.layoutFlushTask = nil
+      self.drainPendingRecords(for: session)
+    }
+    session.layoutFlushTask = task
+    processingQueue.asyncAfter(deadline: .now() + 0.25, execute: task)
+  }
+
+  private func flushAXNotificationRecord(key: String, for session: Session) {
+    session.axNotificationDebounceTasks.removeValue(forKey: key)?.cancel()
+    session.axNotificationDebounceGenerations.removeValue(forKey: key)
+    guard let record = session.pendingAXNotificationRecords.removeValue(forKey: key) else { return }
+    enqueueRecord(record, suppressed: Self.shouldSuppress(record), for: session)
+  }
+
+  private func enqueueRecord(_ record: [String: Any], suppressed: Bool, for session: Session) {
+    session.pendingRecords.append(PendingRecord(record: record, suppressed: suppressed))
+    guard !session.recordProcessingScheduled else { return }
+    session.recordProcessingScheduled = true
+    processingQueue.async { [weak self, weak session] in
+      guard let self, let session,
+        self.lock.withLock({ self.activeSession === session })
+      else { return }
+      self.drainPendingRecords(for: session)
+    }
+  }
+
+  private func drainPendingRecords(
+    for session: Session,
+    terminateOnStorageFailure: Bool = true
+  ) {
+    session.recordProcessingScheduled = false
+    let pending = session.pendingRecords
+    session.pendingRecords.removeAll(keepingCapacity: true)
+    for item in pending {
+      append(item.record, suppressed: item.suppressed, to: session)
+    }
+    if terminateOnStorageFailure, session.storageFailed,
+      lock.withLock({ activeSession === session })
+    {
+      finalizeFromProcessingQueue(session, reason: "serviceTerminated")
+    }
+  }
+
+  /// Mirrors ARM EventStreamRecorder.flushPendingRecords(): text, Terminal, AX, then service writes.
+  private func flushPendingRecords(for session: Session) {
+    flushTextBuffer(for: session)
+    flushTerminalValueChangedBuffer(for: session)
+    let keys = session.pendingAXNotificationRecords.keys.sorted()
+    for key in keys { flushAXNotificationRecord(key: key, for: session) }
+    drainPendingRecords(for: session, terminateOnStorageFailure: false)
+  }
+
   static func shouldSuppress(_ record: [String: Any]) -> Bool {
     if containsSecureTextField(record) { return true }
     guard let app = record["app"] as? [String: Any] else { return false }
@@ -422,7 +654,12 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     return NSWorkspace.shared.frontmostApplication?.processIdentifier
   }
 
-  private func captureAccessibilityChange(for session: Session) {
+  private func captureAccessibilityChange(
+    for session: Session,
+    buffered: Bool = true,
+    notification: String? = nil
+  ) {
+    session.lastAccessibilityRefreshAt = Date()
     guard let running = NSWorkspace.shared.frontmostApplication, !running.isTerminated else { return }
     let processIdentifier = running.processIdentifier
     let app = appDescriptor(processIdentifier: processIdentifier)
@@ -432,7 +669,11 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
       guard session.seenApplicationProcesses.insert(key).inserted else { return }
       var record = baseRecord(session: session, kind: "window.changed", app: app, window: window)
       record["ax"] = ["mode": "fullTree", "text": "[REDACTED]"]
-      append(record, suppressed: true, to: session)
+      if buffered {
+        bufferAXNotificationRecord(record, key: key, for: session)
+      } else {
+        append(record, suppressed: true, to: session)
+      }
       return
     }
     let resolved = ResolvedMacApp(
@@ -458,13 +699,20 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
       "mode": firstForProcess ? "fullTree" : "diffFromPrevious",
       "text": text,
     ]
-    append(record, suppressed: containsSecureTextField, to: session)
+    let recordKey = "window:\(resolved.bundleIdentifier):\(processIdentifier):\(window?["windowID"] ?? "none")"
+    if buffered {
+      bufferAXNotificationRecord(record, key: recordKey, for: session)
+    } else {
+      append(record, suppressed: containsSecureTextField, to: session)
+    }
     guard !containsSecureTextField else { return }
     captureSelectionAndTerminalChanges(
       for: session,
       application: running,
       app: app,
-      window: window
+      window: window,
+      buffered: buffered,
+      notification: notification
     )
   }
 
@@ -472,7 +720,9 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     for session: Session,
     application: NSRunningApplication,
     app: [String: Any]?,
-    window: [String: Any]?
+    window: [String: Any]?,
+    buffered: Bool,
+    notification: String?
   ) {
     let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
     guard let focused = Self.copyAXElement(
@@ -515,7 +765,14 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     if let previous = session.lastSelectionSignature, signature != previous {
       var record = baseRecord(session: session, kind: "selection.changed", app: app, window: window)
       record["selection"] = selection
-      append(record, suppressed: Self.shouldSuppress(record), to: session)
+      if buffered {
+        let prefix = notification == kAXSelectedTextChangedNotification
+          || notification == nil ? "selectedText" : "selection"
+        let key = "\(prefix):\(application.processIdentifier):\(window?["windowID"] ?? "none")"
+        bufferAXNotificationRecord(record, key: key, for: session)
+      } else {
+        append(record, suppressed: Self.shouldSuppress(record), to: session)
+      }
     }
     session.lastSelectionSignature = signature
 
@@ -538,7 +795,11 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
         window: window
       )
       record["keyboard"] = ["text": delta, "modifiers": [], "target": target]
-      append(record, suppressed: Self.shouldSuppress(record), to: session)
+      if buffered {
+        bufferTerminalValueChanged(record, for: session)
+      } else {
+        append(record, suppressed: Self.shouldSuppress(record), to: session)
+      }
     }
     session.lastTerminalValue = currentValue
   }
@@ -680,7 +941,9 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
         self.finalizeFromProcessingQueue(session, reason: "serviceTerminated")
         return
       }
-      self.captureAccessibilityChange(for: session)
+      if Date().timeIntervalSince(session.lastAccessibilityRefreshAt) >= 2 {
+        self.captureAccessibilityChange(for: session)
+      }
     }
     session.timer = timer
     timer.resume()
@@ -690,23 +953,42 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
     guard let session = lock.withLock({ activeSession }) else {
       return lock.withLock { latestStatus ?? emptyStatus() }
     }
-    if let identifier = session.eventObserverID { inputMonitor.removeEventObserver(identifier) }
     processingQueue.sync { finalize(session, reason: reason) }
     return lock.withLock { latestStatus ?? emptyStatus() }
   }
 
   private func finalizeFromProcessingQueue(_ session: Session, reason: String) {
-    if let identifier = session.eventObserverID { inputMonitor.removeEventObserver(identifier) }
     finalize(session, reason: reason)
   }
 
   private func finalize(_ session: Session, reason: String) {
     guard lock.withLock({ activeSession === session }) else { return }
-    session.timer?.cancel()
-    session.timer = nil
+    flushPendingRecords(for: session)
     session.endedAt = Date()
     session.endReason = reason
     appendBoundary(kind: "session.ended", to: session)
+    if let identifier = session.eventObserverID {
+      inputMonitor.removeEventObserver(identifier)
+      session.eventObserverID = nil
+    }
+    session.accessibilityMonitor?.stop()
+    session.accessibilityMonitor = nil
+    session.timer?.cancel()
+    session.timer = nil
+    session.textBuffer = nil
+    session.textFlushTask?.cancel()
+    session.textFlushTask = nil
+    session.terminalValueChangedBuffer = nil
+    session.terminalValueChangedFlushTask?.cancel()
+    session.terminalValueChangedFlushTask = nil
+    session.pendingAXNotificationRecords.removeAll()
+    for task in session.axNotificationDebounceTasks.values { task.cancel() }
+    session.axNotificationDebounceTasks.removeAll()
+    session.axNotificationDebounceGenerations.removeAll()
+    session.layoutFlushTask?.cancel()
+    session.layoutFlushTask = nil
+    session.pendingRecords.removeAll()
+    session.recordProcessingScheduled = false
     writeMetadata(for: session)
     try? session.eventsHandle.synchronize()
     try? session.suppressedEventsHandle.synchronize()
@@ -872,4 +1154,282 @@ public final class EventStreamSessionManager: EventStreamProviding, EventStreamL
   private static let secureAXValuePattern = try! NSRegularExpression(
     pattern: #"\b(value|selectedText)=\"(?:\\.|[^\"])*\""#
   )
+}
+
+/// Tracks frontmost-App changes and notifications from the active application's Accessibility tree.
+/// EventStreamSessionManager owns record coalescing; this object only turns native signals into
+/// refresh requests.
+private final class NativeEventStreamAccessibilityMonitor: @unchecked Sendable {
+  private enum RegistrationScope: Equatable {
+    case application
+    case focusedWindow
+    case focusedElement
+  }
+
+  private struct Registration {
+    let element: AXUIElement
+    let notification: CFString
+    let scope: RegistrationScope
+  }
+
+  private let lock = NSLock()
+  private let changeHandler: @Sendable (String) -> Void
+  private var workspaceObserver: NSObjectProtocol?
+  private var axObserver: AXObserver?
+  private var axSource: CFRunLoopSource?
+  private var registrations: [Registration] = []
+  private var currentProcessIdentifier: pid_t?
+  private var started = false
+  private var stopped = false
+
+  init(changeHandler: @escaping @Sendable (String) -> Void) {
+    self.changeHandler = changeHandler
+  }
+
+  deinit { stop() }
+
+  func start() {
+    let shouldStart = lock.withLock { () -> Bool in
+      guard !started, !stopped else { return false }
+      started = true
+      return true
+    }
+    guard shouldStart else { return }
+    let install: @Sendable () -> Void = { [weak self] in
+      self?.installOnMainRunLoop()
+    }
+    if Thread.isMainThread { install() } else { DispatchQueue.main.async(execute: install) }
+  }
+
+  func stop() {
+    let state = lock.withLock {
+      () -> (NSObjectProtocol?, AXObserver?, CFRunLoopSource?, [Registration]) in
+      guard !stopped else { return (nil, nil, nil, []) }
+      stopped = true
+      let state = (workspaceObserver, axObserver, axSource, registrations)
+      workspaceObserver = nil
+      axObserver = nil
+      axSource = nil
+      registrations.removeAll()
+      currentProcessIdentifier = nil
+      return state
+    }
+    if let workspaceObserver = state.0 {
+      NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+    }
+    if let observer = state.1 {
+      for registration in state.3 {
+        AXObserverRemoveNotification(observer, registration.element, registration.notification)
+      }
+    }
+    if let source = state.2 {
+      CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+  }
+
+  private func installOnMainRunLoop() {
+    guard lock.withLock({ !stopped }) else { return }
+    let token = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didActivateApplicationNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.reconfigureForFrontmostApplication()
+      self?.changeHandler("workspace.didActivateApplication")
+    }
+    let accepted = lock.withLock { () -> Bool in
+      guard !stopped, workspaceObserver == nil else { return false }
+      workspaceObserver = token
+      return true
+    }
+    guard accepted else {
+      NSWorkspace.shared.notificationCenter.removeObserver(token)
+      return
+    }
+    reconfigureForFrontmostApplication()
+  }
+
+  private func reconfigureForFrontmostApplication() {
+    guard let application = NSWorkspace.shared.frontmostApplication,
+      !application.isTerminated
+    else {
+      tearDownAccessibilityObserver()
+      return
+    }
+    let processIdentifier = application.processIdentifier
+    if lock.withLock({ !stopped && currentProcessIdentifier == processIdentifier }) { return }
+    tearDownAccessibilityObserver()
+    guard lock.withLock({ !stopped }) else { return }
+
+    var createdObserver: AXObserver?
+    let result = AXObserverCreateWithInfoCallback(
+      processIdentifier,
+      { _, _, notification, _, refcon in
+        guard let refcon else { return }
+        let monitor = Unmanaged<NativeEventStreamAccessibilityMonitor>.fromOpaque(refcon)
+          .takeUnretainedValue()
+        monitor.accessibilityDidChange(notification: notification as String)
+      },
+      &createdObserver
+    )
+    guard result == .success, let createdObserver else { return }
+    let source = AXObserverGetRunLoopSource(createdObserver)
+    let accepted = lock.withLock { () -> Bool in
+      guard !stopped, axObserver == nil else { return false }
+      axObserver = createdObserver
+      axSource = source
+      currentProcessIdentifier = processIdentifier
+      return true
+    }
+    guard accepted else { return }
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+
+    let applicationElement = AXUIElementCreateApplication(processIdentifier)
+    for notification in [
+      kAXFocusedWindowChangedNotification,
+      kAXFocusedUIElementChangedNotification,
+      kAXWindowCreatedNotification,
+    ] {
+      register(
+        applicationElement,
+        notification: notification as CFString,
+        scope: .application
+      )
+    }
+    registerFocusedWindow(processIdentifier: processIdentifier)
+    registerFocusedUIElement(processIdentifier: processIdentifier)
+  }
+
+  private func accessibilityDidChange(notification: String) {
+    guard lock.withLock({ !stopped }) else { return }
+    if notification == kAXFocusedWindowChangedNotification
+      || notification == kAXWindowCreatedNotification
+      || notification == kAXUIElementDestroyedNotification
+    {
+      let processIdentifier = lock.withLock { currentProcessIdentifier }
+      if let processIdentifier {
+        registerFocusedWindow(processIdentifier: processIdentifier)
+        registerFocusedUIElement(processIdentifier: processIdentifier)
+      }
+    } else if notification == kAXFocusedUIElementChangedNotification {
+      let processIdentifier = lock.withLock { currentProcessIdentifier }
+      if let processIdentifier { registerFocusedUIElement(processIdentifier: processIdentifier) }
+    }
+    changeHandler(notification)
+  }
+
+  private func registerFocusedWindow(processIdentifier: pid_t) {
+    removeRegistrations(in: .focusedWindow)
+    let application = AXUIElementCreateApplication(processIdentifier)
+    guard let window = Self.copyAXElement(
+      application,
+      attribute: kAXFocusedWindowAttribute as CFString
+    ) else { return }
+    for notification in [
+      kAXLayoutChangedNotification,
+      kAXMovedNotification,
+      kAXResizedNotification,
+      kAXTitleChangedNotification,
+      kAXUIElementDestroyedNotification,
+    ] {
+      register(window, notification: notification as CFString, scope: .focusedWindow)
+    }
+  }
+
+  private func registerFocusedUIElement(processIdentifier: pid_t) {
+    removeRegistrations(in: .focusedElement)
+    let application = AXUIElementCreateApplication(processIdentifier)
+    guard let element = Self.copyAXElement(
+      application,
+      attribute: kAXFocusedUIElementAttribute as CFString
+    ) else { return }
+    for notification in [
+      kAXLayoutChangedNotification,
+      kAXSelectedTextChangedNotification,
+      kAXSelectedChildrenChangedNotification,
+      kAXSelectedChildrenMovedNotification,
+      kAXSelectedRowsChangedNotification,
+      kAXSelectedColumnsChangedNotification,
+      kAXSelectedCellsChangedNotification,
+      kAXValueChangedNotification,
+      kAXUIElementDestroyedNotification,
+    ] {
+      register(element, notification: notification as CFString, scope: .focusedElement)
+    }
+  }
+
+  private func register(
+    _ element: AXUIElement,
+    notification: CFString,
+    scope: RegistrationScope
+  ) {
+    let observer = lock.withLock { axObserver }
+    guard let observer else { return }
+    let duplicate = lock.withLock {
+      registrations.contains {
+        $0.notification == notification && CFEqual($0.element, element)
+      }
+    }
+    guard !duplicate else { return }
+    let result = AXObserverAddNotification(
+      observer,
+      element,
+      notification,
+      Unmanaged.passUnretained(self).toOpaque()
+    )
+    guard result == .success else { return }
+    lock.withLock {
+      guard !stopped, axObserver === observer else {
+        AXObserverRemoveNotification(observer, element, notification)
+        return
+      }
+      registrations.append(
+        Registration(element: element, notification: notification, scope: scope)
+      )
+    }
+  }
+
+  private func removeRegistrations(in scope: RegistrationScope) {
+    let state = lock.withLock { () -> (AXObserver?, [Registration]) in
+      guard let axObserver else { return (nil, []) }
+      let removed = registrations.filter { $0.scope == scope }
+      registrations.removeAll { $0.scope == scope }
+      return (axObserver, removed)
+    }
+    guard let observer = state.0 else { return }
+    for registration in state.1 {
+      AXObserverRemoveNotification(observer, registration.element, registration.notification)
+    }
+  }
+
+  private func tearDownAccessibilityObserver() {
+    let state = lock.withLock { () -> (AXObserver?, CFRunLoopSource?, [Registration]) in
+      let state = (axObserver, axSource, registrations)
+      axObserver = nil
+      axSource = nil
+      registrations.removeAll()
+      currentProcessIdentifier = nil
+      return state
+    }
+    if let observer = state.0 {
+      for registration in state.2 {
+        AXObserverRemoveNotification(observer, registration.element, registration.notification)
+      }
+    }
+    if let source = state.1 {
+      CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+  }
+
+  private static func copyAXElement(
+    _ element: AXUIElement,
+    attribute: CFString
+  ) -> AXUIElement? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+      let value,
+      CFGetTypeID(value) == AXUIElementGetTypeID()
+    else { return nil }
+    return unsafeDowncast(value, to: AXUIElement.self)
+  }
 }

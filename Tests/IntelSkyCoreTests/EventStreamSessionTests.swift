@@ -211,6 +211,74 @@ func eventStreamSuppressesARMObservedCredentialManagers(bundleIdentifier: String
   #expect(mouse["destination"] is [String: Any])
 }
 
+@Test func eventStreamStopFlushesBufferedTextBeforeSessionEndedWithoutIdentityGaps() throws {
+  let root = temporaryEventStreamRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let monitor = TestEventStreamInputMonitor()
+  let manager = EventStreamSessionManager(rootDirectoryURL: root, inputMonitor: monitor)
+  let status = try manager.startEventStream(request: [:])
+  let eventsPath = try #require(status["eventsPath"] as? String)
+  let suppressedEventsPath = try #require(status["suppressedEventsPath"] as? String)
+
+  for scalar in "buffered".utf16 {
+    let event = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    event.setIntegerValueField(
+      .eventTargetUnixProcessID,
+      value: Int64(ProcessInfo.processInfo.processIdentifier)
+    )
+    var character = [scalar]
+    event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &character)
+    monitor.emit(type: .keyDown, event: event)
+  }
+
+  _ = try manager.stopEventStream(request: ["reason": "toolStopped"])
+  let records = try jsonLines(atPath: eventsPath)
+  let text = records.compactMap { record -> String? in
+    guard record["kind"] as? String == "keyboard.text_input" else { return nil }
+    return (record["keyboard"] as? [String: Any])?["text"] as? String
+  }.joined()
+  #expect(text == "buffered")
+  #expect(records.last?["kind"] as? String == "session.ended")
+  let allRecords = try (records + jsonLines(atPath: suppressedEventsPath)).sorted {
+    ($0["id"] as? Int ?? .max) < ($1["id"] as? Int ?? .max)
+  }
+  #expect(allRecords.compactMap { $0["id"] as? Int } == Array(0..<allRecords.count))
+}
+
+@Test func eventStreamTextInputUsesARMSevenHundredFiftyMillisecondDebounce() throws {
+  let root = temporaryEventStreamRoot()
+  defer { try? FileManager.default.removeItem(at: root) }
+  let monitor = TestEventStreamInputMonitor()
+  let manager = EventStreamSessionManager(rootDirectoryURL: root, inputMonitor: monitor)
+  let status = try manager.startEventStream(request: [:])
+  let eventsPath = try #require(status["eventsPath"] as? String)
+
+  for scalar in "ab".utf16 {
+    let event = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    event.setIntegerValueField(
+      .eventTargetUnixProcessID,
+      value: Int64(ProcessInfo.processInfo.processIdentifier)
+    )
+    var character = [scalar]
+    event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &character)
+    monitor.emit(type: .keyDown, event: event)
+  }
+
+  let deadline = Date().addingTimeInterval(2)
+  var textRecords: [[String: Any]] = []
+  repeat {
+    Thread.sleep(forTimeInterval: 0.05)
+    textRecords = try jsonLines(atPath: eventsPath).filter {
+      $0["kind"] as? String == "keyboard.text_input"
+    }
+  } while textRecords.isEmpty && Date() < deadline
+
+  #expect(textRecords.count == 1)
+  let keyboard = try #require(textRecords.first?["keyboard"] as? [String: Any])
+  #expect(keyboard["text"] as? String == "ab")
+  _ = try manager.stopEventStream(request: ["reason": "toolStopped"])
+}
+
 @Test func eventStreamLockedScreenTerminatesWithoutPersistingInput() throws {
   let root = temporaryEventStreamRoot()
   defer { try? FileManager.default.removeItem(at: root) }

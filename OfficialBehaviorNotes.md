@@ -34,25 +34,27 @@ replace when stronger evidence appears.
 
 ## Public Window API matrix
 
-| API | Wire action/request | Evidence | Intel state | Remaining work |
+| API | Wire action/request | Evidence | Wire protocol | Remaining behavioral work |
 | --- | --- | --- | --- | --- |
-| `list_apps` | `ComputerUseIPCListAppsRequest` | `CONFIRMED_CLIENT_SOURCE` | implemented | exact ARM filtering/dedup oracle |
-| `get_app_state` | `ComputerUseIPCAppGetSkyshotRequest` | `CONFIRMED_CLIENT_SOURCE` | partial | exact AX rendering and transient-window oracle |
-| `click` | `click` | `CONFIRMED_CLIENT_SOURCE` | partial | AX/CG fallback and menu semantics |
-| `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | attended runtime and official cursor animation |
-| `paste` | `paste` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | exact timeout and clipboard edge-case oracle |
-| `perform_secondary_action` | `performSecondaryAction` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | menu/Catalyst runtime oracle |
-| `press_key` | `pressKey` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | private `SAIVirtualKeyPress` keyboard-layout oracle |
-| `scroll` | `scroll` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | exact AX page-action dispatch thresholds |
-| `select_text` | `selectText` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | transformed-visible-text runtime oracle |
-| `set_value` | `setValue` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | search-field autosubmit runtime oracle |
-| `type_text` | `type` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | partial | private `SAIVirtualKeyPress` keyboard-layout oracle |
+| `list_apps` | `ComputerUseIPCListAppsRequest` | `CONFIRMED_CLIENT_SOURCE` | aligned | exact ARM filtering/dedup oracle |
+| `get_app_state` | `ComputerUseIPCAppGetSkyshotRequest` | `CONFIRMED_CLIENT_SOURCE` | aligned | exact AX rendering and transient-window oracle |
+| `click` | `click` | `CONFIRMED_CLIENT_SOURCE` | aligned | AX/CG fallback and menu semantics |
+| `drag` | `drag` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | attended runtime and official cursor animation |
+| `paste` | `paste` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | exact timeout and clipboard edge-case oracle |
+| `perform_secondary_action` | `performSecondaryAction` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | menu/Catalyst runtime oracle |
+| `press_key` | `pressKey` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | private `SAIVirtualKeyPress` keyboard-layout oracle |
+| `scroll` | `scroll` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | exact AX page-action dispatch thresholds |
+| `select_text` | `selectText` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | transformed-visible-text runtime oracle |
+| `set_value` | `setValue` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | search-field autosubmit runtime oracle |
+| `type_text` | `type` | `CONFIRMED_CLIENT_SOURCE` / `CONFIRMED_STATIC_BINARY` | aligned | private `SAIVirtualKeyPress` keyboard-layout oracle |
 
-The differential oracle harness under `Tools/oracle` now has a declarative case matrix covering all
-eleven APIs, captures calls through the unmodified high-level `sky` client, and compares normalized
-ARM/Intel traces. Target authorization and mutation are separately opt-in so unattended runs cannot
-silently open Computer Use approval UI or modify an App. Harness behavior has non-GUI regression
-coverage; official ARM traces for the case matrix remain `NEEDS_ARM_ORACLE`.
+Here, `aligned` means the public method mapping, JSON fields, nesting, and enum spellings match the
+installed ARM client and recovered service metadata. It does not claim instruction-identical private
+execution machinery. The differential oracle harness under `Tools/oracle` has a declarative case
+matrix covering all eleven APIs, captures calls through the unmodified high-level `sky` client, and
+compares normalized ARM/Intel traces. Target authorization and mutation are separately opt-in so
+unattended runs cannot silently open Computer Use approval UI or modify an App. Harness behavior has
+non-GUI regression coverage; official ARM traces for the case matrix remain `NEEDS_ARM_ORACLE`.
 
 The public low-level `MacComputerUseClient` additionally exposes `startApp`, which sends
 `ComputerUseIPCAppStartRequest` with `app` and returns `MacWindowAppState`. ARM Swift field metadata
@@ -87,6 +89,13 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   and `future(Int)`, and a start response with `result`, optional animation/transition fields, and
   optional permission grant state. The start result cases are `started` and
   `appshotPermissionsAbandoned`. `CONFIRMED_STATIC_BINARY`.
+- ARM code confirms raw version `1` is `initial`, raw version `2` is `reliableFinalFrame`, and
+  other integers decode as `future(Int)`, with future raw versions greater than `1` retaining
+  reliable-final-frame support. On reliable completion, AppshotCaptureStore queues an unconditional
+  final screenshot update and only then a
+  `completed` update whose `finishesCapture` bit removes the capture after delivery; version `1`
+  completes without that final recapture. Intel now follows both paths and serializes a completion
+  requested during an ordinary refresh behind a fresh final capture. `CONFIRMED_STATIC_BINARY`.
 - ARM field metadata confirms that each `ComputerUseIPCCaptureUpdate` carries `type`, `app`, and
   optional `text`, `screenshot`, `transitionSnapshotURL`, or `failureReason`. The update cases are
   exactly `metadata`, `axText`, `screenshot`, `completed`, and `failed`; failure reasons are
@@ -99,7 +108,7 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   request deadline. A two-second fallback sample covers unavailable or dropped native notifications;
   unchanged 64×64 detector frames do not recapture full state. Capture refreshes bypass the otherwise
   conservative serialized AX/action gate, so other clients and ordinary RPCs remain responsive.
-  `HIGH_CONFIDENCE`; the exact official reliable-final-frame machinery remains `NEEDS_ARM_ORACLE`.
+  `HIGH_CONFIDENCE`; exact official animation timing remains `NEEDS_ARM_ORACLE`.
 - Capture ownership is stable per Unix connection and per native Apple Event sender PID. Socket
   disconnect and service shutdown discard owned streams and wake blocked consumers; turn
   transition/end and App stop/deactivation enqueue `completed`; producer failures enqueue the
@@ -129,16 +138,31 @@ Evidence: `CONFIRMED_CLIENT_SOURCE`.
   callbacks, and a URL-policy filter. `CONFIRMED_STATIC_BINARY`.
 - Intel routes all three requests, makes Start idempotent, returns the confirmed ten-field status,
   and stores owner-only `events.jsonl`, `suppressed.jsonl`, and `metadata.json`. A shared direct
-  session Event Tap emits click/context-menu/drag and keyboard text/submit/shortcut records; a
-  0.5-second AX sampler emits full/diff window context, selection changes, and bounded Terminal
-  deltas. Session start/end boundaries and metadata counts are durable. Input Monitoring absence
-  fails closed rather than reporting a false recording. `HIGH_CONFIDENCE` for schema and lifecycle;
-  exact official debounce/buffering constants remain `NEEDS_ARM_ORACLE`.
+  session Event Tap emits click/context-menu/drag and keyboard text/submit/shortcut records;
+  frontmost-App, focused-window, and focused-element AX observers drive full/diff window context,
+  selection changes, and bounded Terminal deltas, with a two-second reconciliation fallback.
+  Session start/end boundaries and metadata counts are durable. Input Monitoring absence fails
+  closed rather than reporting a false recording. `HIGH_CONFIDENCE` for schema and lifecycle.
 - The recording is owned by its initiating connection and originating Codex thread. Explicit stop,
   matching turn end/transition, owner disconnect, lock screen, 30-minute limit, and service shutdown
   all remove the Event Tap observer, drain queued records, append `session.ended`, synchronize and
   close both JSONL files, and atomically refresh metadata. `HIGH_CONFIDENCE`; official behavior for
   a cached MCP transport disconnect remains `NEEDS_ARM_ORACLE`.
+- Targeted ARM decompilation recovered the recorder's terminal drain order. Its
+  `flushPendingRecords()` flushes `TextInputBuffer`, then `TerminalValueChangedBuffer`, then every
+  `PendingAXNotificationRecord`. `stop(emitSessionEnded:)` invokes that drain first, optionally
+  emits `session.ended`, and only then stops the Event Tap, removes the frontmost-App observer,
+  stops the AX observer, cancels the text/Terminal/layout/per-key AX tasks, clears their buffers,
+  and marks the recorder inactive. The service separately stores callbacks as
+  `PendingEventStreamRecord { record, suppressed }` behind one `recordProcessingTask`. Intel now
+  follows this buffer topology and stop ordering: text bursts retain one record identity, Terminal
+  and AX updates coalesce, pending normal/suppressed writes drain before the terminal boundary, and
+  observers are removed after that boundary is stored. The recovered rescheduling delays are 750 ms
+  for text and Terminal value buffers, 500 ms for selected-text AX notifications, and 250 ms for
+  other selection/layout notifications. Intel uses the same delays and now installs a frontmost-App
+  observer plus AX observers for the active App, focused window, and focused element; a two-second
+  reconciliation remains only as a dropped-notification fallback. `CONFIRMED_STATIC_BINARY` /
+  `HIGH_CONFIDENCE`.
 - Intel suppresses Secure Input, `AXSecureTextField`, password/security apps, ChatGPT/Codex, and its
   own service. Suppressed records are structural only: text, key equivalents, values, selections,
   URLs, and AX text are replaced before serialization, and both normal and suppressed records scrub
