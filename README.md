@@ -156,12 +156,14 @@ and passes it to the native PIP host. This variable belongs to the ChatGPT main 
 
 Like the ARM service, the managed service observes Codex App Server `turn/completed` broadcasts
 through `${CODEX_HOME:-~/.codex}/ipc/ipc.sock` (or `SKY_CUA_SERVICE_NATIVE_PIPE_PATH` when set).
-Runtime state is registered per Codex thread, so completing one thread revokes only its desktop
-cursor, PIP, Capture Stream, AX/diff/intervention caches, screenshot files, status-menu ownership,
-and focus protection while other active threads continue. The first scoped turn also revokes any
-legacy state created without turn metadata. Cleanup does not depend on whether a turn created a PIP
-window. The public `ComputerUseIPCCodexTurnEndedRequest` remains supported as a compatible
-secondary path.
+App-server notifications are scoped to subscribed clients, so the service uses each Computer Use
+request's turn metadata to issue a metadata-only `thread/resume` subscription and repeats active
+subscriptions after reconnecting. Runtime state is registered per Codex thread, so completing one
+thread revokes only its desktop cursor, PIP, Capture Stream, AX/diff/intervention caches, screenshot
+files, status-menu ownership, and focus protection while other active threads continue. The first
+scoped turn also revokes any legacy state created without turn metadata. Cleanup does not depend on
+whether a turn created a PIP window. The public `ComputerUseIPCCodexTurnEndedRequest` remains
+supported as a compatible secondary path.
 
 Skyshots always contain the AX text representation, but attach a screenshot only when the recovered
 ARM-style classifier finds visual content such as an image, canvas, map, video, or web area. Since

@@ -129,7 +129,11 @@ public protocol AppActionPerforming: Sendable {
   func performAction(request: [String: Any]) throws -> [String: Any]
 }
 
-public struct SkyRequestRouter: Sendable {
+public protocol ComputerUseThreadActivityObserving: Sendable {
+  func observe(threadID: String)
+}
+
+public final class SkyRequestRouter: @unchecked Sendable {
   private let appCatalog: any AppCatalog
   private let appStateProvider: (any AppStateProviding)?
   private let appActionPerformer: (any AppActionPerforming)?
@@ -140,8 +144,10 @@ public struct SkyRequestRouter: Sendable {
   private let turnLifecycle: any ComputerUseTurnLifecycleHandling
   private let requestObserver: (any SkyRequestResultObserving)?
   private let sessionCoordinator: any ComputerUseSessionCoordinating
+  private let threadActivityObserverLock = NSLock()
+  private var threadActivityObserver: (any ComputerUseThreadActivityObserving)?
 
-  public init(
+  public convenience init(
     appCatalog: any AppCatalog,
     appStateProvider: (any AppStateProviding)? = nil,
     appActionPerformer: (any AppActionPerforming)? = nil,
@@ -189,6 +195,12 @@ public struct SkyRequestRouter: Sendable {
     self.executionGate = SkyRequestExecutionGate()
     self.turnLifecycle = turnLifecycle
     self.sessionCoordinator = sessionCoordinator
+  }
+
+  public func installThreadActivityObserver(
+    _ observer: any ComputerUseThreadActivityObserving
+  ) {
+    threadActivityObserverLock.withLock { threadActivityObserver = observer }
   }
 
   public func handle(_ payload: Data) -> Data {
@@ -295,6 +307,11 @@ public struct SkyRequestRouter: Sendable {
     return try RequestDeadlineContext.withDeadline(deadline.date) {
       try deadline.check()
       let turnIdentity = ComputerUseTurnIdentity(metadata: params["codexTurnMetadata"])
+      if let threadID = turnIdentity?.threadID {
+        threadActivityObserverLock.withLock { threadActivityObserver }?.observe(
+          threadID: threadID
+        )
+      }
       turnLifecycle.observe(metadata: params["codexTurnMetadata"])
       return try ComputerUseTurnContext.withIdentity(turnIdentity) {
         switch method {

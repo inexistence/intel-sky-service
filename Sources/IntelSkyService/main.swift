@@ -160,6 +160,7 @@ let appServerThreadEventObserver = CodexAppServerThreadEventObserver(
   },
   diagnostic: { message in fputs("warning: \(message)\n", stderr) }
 )
+router.installThreadActivityObserver(appServerThreadEventObserver)
 appServerThreadEventObserver.start()
 let screenLockMonitor = ComputerUseScreenLockMonitor {
   fputs("screen locked or console session changed; revoking Computer Use runtime\n", stderr)

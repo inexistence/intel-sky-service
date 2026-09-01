@@ -481,6 +481,13 @@ start fresh, and deliberately does not activate a restore target. `HIGH_CONFIDEN
 component ordering remains `NEEDS_ARM_ORACLE`.
 
 Production Intel ChatGPT does not send `ComputerUseIPCCodexTurnEndedRequest` to its managed service.
+The Codex app-server sends thread notifications only to connections subscribed to that thread;
+`initialize` alone therefore leaves a passive observer connected but unable to receive
+`turn/completed`. Intel now registers the thread ID from every scoped Computer Use request with a
+metadata-only `thread/resume { excludeTurns: true }` and repeats active subscriptions after an
+app-server reconnect. Completion removes the subscription and drives the existing thread-scoped
+runtime cleanup. This closes the observed split state where Appshot disappeared while the desktop
+cursor and status-menu App remained active.
 Static caller inspection and two attended cross-turn traces instead show that ChatGPT completes the
 native Remote Hosted PIP presentation in its own task controller. The host retains a completed
 presentation for an intentional 30-second grace period, then rejects presentation-scoped XPC calls

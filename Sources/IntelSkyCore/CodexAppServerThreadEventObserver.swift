@@ -4,10 +4,17 @@ import Foundation
 /// Mirrors the ARM service's turn-boundary source: the Codex App Server native IPC stream.
 /// Computer Use requests do not reliably include a public turn-ended request, while this stream
 /// publishes `turn/completed` independently of whether the turn created a PIP presentation.
-public final class CodexAppServerThreadEventObserver: @unchecked Sendable {
+public final class CodexAppServerThreadEventObserver: ComputerUseThreadActivityObserving,
+  @unchecked Sendable
+{
   static let maximumFrameLength = 8 * 1024 * 1024
 
   private let lock = NSLock()
+  private let writeLock = NSLock()
+  private let writerQueue = DispatchQueue(
+    label: "CodexAppServerThreadEventObserver.writer",
+    qos: .utility
+  )
   private let queue = DispatchQueue(
     label: "CodexAppServerThreadEventObserver.connection",
     qos: .utility
@@ -19,6 +26,7 @@ public final class CodexAppServerThreadEventObserver: @unchecked Sendable {
   private var generation: UInt64 = 0
   private var running = false
   private var connectedDescriptor: Int32 = -1
+  private var observedThreadIDs: Set<String> = []
 
   public convenience init(
     environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -72,6 +80,26 @@ public final class CodexAppServerThreadEventObserver: @unchecked Sendable {
     if descriptor >= 0 { Darwin.shutdown(descriptor, SHUT_RDWR) }
   }
 
+  /// App-server notifications are delivered only to clients subscribed to the corresponding
+  /// thread. Computer Use learns that scope from each request's Codex turn metadata.
+  public func observe(threadID: String) {
+    guard let threadID = Self.nonempty(threadID) else { return }
+    let state = lock.withLock { () -> (Int32, UInt64)? in
+      guard observedThreadIDs.insert(threadID).inserted, running, connectedDescriptor >= 0 else {
+        return nil
+      }
+      return (connectedDescriptor, generation)
+    }
+    guard let state else { return }
+    writerQueue.async { [weak self] in
+      self?.sendSubscription(
+        threadID: threadID,
+        descriptor: state.0,
+        generation: state.1
+      )
+    }
+  }
+
   static func resolveSocketPath(
     environment: [String: String],
     homeDirectoryURL: URL
@@ -107,6 +135,21 @@ public final class CodexAppServerThreadEventObserver: @unchecked Sendable {
     )
   }
 
+  static func threadResumePayload(
+    threadID: String,
+    identifier: UUID = UUID()
+  ) throws -> Data {
+    try JSONSerialization.data(
+      withJSONObject: [
+        "type": "request",
+        "requestId": identifier.uuidString,
+        "method": "thread/resume",
+        "params": ["threadId": threadID, "excludeTurns": true],
+      ],
+      options: [.sortedKeys]
+    )
+  }
+
   static func clientDiscoveryResponse(from data: Data) -> Data? {
     guard
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -132,14 +175,18 @@ public final class CodexAppServerThreadEventObserver: @unchecked Sendable {
         Darwin.close(descriptor)
         return
       }
-      try Self.writeFrame(Self.initializePayload(), to: descriptor)
+      try writeFrame(Self.initializePayload(), to: descriptor)
+      for threadID in lock.withLock({ observedThreadIDs.sorted() }) {
+        try writeFrame(Self.threadResumePayload(threadID: threadID), to: descriptor)
+      }
       while isCurrent(expectedGeneration) {
         let payload = try Self.readFrame(from: descriptor)
         if let threadID = Self.completedThreadID(from: payload) {
+          _ = lock.withLock { observedThreadIDs.remove(threadID) }
           turnEnded(threadID)
         }
         if let response = Self.clientDiscoveryResponse(from: payload) {
-          try Self.writeFrame(response, to: descriptor)
+          try writeFrame(response, to: descriptor)
         }
       }
     } catch {
@@ -172,6 +219,28 @@ public final class CodexAppServerThreadEventObserver: @unchecked Sendable {
       if connectedDescriptor == descriptor { connectedDescriptor = -1 }
     }
     Darwin.close(descriptor)
+  }
+
+  private func sendSubscription(
+    threadID: String,
+    descriptor: Int32,
+    generation expectedGeneration: UInt64
+  ) {
+    guard lock.withLock({
+      running && generation == expectedGeneration && connectedDescriptor == descriptor
+    }) else { return }
+    do {
+      try writeFrame(Self.threadResumePayload(threadID: threadID), to: descriptor)
+    } catch {
+      if isCurrent(expectedGeneration) {
+        diagnostic("Codex App Server thread subscription failed: \(error)")
+        Darwin.shutdown(descriptor, SHUT_RDWR)
+      }
+    }
+  }
+
+  private func writeFrame(_ payload: Data, to descriptor: Int32) throws {
+    try writeLock.withLock { try Self.writeFrame(payload, to: descriptor) }
   }
 
   private static func connectUnixSocket(at path: String) throws -> Int32 {

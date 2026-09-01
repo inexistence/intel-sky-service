@@ -38,6 +38,21 @@ import Testing
   #expect(params == ["clientType": "desktop"])
 }
 
+@Test func appServerObserverBuildsMetadataOnlyThreadResumeSubscription() throws {
+  let identifier = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+  let data = try CodexAppServerThreadEventObserver.threadResumePayload(
+    threadID: "thread-1",
+    identifier: identifier
+  )
+  let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+  #expect(object["type"] as? String == "request")
+  #expect(object["requestId"] as? String == identifier.uuidString)
+  #expect(object["method"] as? String == "thread/resume")
+  let params = try #require(object["params"] as? [String: Any])
+  #expect(params["threadId"] as? String == "thread-1")
+  #expect(params["excludeTurns"] as? Bool == true)
+}
+
 @Test func appServerObserverAcceptsOnlyCompletedTurnNotificationsWithThreadIDs() throws {
   let completed = try JSONSerialization.data(withJSONObject: [
     "type": "broadcast",

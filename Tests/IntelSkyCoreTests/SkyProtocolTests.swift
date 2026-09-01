@@ -10,6 +10,15 @@ private final class SafetyLifecycleRecorder: @unchecked Sendable {
   func append(_ event: ComputerUseTurnLifecycleEvent) { lock.withLock { stored.append(event) } }
 }
 
+private final class ThreadActivityRecorder: ComputerUseThreadActivityObserving,
+  @unchecked Sendable
+{
+  private let lock = NSLock()
+  private var stored: [String] = []
+  var threadIDs: [String] { lock.withLock { stored } }
+  func observe(threadID: String) { lock.withLock { stored.append(threadID) } }
+}
+
 private struct StubCatalog: AppCatalog {
   func listApps() throws -> [[String: Any]] {
     [
@@ -193,6 +202,25 @@ private func decode(_ data: Data) throws -> [String: Any] {
 
   #expect(result.count == 1)
   #expect(result[0]["bundleIdentifier"] as? String == "com.apple.finder")
+}
+
+@Test func scopedRequestSubscribesTurnCompletionObserver() throws {
+  let observer = ThreadActivityRecorder()
+  let router = SkyRequestRouter(appCatalog: StubCatalog())
+  router.installThreadActivityObserver(observer)
+
+  _ = try decode(
+    router.handle(
+      try requestPayloadWithMetadata(
+        id: 36,
+        type: "ComputerUseIPCListAppsRequest",
+        request: [:],
+        metadata: [
+          "session_id": "session", "thread_id": "thread-1", "turn_id": "turn-1",
+        ]
+      )))
+
+  #expect(observer.threadIDs == ["thread-1"])
 }
 
 @Test func rejectsWrongProtocolVersion() throws {
