@@ -257,19 +257,9 @@ runs do not leave unnoticed Computer Use approval prompts.
 
 ## Legacy socket-only mode
 
-For development or socket-only compatibility without native PIP:
-
-```sh
-Scripts/install-launch-agent.sh
-```
-
-This installs `~/Applications/Intel Sky Service.app` and the per-user LaunchAgent
-`dev.huangjianbin.intel-sky-service`. It starts with `--disable-pip`, uses its own bundle identity,
-and does not impersonate `com.openai.sky.CUAService` or request OpenAI's application-group
-entitlement.
-
-Grant the same three permissions to the legacy App and restart the agent. Do not enable this mode
-while the recommended ChatGPT-managed service is running.
+The socket-only LaunchAgent mode is deprecated and is not recommended for normal use. It remains
+available only for compatibility and isolated development; see
+[LegacySocketMode.md](LegacySocketMode.md). Do not run it alongside the ChatGPT-managed service.
 
 ## Implemented surface
 
