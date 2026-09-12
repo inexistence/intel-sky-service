@@ -1,0 +1,22 @@
+{
+  "name": "intel-sky-computer-use",
+  "version": "0.1.0+codex.20260912185422",
+  "description": "One Computer Use entry for browsers and native macOS apps on Intel Macs",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Intel Sky Computer Use",
+    "shortDescription": "Control browsers and native macOS apps through one tool.",
+    "longDescription": "Provides a single intel_sky_cua MCP server backed by the bundled browser runtime and Intel Sky native macOS service without conflicting with Codex's reserved cua_repl entry.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Browser control",
+      "Native macOS app control"
+    ],
+    "defaultPrompt": "Open Notes and read my latest note."
+  },
+  "mcpServers": "./.mcp.json"
+}

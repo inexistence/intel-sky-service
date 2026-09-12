@@ -40,12 +40,13 @@ if [[ ! "$macos_major" =~ '^[0-9]+$' ]] || (( macos_major < 14 )); then
   exit 69
 fi
 
-if [[ ! -x "$source_app/Contents/MacOS/SkyComputerUseService" ]]; then
-  if $source_was_explicit; then
+if $source_was_explicit; then
+  if [[ ! -x "$source_app/Contents/MacOS/SkyComputerUseService" ]]; then
     print -u2 "install source is not a built Computer Use App: $source_app"
     exit 66
   fi
-  print "No built App found; building the signed x86_64 release bundle..."
+else
+  print "Building the signed x86_64 release bundle from the current source..."
   "$script_directory/build-app.sh"
 fi
 
@@ -68,6 +69,9 @@ fi
 /usr/bin/lipo "$source_executable" -verify_arch x86_64
 
 codex_home="${CODEX_HOME:-$HOME/.codex}"
+codex_cli="/Applications/ChatGPT.app/Contents/Resources/codex"
+plugin_marketplace="$project_directory"
+plugin_id="intel-sky-computer-use@personal"
 install_directory="$codex_home/computer-use"
 installed_app="$install_directory/Codex Computer Use.app"
 legacy_agent_path="${INTEL_SKY_LEGACY_LAUNCH_AGENT_PATH:-$HOME/Library/LaunchAgents/dev.huangjianbin.intel-sky-service.plist}"
@@ -127,6 +131,13 @@ temporary_app="$temporary_directory/Codex Computer Use.app"
 /usr/bin/ditto "$source_app" "$temporary_app"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$temporary_app"
 /usr/bin/lipo "$temporary_app/Contents/MacOS/SkyComputerUseService" -verify_arch x86_64
+
+if [[ ! -x "$codex_cli" ]]; then
+  print -u2 "missing Codex CLI: $codex_cli"
+  exit 66
+fi
+CODEX_HOME="$codex_home" "$codex_cli" plugin marketplace add "$plugin_marketplace" --json
+CODEX_HOME="$codex_home" "$codex_cli" plugin add "$plugin_id" --json
 
 if $legacy_service_loaded; then
   if ! /bin/launchctl bootout "$legacy_service_target"; then

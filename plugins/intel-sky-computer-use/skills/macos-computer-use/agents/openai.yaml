@@ -1,0 +1,12 @@
+interface:
+  display_name: "macOS Computer Use"
+  short_description: "Control native macOS apps and browsers through one tool"
+  default_prompt: "Use $macos-computer-use to open Notes and read the latest note."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "intel_sky_cua"
+      description: "Unified browser and native macOS Computer Use MCP server"
+      transport: "stdio"
+policy:
+  allow_implicit_invocation: true

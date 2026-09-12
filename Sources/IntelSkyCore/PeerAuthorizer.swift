@@ -41,6 +41,7 @@ public enum PeerAuthorizationError: Error, CustomStringConvertible {
   case invalidSignature(pid_t, OSStatus)
   case missingSigningInfo(pid_t, OSStatus)
   case disallowedIdentifier(pid_t, String?, expected: Set<String>)
+  case trustedHostNotFound(pid_t, maximumDepth: Int)
 
   public var description: String {
     switch self {
@@ -56,6 +57,8 @@ public enum PeerAuthorizationError: Error, CustomStringConvertible {
       return "PID \(pid) has no readable signing metadata (OSStatus \(status))"
     case .disallowedIdentifier(let pid, let identifier, let expected):
       return "PID \(pid) identifier \(identifier ?? "<missing>") is not in \(expected.sorted())"
+    case .trustedHostNotFound(let pid, let maximumDepth):
+      return "No trusted ChatGPT host was found above PID \(pid) within \(maximumDepth) ancestors"
     }
   }
 }
@@ -67,27 +70,47 @@ struct ValidatedCodeIdentity: Sendable, Equatable {
 public struct OpenAIPeerAuthorizer: PeerAuthorizing {
   public static let teamIdentifier = "2DC432GLL2"
   public static let allowedPeerIdentifiers: Set<String> = ["node_repl"]
-  public static let allowedParentIdentifiers: Set<String> = ["codex"]
-  public static let allowedGrandparentIdentifiers: Set<String> = ["com.openai.codex"]
+  public static let allowedDirectParentIdentifiers: Set<String> = ["codex"]
+  public static let allowedUnifiedParentIdentifiers: Set<String> = ["node"]
+  public static let allowedHostIdentifiers: Set<String> = ["com.openai.codex"]
+  public static let maximumHostChainDepth = 12
 
   private let effectiveUID: uid_t
   private let identityProvider: @Sendable (pid_t) throws -> ValidatedCodeIdentity
+  private let intermediateIdentityProvider: @Sendable (pid_t) throws -> ValidatedCodeIdentity
   private let parentPIDProvider: @Sendable (pid_t) throws -> pid_t
+  private let hostChainDepth: Int
 
   public init() {
     effectiveUID = geteuid()
     identityProvider = Self.readValidatedIdentity
+    let localTeamIdentifier = Self.readSelfTeamIdentifier()
+    intermediateIdentityProvider = { pid in
+      guard let localTeamIdentifier else {
+        throw PeerAuthorizationError.missingSigningInfo(getpid(), errSecCSUnsigned)
+      }
+      return try Self.readValidatedIdentity(
+        pid,
+        requirementText:
+          "anchor apple generic and certificate leaf[subject.OU] = \"\(localTeamIdentifier)\""
+      )
+    }
     parentPIDProvider = Self.readParentPID
+    hostChainDepth = Self.maximumHostChainDepth
   }
 
   init(
     effectiveUID: uid_t,
     identityProvider: @escaping @Sendable (pid_t) throws -> ValidatedCodeIdentity,
-    parentPIDProvider: @escaping @Sendable (pid_t) throws -> pid_t
+    intermediateIdentityProvider: (@Sendable (pid_t) throws -> ValidatedCodeIdentity)? = nil,
+    parentPIDProvider: @escaping @Sendable (pid_t) throws -> pid_t,
+    maximumHostChainDepth: Int = maximumHostChainDepth
   ) {
     self.effectiveUID = effectiveUID
     self.identityProvider = identityProvider
+    self.intermediateIdentityProvider = intermediateIdentityProvider ?? identityProvider
     self.parentPIDProvider = parentPIDProvider
+    self.hostChainDepth = max(0, maximumHostChainDepth)
   }
 
   public func authorize(_ peer: PeerIdentity) throws {
@@ -106,23 +129,50 @@ public struct OpenAIPeerAuthorizer: PeerAuthorizing {
 
     let parentPID = try parentPIDProvider(peer.pid)
     let parentIdentity = try identityProvider(parentPID)
-    guard Self.allowedParentIdentifiers.contains(parentIdentity.identifier) else {
+    let codexPID: pid_t
+    if Self.allowedDirectParentIdentifiers.contains(parentIdentity.identifier) {
+      codexPID = parentPID
+    } else if Self.allowedUnifiedParentIdentifiers.contains(parentIdentity.identifier) {
+      let unifiedParentPID = try parentPIDProvider(parentPID)
+      let unifiedParentIdentity = try identityProvider(unifiedParentPID)
+      guard Self.allowedDirectParentIdentifiers.contains(unifiedParentIdentity.identifier) else {
+        throw PeerAuthorizationError.disallowedIdentifier(
+          unifiedParentPID,
+          unifiedParentIdentity.identifier,
+          expected: Self.allowedDirectParentIdentifiers
+        )
+      }
+      codexPID = unifiedParentPID
+    } else {
       throw PeerAuthorizationError.disallowedIdentifier(
         parentPID,
         parentIdentity.identifier,
-        expected: Self.allowedParentIdentifiers
+        expected: Self.allowedDirectParentIdentifiers.union(Self.allowedUnifiedParentIdentifiers)
       )
     }
 
-    let grandparentPID = try parentPIDProvider(parentPID)
-    let grandparentIdentity = try identityProvider(grandparentPID)
-    guard Self.allowedGrandparentIdentifiers.contains(grandparentIdentity.identifier) else {
-      throw PeerAuthorizationError.disallowedIdentifier(
-        grandparentPID,
-        grandparentIdentity.identifier,
-        expected: Self.allowedGrandparentIdentifiers
-      )
+    var ancestorPID = try parentPIDProvider(codexPID)
+    var visited: Set<pid_t> = [peer.pid, parentPID, codexPID]
+    for _ in 0..<hostChainDepth {
+      guard visited.insert(ancestorPID).inserted else {
+        throw PeerAuthorizationError.cannotResolveParent(ancestorPID)
+      }
+      if let openAIIdentity = try? identityProvider(ancestorPID) {
+        if Self.allowedHostIdentifiers.contains(openAIIdentity.identifier) {
+          return
+        }
+      } else {
+        // Wrapper names are intentionally unrestricted. Each ancestor must be
+        // signed by OpenAI or by the service's own signing Team ID, and the
+        // chain must still terminate at an OpenAI-signed ChatGPT process.
+        _ = try intermediateIdentityProvider(ancestorPID)
+      }
+      ancestorPID = try parentPIDProvider(ancestorPID)
     }
+    throw PeerAuthorizationError.trustedHostNotFound(
+      codexPID,
+      maximumDepth: hostChainDepth
+    )
   }
 
   private static func readParentPID(_ pid: pid_t) throws -> pid_t {
@@ -136,6 +186,17 @@ public struct OpenAIPeerAuthorizer: PeerAuthorizing {
   }
 
   static func readValidatedIdentity(_ pid: pid_t) throws -> ValidatedCodeIdentity {
+    try readValidatedIdentity(
+      pid,
+      requirementText:
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+    )
+  }
+
+  private static func readValidatedIdentity(
+    _ pid: pid_t,
+    requirementText: String
+  ) throws -> ValidatedCodeIdentity {
     let attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
     var code: SecCode?
     let lookupStatus = SecCodeCopyGuestWithAttributes(nil, attributes, [], &code)
@@ -143,8 +204,6 @@ public struct OpenAIPeerAuthorizer: PeerAuthorizing {
       throw PeerAuthorizationError.cannotResolveCode(pid, lookupStatus)
     }
 
-    let requirementText =
-      "anchor apple generic and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
     var requirement: SecRequirement?
     let requirementStatus = SecRequirementCreateWithString(
       requirementText as CFString, [], &requirement)
@@ -176,6 +235,28 @@ public struct OpenAIPeerAuthorizer: PeerAuthorizing {
       throw PeerAuthorizationError.missingSigningInfo(pid, infoStatus)
     }
     return ValidatedCodeIdentity(identifier: identifier)
+  }
+
+  private static func readSelfTeamIdentifier() -> String? {
+    var code: SecCode?
+    guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+    var staticCode: SecStaticCode?
+    guard
+      SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+      let staticCode
+    else { return nil }
+    var signingInfo: CFDictionary?
+    guard
+      SecCodeCopySigningInformation(
+        staticCode,
+        SecCSFlags(rawValue: kSecCSSigningInformation),
+        &signingInfo
+      ) == errSecSuccess,
+      let info = signingInfo as? [CFString: Any],
+      let teamIdentifier = info[kSecCodeInfoTeamIdentifier] as? String,
+      !teamIdentifier.isEmpty
+    else { return nil }
+    return teamIdentifier
   }
 }
 

@@ -1,0 +1,46 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+resources_directory="/Applications/ChatGPT.app/Contents/Resources"
+node_modules_directory="$resources_directory/cua_node/lib/node_modules"
+node_executable="$resources_directory/cua_node/bin/node"
+node_repl_executable="$resources_directory/cua_node/bin/node_repl"
+cua_repl_entrypoint="$node_modules_directory/@oai/cua-repl/bin/cua-repl.mjs"
+codex_directory="${CODEX_HOME:-$HOME/.codex}"
+app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/ChatGPT.app/Contents/Info.plist)"
+
+for required_executable in "$node_executable" "$node_repl_executable"; do
+  if [[ ! -x "$required_executable" ]]; then
+    print -u2 "missing ChatGPT Computer Use executable: $required_executable"
+    exit 66
+  fi
+done
+if [[ ! -f "$cua_repl_entrypoint" ]]; then
+  print -u2 "missing ChatGPT Computer Use entrypoint: $cua_repl_entrypoint"
+  exit 66
+fi
+
+export CODEX_HOME="$codex_directory"
+export NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS="1000"
+export NODE_REPL_NODE_MODULE_DIRS="$node_modules_directory"
+export NODE_REPL_NODE_PATH="$node_executable"
+export NODE_REPL_TRUSTED_CODE_PATHS="$codex_directory:$node_modules_directory"
+export NODE_REPL_TRUSTED_SERVICES='{"browser":"@oai/browser-desktop/service","sky":"@oai/sky/service"}'
+export NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER="Control the in-app browser through Computer Use."
+export NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME="Control Chrome through Computer Use."
+export NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE="Control native macOS apps through Intel Sky Computer Use."
+export CUA_REPL_NODE_REPL_PATH="$node_repl_executable"
+export CUA_REPL_ENABLED_SURFACES="browser,computer"
+export BROWSER_USE_AVAILABLE_BACKENDS="chrome,iab"
+export BROWSER_USE_TINYSKY_ENABLED="1"
+export BROWSER_USE_CODEX_APP_BUILD_FLAVOR="prod"
+export BROWSER_USE_CODEX_APP_VERSION="$app_version"
+export CODEX_CLI_PATH="$resources_directory/codex"
+
+# Codex may atomically replace the plugin cache directory during an update. Do
+# not leave the long-lived MCP process in that directory: a later node_repl
+# spawn would otherwise fail with ENOENT because its inherited cwd was removed.
+cd "$codex_directory"
+
+exec "$node_executable" "$cua_repl_entrypoint" "$@"
