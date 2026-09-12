@@ -8,20 +8,35 @@ This is not an OpenAI product. The protocol is undocumented and compatibility is
 observing the locally installed client. The service does not use an API key or send requests to an
 external model service.
 
-## Verified compatibility
+## Compatibility
 
-The original runtime combination was verified on an Intel Mac on 2026-08-31. The bundled client
-API and IPC-5 request surface were checked again with `@oai/sky` 0.6.32 on 2026-09-12:
+Version 0.2.0 is a breaking release. It replaces the legacy global `node_repl` and injected-skill
+discovery path with a Codex plugin that exposes the collision-free `intel_sky_cua` tool. Service
+and ChatGPT/Codex generations must not be mixed:
+
+| Intel Sky | ChatGPT/Codex generation | Status |
+| --- | --- | --- |
+| `v0.1.0` | Legacy baseline (`26.825.41651`) | Supported baseline |
+| `v0.1.0` | Plugin-based builds (`26.908.40834` and later) | Unsupported |
+| `v0.2.0` | Legacy baseline (`26.825.41651`) | Unsupported |
+| `v0.2.0` | Plugin-based baseline (`26.908.40834`) | Supported baseline |
+
+“Unsupported” means the installation and capability-discovery contracts are incompatible, even
+where the underlying IPC request format overlaps. Do not copy only the service executable between
+these releases.
+
+Version 0.2.0 was verified on an Intel Mac on 2026-09-13:
 
 | Component | Verified value |
 | --- | --- |
-| ChatGPT App | `26.825.41651` |
-| ChatGPT build | `7345` |
-| Codex CLI | `0.151.0-alpha.7.1` |
+| Intel Sky Service | `0.2.0` (build `2`) |
+| ChatGPT App | `26.908.40834` |
+| ChatGPT build | `8881` |
+| Codex CLI | `0.154.0-alpha.6.2` |
 | Computer Use protocol | `CodexComputerUseIPC-5` |
-| CUA runtime | `0.0.9/20260827011019-395ab116910c-pr-1369830` |
-| `@oai/sky` | `0.6.24-premerge-pr-1369830-395ab116910c`; client compatibility checked with `0.6.32` |
-| Bundled Node.js | `24.19.0` |
+| `@oai/cua-repl` | `0.1.0` |
+| `@oai/sky` | `0.6.32` |
+| Bundled Node.js | `24.20.0` |
 | Platform | `darwin-x64`, macOS 14 or newer |
 
 This is a tested baseline, not a promise that later ChatGPT builds are compatible. After every
@@ -33,6 +48,22 @@ Scripts/audit-pip-host.sh
 
 The audit fails closed if the Intel host architecture, OpenAI signing team, or required XPC
 selectors change.
+
+### Upgrading from v0.1.0
+
+Do not replace the App bundle manually. From the v0.2.0 checkout, run the installer again:
+
+```sh
+Scripts/install-managed-service.sh
+```
+
+The installer builds and signs the new App, installs `intel-sky-computer-use@personal`, removes a
+managed legacy `intel_sky_repl` registration, disables the old LaunchAgent when present, and keeps
+timestamped rollback copies. Completely quit and reopen ChatGPT afterward, then start a new Codex
+session; existing sessions keep their original tool set.
+
+If the installed ChatGPT App does not provide the `codex plugin` command, remain on the `v0.1.0`
+tag. Version 0.2.0 does not automatically fall back to the v0.1.0 installation contract.
 
 ## Quick start
 
@@ -88,8 +119,7 @@ These values should be `true`:
 - `physicalInputMonitoring`
 - `focusStealProtection`
 - `computerUseCapability.registered`
-- `computerUseCapability.unifiedComputerUseEnabled` on current ChatGPT builds, or
-  `computerUseCapability.skillInjected` on legacy builds
+- `computerUseCapability.unifiedComputerUseEnabled`
 
 Start a **new Codex session** after restarting ChatGPT. Existing sessions retain the tool set they
 had when they were created. In the new session, ask naturally—for example:
@@ -111,29 +141,12 @@ must carry OpenAI's signature; any intervening Bridge processes may have arbitra
 be signed by either OpenAI or the same Apple Developer Team as the installed Intel Sky service.
 Every accepted chain must terminate at the OpenAI-signed ChatGPT host within a bounded depth.
 
-For legacy clients, if the Codex configuration does not contain `node_repl`, registration adds a
-compatible entry through the bundled Codex CLI. If ChatGPT has already registered the same bundled
-`node_repl` for browser automation, the installer merges `sky` into
-`NODE_REPL_TRUSTED_SERVICES` in place while preserving the browser service, timeouts, and unrelated
-configuration. A different executable or runtime remains a conflict and is never overwritten.
-
-On legacy builds, after the managed service binds its socket, it links the official Computer Use
-skill into the cross-client discovery directory:
-
-```text
-~/.agents/skills/computer-use -> /Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/sky/docs/skills/oai_sky_lib/macos
-```
-
-Registration is idempotent and points directly to the official skill shipped with ChatGPT, so a
-later compatible ChatGPT update supplies its updated skill automatically. When the unified plugin
-is available, its tool provides the current instructions and the obsolete managed legacy skill
-link is removed. On current builds the installer installs the local
+Registration is idempotent. The installer installs the local
 `intel-sky-computer-use@personal` plugin, disables the bundled browser-only
 `unified-computer-use` plugin, and removes the obsolete `intel_sky_repl` MCP registration. The local
 plugin supplies native macOS routing instructions and exposes one enabled `intel_sky_cua` server
-with both browser and native macOS surfaces. The reserved `cua_repl` may remain disabled. An existing
-non-link `computer-use` skill is treated as a conflict and is not
-replaced or removed.
+with both browser and native macOS surfaces. The reserved `cua_repl` may remain disabled. A custom
+legacy `computer-use` skill is preserved.
 
 Recheck registration without reinstalling:
 
@@ -144,8 +157,8 @@ Recheck registration without reinstalling:
 
 The command prints structured JSON and exits with status 78 if registration is unavailable.
 
-When the service is stopped, the unified tool (or the legacy skill and `node_repl`) remains
-discoverable. The official client then reports a concrete startup or native-pipe error, such as
+When the service is stopped, the unified tool remains discoverable. The official client then
+reports a concrete startup or native-pipe error, such as
 `Sky Computer Use native pipe startup failed`, instead of making the session conclude that
 Computer Use does not exist.
 
@@ -163,8 +176,8 @@ The installer:
 - preserves an existing managed App as
   `Codex Computer Use.app.backup-YYYYMMDD-HHMMSS`;
 - preserves a legacy LaunchAgent as a timestamped disabled plist;
-- prepares global `node_repl` capability discovery only for legacy clients, preserving compatible
-  browser entries and refusing to overwrite an incompatible user entry;
+- installs and verifies the `intel_sky_cua` Codex plugin without rewriting the reserved
+  `cua_repl` configuration;
 - lets ChatGPT's existing managed-service controller respawn and reconnect PIP after an unexpected
   service exit; the socketless watchdog is active only after ChatGPT authenticates the PIP host;
 - never starts or quits ChatGPT.

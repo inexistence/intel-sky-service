@@ -1,6 +1,6 @@
 {
   "name": "intel-sky-computer-use",
-  "version": "0.1.0+codex.20260912185422",
+  "version": "0.2.0+codex.20260912190124",
   "description": "One Computer Use entry for browsers and native macOS apps on Intel Macs",
   "author": {
     "name": "Local developer"
